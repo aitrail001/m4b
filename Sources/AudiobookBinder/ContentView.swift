@@ -203,6 +203,10 @@ struct ContentView: View {
                 Button("Show in Finder") { appState.reveal(url) }
                     .buttonStyle(.plain)
                     .foregroundStyle(BinderTheme.leather)
+                Button("Open in Books") { appState.openInBooks(url) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(BinderTheme.leather)
+                    .help("Open the audiobook in Apple Books")
             }
         }
         .padding(.horizontal, 18)

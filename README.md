@@ -31,10 +31,11 @@ make app     # dist/AudiobookBinder.app
 
 ## Use
 
-1. Open a book folder, or the parent folder that contains one folder per book.
-2. Review title, author, narrator, cover, and chapter names.
-3. Choose bitrate (64 kbps is the audiobook default). Save the `.m4b` in the book folder, or uncheck that to write to `~/Music/Audiobooks` (or pick another folder).
-4. Build the selected books.
+1. Open a book folder, or a library folder (nested wrappers are fine). The last library reopens on launch.
+2. Filter the list if you need to. Folders that already have an `.m4b` show as **Already an audiobook** and stay unselected.
+3. Review title, author, narrator, cover, and chapter names. Uncheck chapters you want to skip; play a chapter to preview.
+4. Choose bitrate (64 kbps is the audiobook default). Save the `.m4b` in the book folder, or uncheck that to write to `~/Music/Audiobooks` (or pick another folder).
+5. Build the selected books, then Show in Finder or Open in Books.
 
 You can also bind from the command line:
 

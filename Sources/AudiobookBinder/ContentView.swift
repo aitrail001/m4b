@@ -301,6 +301,22 @@ struct BookEditor: View {
                                         .frame(minWidth: 0)
                                         .layoutPriority(-1)
                                 }
+                                let playingThis = appState.playback.isPlaying(chapter)
+                                Button {
+                                    appState.playback.toggle(chapter)
+                                } label: {
+                                    Image(systemName: playingThis ? "pause.circle.fill" : "play.circle")
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(
+                                            appState.playback.playingID == chapter.id
+                                                ? BinderTheme.leather
+                                                : BinderTheme.ink
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .help(playingThis ? "Pause chapter" : "Play chapter")
+                                .accessibilityLabel(playingThis ? "Pause chapter" : "Play chapter")
+                                .disabled(appState.isBuilding)
                                 Text(DurationFormat.string(chapter.duration))
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(BinderTheme.inkMuted)

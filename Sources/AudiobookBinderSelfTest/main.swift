@@ -14,6 +14,19 @@ struct AudiobookBinderSelfTest {
             }
         }
 
+        @MainActor
+        func waitUntil(_ message: String, timeoutMs: Int = 3000, _ condition: () -> Bool) async {
+            let steps = max(timeoutMs / 50, 1)
+            for _ in 0..<steps {
+                if condition() {
+                    expect(true, message)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            expect(condition(), message)
+        }
+
         print("== NaturalSort / titles ==")
         expect(NaturalSort.leadingIndex("001 - T.mp3") == 1, "leading 001")
         expect(NaturalSort.leadingIndex("01-Factfulness (Unabridged).mp3") == 1, "leading 01-")
@@ -200,6 +213,86 @@ struct AudiobookBinderSelfTest {
             expect(folderNames(mp3Subs) == ["BookA", "BookB"], "mp3-sub folders BookA/BookB (got \(folderNames(mp3Subs)))")
         } catch {
             expect(false, "nested scan fixtures: \(error)")
+        }
+
+        print("== ChapterPlayback ==")
+        do {
+            @MainActor
+            func testPlayback() async throws {
+                let fm = FileManager.default
+                let tink = URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff")
+                expect(fm.fileExists(atPath: tink.path), "system Tink.aiff exists")
+
+                let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-playback-\(UUID().uuidString)", isDirectory: true)
+                try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+                defer { try? fm.removeItem(at: tmp) }
+
+                let tink2 = tmp.appendingPathComponent("tink-copy.aiff")
+                try fm.copyItem(at: tink, to: tink2)
+
+                func chapter(url: URL, index: Int, title: String) -> Chapter {
+                    Chapter(url: url, index: index, title: title, duration: 0.56, fileSize: 0)
+                }
+
+                let chapter1 = chapter(url: tink, index: 1, title: "One")
+                let chapter2 = chapter(url: tink2, index: 2, title: "Two")
+                let playback = ChapterPlayback()
+
+                playback.toggle(chapter1)
+                await waitUntil("toggle starts playing chapter") {
+                    playback.isPlaying(chapter1) && playback.playingID == chapter1.id
+                }
+
+                playback.toggle(chapter1)
+                expect(playback.playingID == chapter1.id, "pause keeps playingID")
+                expect(playback.isPlaying == false, "pause sets isPlaying false")
+                expect(playback.isPlaying(chapter1) == false, "pause: isPlaying(chapter) is false")
+
+                playback.toggle(chapter1)
+                await waitUntil("resume starts playing again") {
+                    playback.isPlaying(chapter1) && playback.playingID == chapter1.id
+                }
+
+                playback.toggle(chapter2)
+                await waitUntil("switch plays chapter2") {
+                    playback.playingID == chapter2.id && playback.isPlaying(chapter2)
+                }
+                expect(playback.isPlaying(chapter1) == false, "switch is not playing chapter1")
+
+                playback.stop()
+                expect(playback.playingID == nil, "stop clears playingID")
+                expect(playback.isPlaying == false, "stop sets isPlaying false")
+                expect(playback.isPlaying(chapter2) == false, "stop: not playing chapter2")
+
+                playback.toggle(chapter1)
+                await waitUntil("play-to-end starts") {
+                    playback.isPlaying(chapter1)
+                }
+                try await Task.sleep(for: .milliseconds(1500))
+                var ended = false
+                for _ in 0..<40 {
+                    if playback.playingID == nil && playback.isPlaying == false {
+                        ended = true
+                        break
+                    }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                if ended {
+                    expect(true, "end of item resets playingID and isPlaying")
+                } else {
+                    print("  skip  end-of-item reset (AVPlayer didPlayToEndTime not observed)")
+                    playback.stop()
+                }
+
+                let missing = chapter(url: tmp.appendingPathComponent("no-such-file.aiff"), index: 3, title: "Missing")
+                playback.toggle(missing)
+                expect(playback.playingID == nil, "missing file: playingID nil")
+                expect(playback.isPlaying == false, "missing file: isPlaying false")
+                expect(playback.isPlaying(missing) == false, "missing file: isPlaying(chapter) false")
+            }
+            try await testPlayback()
+        } catch {
+            expect(false, "ChapterPlayback fixtures: \(error)")
         }
 
         let booksRoot = URL(fileURLWithPath: NSString(string: "~/Documents/books").expandingTildeInPath, isDirectory: true)

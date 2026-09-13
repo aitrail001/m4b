@@ -7,8 +7,15 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class AppState {
+    let playback = ChapterPlayback()
     var books: [Audiobook] = []
-    var selectedID: Audiobook.ID?
+    var selectedID: Audiobook.ID? {
+        didSet {
+            if selectedID != oldValue {
+                playback.stop()
+            }
+        }
+    }
     var libraryFolder: URL?
     var settings = ExportSettings()
     var isScanning = false
@@ -56,6 +63,7 @@ final class AppState {
     }
 
     func scan(_ url: URL) {
+        playback.stop()
         libraryFolder = url
         isScanning = true
         lastError = nil
@@ -99,6 +107,7 @@ final class AppState {
             status = "Select at least one book."
             return
         }
+        playback.stop()
         isBuilding = true
         lastError = nil
         finishedURLs = []

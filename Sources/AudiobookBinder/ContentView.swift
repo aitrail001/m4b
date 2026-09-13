@@ -233,16 +233,17 @@ struct BookRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Toggle("", isOn: $book.selected)
+            Toggle("", isOn: selectionBinding)
                 .labelsHidden()
                 .toggleStyle(.checkbox)
+                .disabled(book.isAlreadyBound)
             CoverView(data: book.coverJPEG, url: book.coverURL, size: 44)
             VStack(alignment: .leading, spacing: 2) {
                 Text(book.title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(BinderTheme.ink)
                     .lineLimit(2)
-                Text("\(book.author)  ·  \(book.chapterCount) chapters  ·  \(DurationFormat.string(book.totalDuration))")
+                Text(subtitle)
                     .font(.system(size: 11))
                     .foregroundStyle(BinderTheme.inkMuted)
                     .lineLimit(1)
@@ -251,6 +252,24 @@ struct BookRow: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+    }
+
+    private var selectionBinding: Binding<Bool> {
+        Binding(
+            get: { book.isAlreadyBound ? false : book.selected },
+            set: { newValue in
+                if !book.isAlreadyBound {
+                    book.selected = newValue
+                }
+            }
+        )
+    }
+
+    private var subtitle: String {
+        if book.isAlreadyBound {
+            return "\(book.author)  ·  Already an audiobook  ·  \(DurationFormat.string(book.totalDuration))"
+        }
+        return "\(book.author)  ·  \(book.chapterCount) chapters  ·  \(DurationFormat.string(book.totalDuration))"
     }
 }
 
@@ -301,57 +320,75 @@ struct BookEditor: View {
                     Text("Chapters")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(BinderTheme.inkMuted)
-                    VStack(spacing: 0) {
-                        ForEach($book.chapters) { $chapter in
-                            HStack(spacing: 10) {
-                                Text(String(format: "%02d", chapter.index))
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(BinderTheme.gold)
-                                    .frame(width: 28, alignment: .trailing)
-                                TextField("Chapter title", text: $chapter.title)
-                                    .textFieldStyle(.plain)
-                                    .font(.system(size: 13))
-                                Spacer(minLength: 8)
-                                if !chapter.audioInfo.summary.isEmpty {
-                                    Text(chapter.audioInfo.summary)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(BinderTheme.inkMuted)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .frame(minWidth: 0)
-                                        .layoutPriority(-1)
-                                }
-                                let playingThis = appState.playback.isPlaying(chapter)
-                                Button {
-                                    appState.playback.toggle(chapter)
-                                } label: {
-                                    Image(systemName: playingThis ? "pause.circle.fill" : "play.circle")
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(
-                                            appState.playback.playingID == chapter.id
-                                                ? BinderTheme.leather
-                                                : BinderTheme.ink
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                                .help(playingThis ? "Pause chapter" : "Play chapter")
-                                .accessibilityLabel(playingThis ? "Pause chapter" : "Play chapter")
-                                .disabled(appState.isBuilding)
-                                Text(DurationFormat.string(chapter.duration))
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(BinderTheme.inkMuted)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            if chapter.id != book.chapters.last?.id {
-                                Divider().opacity(0.2)
+                    if book.isAlreadyBound {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Already an audiobook")
+                            if let name = book.existingM4BURL?.lastPathComponent {
+                                Text(name)
                             }
                         }
+                        .font(.system(size: 13))
+                        .foregroundStyle(BinderTheme.inkMuted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.62))
+                        )
+                    } else {
+                        VStack(spacing: 0) {
+                            ForEach($book.chapters) { $chapter in
+                                HStack(spacing: 10) {
+                                    Text(String(format: "%02d", chapter.index))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(BinderTheme.gold)
+                                        .frame(width: 28, alignment: .trailing)
+                                    TextField("Chapter title", text: $chapter.title)
+                                        .textFieldStyle(.plain)
+                                        .font(.system(size: 13))
+                                    Spacer(minLength: 8)
+                                    if !chapter.audioInfo.summary.isEmpty {
+                                        Text(chapter.audioInfo.summary)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(BinderTheme.inkMuted)
+                                            .lineLimit(1)
+                                            .truncationMode(.tail)
+                                            .frame(minWidth: 0)
+                                            .layoutPriority(-1)
+                                    }
+                                    let playingThis = appState.playback.isPlaying(chapter)
+                                    Button {
+                                        appState.playback.toggle(chapter)
+                                    } label: {
+                                        Image(systemName: playingThis ? "pause.circle.fill" : "play.circle")
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(
+                                                appState.playback.playingID == chapter.id
+                                                    ? BinderTheme.leather
+                                                    : BinderTheme.ink
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(playingThis ? "Pause chapter" : "Play chapter")
+                                    .accessibilityLabel(playingThis ? "Pause chapter" : "Play chapter")
+                                    .disabled(appState.isBuilding)
+                                    Text(DurationFormat.string(chapter.duration))
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(BinderTheme.inkMuted)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                if chapter.id != book.chapters.last?.id {
+                                    Divider().opacity(0.2)
+                                }
+                            }
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.62))
+                        )
                     }
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color.white.opacity(0.62))
-                    )
                 }
             }
         }

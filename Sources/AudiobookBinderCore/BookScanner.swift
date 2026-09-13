@@ -38,6 +38,9 @@ public struct BookScanner: Sendable {
         if hasDirectAudio(folder) {
             return [folder]
         }
+        if hasDirectM4B(folder) {
+            return [folder]
+        }
 
         let children = bookSubfolders(folder)
         if children.isEmpty {
@@ -84,6 +87,15 @@ public struct BookScanner: Sendable {
         return items.contains { audioExtensions.contains($0.pathExtension.lowercased()) && $0.pathExtension.lowercased() != "m4b" }
     }
 
+    func hasDirectM4B(_ folder: URL) -> Bool {
+        let items = (try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return items.contains { $0.pathExtension.lowercased() == "m4b" }
+    }
+
     func bookSubfolders(_ folder: URL) -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(
             at: folder,
@@ -93,12 +105,16 @@ public struct BookScanner: Sendable {
         let dirs = items.filter {
             isDirectory($0) && !skippedDirectoryNames.contains($0.lastPathComponent.lowercased())
         }
-        return NaturalSort.sorted(dirs, key: { $0.lastPathComponent }).filter { !collectAudio(in: $0).isEmpty }
+        return NaturalSort.sorted(dirs, key: { $0.lastPathComponent }).filter {
+            !collectAudio(in: $0).isEmpty || !collectM4B(in: $0).isEmpty
+        }
     }
 
     public func loadBook(at folder: URL) async throws -> Audiobook {
         let audio = collectAudio(in: folder)
-        guard !audio.isEmpty else { throw BinderError.noAudioFiles(folder) }
+        if audio.isEmpty {
+            return try await loadAlreadyBoundBook(at: folder)
+        }
 
         let sorted = sortAudio(audio)
         let firstTags = await AudioMetadata.loadTags(from: sorted[0], includeArtwork: true)
@@ -189,6 +205,49 @@ public struct BookScanner: Sendable {
             coverJPEG: coverJPEG,
             chapters: chapters
         )
+    }
+
+    func loadAlreadyBoundBook(at folder: URL) async throws -> Audiobook {
+        let m4bs = NaturalSort.sorted(collectM4B(in: folder), key: { $0.lastPathComponent })
+        guard let m4b = m4bs.first else { throw BinderError.noAudioFiles(folder) }
+
+        let firstTags = await AudioMetadata.loadTags(from: m4b, includeArtwork: true)
+        let opf = loadOPF(in: folder)
+        let ebookHint = loadEbookFilename(in: folder)
+        let folderTitle = TitleCleanup.folderTitle(folder.lastPathComponent)
+        let title = pickTitle(tags: firstTags, opf: opf, ebook: ebookHint, folderTitle: folderTitle)
+        let author = pickAuthor(tags: firstTags, opf: opf, ebook: ebookHint)
+        let narrator = firstTags.composer ?? ""
+        let description = firstTags.comment ?? opf?.description ?? ""
+
+        let coverURL = findCover(in: folder)
+        var coverJPEG: Data?
+        if let coverURL {
+            coverJPEG = CoverJPEG.loadAndNormalize(from: coverURL)
+        }
+        if coverJPEG == nil, let embedded = firstTags.artwork {
+            coverJPEG = CoverJPEG.normalize(embedded)
+        }
+
+        let info = AudioMetadata.fileInfo(of: m4b)
+        return Audiobook(
+            folder: folder,
+            title: title,
+            author: author,
+            narrator: narrator,
+            bookDescription: description,
+            coverURL: coverURL,
+            coverJPEG: coverJPEG,
+            chapters: [],
+            selected: false,
+            existingM4BURL: m4b,
+            boundDuration: info.duration
+        )
+    }
+
+    func collectM4B(in folder: URL) -> [URL] {
+        recursiveFiles(in: folder, skipNames: skippedDirectoryNames)
+            .filter { $0.pathExtension.lowercased() == "m4b" }
     }
 
     func collectAudio(in folder: URL) -> [URL] {

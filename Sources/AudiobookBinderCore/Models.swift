@@ -115,6 +115,8 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
     public var coverJPEG: Data?
     public var chapters: [Chapter]
     public var selected: Bool
+    public var existingM4BURL: URL?
+    public var boundDuration: TimeInterval
 
     public init(
         id: UUID = UUID(),
@@ -127,7 +129,9 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
         coverURL: URL? = nil,
         coverJPEG: Data? = nil,
         chapters: [Chapter] = [],
-        selected: Bool = true
+        selected: Bool = true,
+        existingM4BURL: URL? = nil,
+        boundDuration: TimeInterval = 0
     ) {
         self.id = id
         self.folder = folder
@@ -140,12 +144,17 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
         self.coverJPEG = coverJPEG
         self.chapters = chapters
         self.selected = selected
+        self.existingM4BURL = existingM4BURL
+        self.boundDuration = boundDuration
     }
 
     public var chapterCount: Int { chapters.count }
 
+    public var isAlreadyBound: Bool { existingM4BURL != nil && chapters.isEmpty }
+
     public var totalDuration: TimeInterval {
-        chapters.reduce(0) { $0 + $1.duration }
+        if chapters.isEmpty { return boundDuration }
+        return chapters.reduce(0) { $0 + $1.duration }
     }
 
     public var suggestedFileName: String {

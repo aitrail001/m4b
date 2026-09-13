@@ -81,9 +81,14 @@ final class AppState {
                 let found = try await BookScanner().scan(root: url)
                 books = found
                 selectedID = found.first?.id
-                status = found.count == 1
-                    ? "Found 1 book — \(found[0].chapterCount) chapters."
-                    : "Found \(found.count) books."
+                let boundCount = found.filter(\.isAlreadyBound).count
+                if boundCount > 0 {
+                    status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
+                } else {
+                    status = found.count == 1
+                        ? "Found 1 book — \(found[0].chapterCount) chapters."
+                        : "Found \(found.count) books."
+                }
             } catch {
                 lastError = error.localizedDescription
                 status = error.localizedDescription
@@ -94,7 +99,10 @@ final class AppState {
     }
 
     func selectAll(_ on: Bool) {
-        for i in books.indices { books[i].selected = on }
+        for i in books.indices {
+            if on, books[i].isAlreadyBound { continue }
+            books[i].selected = on
+        }
     }
 
     func chooseCover() {

@@ -155,6 +155,19 @@ struct AudiobookBinderSelfTest {
         expect(!rework.matches(query: "lean"), "unrelated query does not match")
         expect(rework.matches(query: "jason"), "author first name")
 
+        print("== Already-bound Audiobook ==")
+        let already = Audiobook(
+            folder: URL(fileURLWithPath: "/tmp/Bound"),
+            title: "Bound",
+            author: "A",
+            existingM4BURL: URL(fileURLWithPath: "/tmp/Bound/book.m4b"),
+            boundDuration: 99
+        )
+        expect(already.isAlreadyBound, "empty chapters + existingM4BURL is already bound")
+        expect(already.totalDuration == 99, "totalDuration uses boundDuration (got \(already.totalDuration))")
+        expect(already.chapterCount == 0, "chapterCount stays chapters.count")
+        expect(!rework.isAlreadyBound, "no existingM4BURL is not already bound")
+
         print("== ExportSettings outputURL ==")
         let book = Audiobook(folder: URL(fileURLWithPath: "/tmp/MyBook"), title: "T", author: "A")
         expect(book.suggestedFileName == "T - A.m4b", "suggestedFileName is T - A.m4b")
@@ -340,6 +353,118 @@ struct AudiobookBinderSelfTest {
             expect(false, "nested scan fixtures: \(error)")
         }
 
+        print("== Already-bound m4b scan ==")
+        do {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-bound-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmp) }
+
+            func fixture(_ path: String) -> URL {
+                URL(fileURLWithPath: path, isDirectory: true, relativeTo: tmp).absoluteURL
+            }
+            func writeMP3(_ dirPath: String, _ file: String) throws {
+                let dir = fixture(dirPath)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                try Data().write(to: dir.appendingPathComponent(file))
+            }
+
+            var m4bSource: URL?
+            let aiff = URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff")
+            if fm.fileExists(atPath: aiff.path) {
+                let m4a = tmp.appendingPathComponent("_tink.m4a")
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+                proc.arguments = [aiff.path, "-o", m4a.path, "-f", "m4af", "-d", "aac", "-b", "64000"]
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError = FileHandle.nullDevice
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 {
+                    let m4b = tmp.appendingPathComponent("_tink.m4b")
+                    try fm.copyItem(at: m4a, to: m4b)
+                    m4bSource = m4b
+                }
+            }
+
+            func writeM4B(_ dirPath: String, _ file: String) throws {
+                let dir = fixture(dirPath)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                let dest = dir.appendingPathComponent(file)
+                if let m4bSource {
+                    try fm.copyItem(at: m4bSource, to: dest)
+                } else {
+                    try Data().write(to: dest)
+                }
+            }
+            func folderNames(_ books: [Audiobook]) -> [String] {
+                books.map { $0.folder.lastPathComponent }.sorted()
+            }
+            func scan(_ path: String) async -> [Audiobook] {
+                do {
+                    return try await BookScanner().scan(root: fixture(path))
+                } catch {
+                    expect(false, "scan \(path): \(error)")
+                    return []
+                }
+            }
+            func bookNamed(_ books: [Audiobook], _ name: String) -> Audiobook? {
+                books.first { $0.folder.lastPathComponent == name }
+            }
+
+            try writeMP3("lib/BookA", "01.mp3")
+            try writeM4B("lib/Bound", "book.m4b")
+            let mixedLib = await scan("lib")
+            expect(mixedLib.count == 2, "lib with mp3 book + m4b book yields 2 books (got \(mixedLib.count))")
+            expect(folderNames(mixedLib) == ["BookA", "Bound"], "lib folders BookA/Bound (got \(folderNames(mixedLib)))")
+            if let bookA = bookNamed(mixedLib, "BookA") {
+                expect(!bookA.isAlreadyBound, "BookA is not already bound")
+                expect(bookA.chapterCount == 1, "BookA has 1 chapter (got \(bookA.chapterCount))")
+                expect(bookA.selected, "BookA is selected")
+                expect(bookA.existingM4BURL == nil, "BookA has no existingM4BURL")
+            } else {
+                expect(false, "lib scan includes BookA")
+            }
+            if let bound = bookNamed(mixedLib, "Bound") {
+                expect(bound.isAlreadyBound, "Bound is already bound")
+                expect(bound.chapterCount == 0, "Bound has 0 chapters (got \(bound.chapterCount))")
+                expect(!bound.selected, "Bound is not selected")
+                expect(bound.existingM4BURL != nil, "Bound has existingM4BURL")
+            } else {
+                expect(false, "lib scan includes Bound")
+            }
+
+            let openedBound = await scan("lib/Bound")
+            expect(openedBound.count == 1, "opening Bound alone yields 1 book (got \(openedBound.count))")
+            expect(openedBound.first?.folder.lastPathComponent == "Bound", "opened Bound folder is Bound (got \(openedBound.first?.folder.lastPathComponent ?? "nil"))")
+            expect(openedBound.first?.isAlreadyBound == true, "opened Bound is already bound")
+            expect(openedBound.first?.selected == false, "opened Bound is not selected")
+
+            try writeMP3("mixed/Mixed", "01.mp3")
+            try writeM4B("mixed/Mixed", "out.m4b")
+            let leftover = await scan("mixed/Mixed")
+            expect(leftover.count == 1, "mp3 + leftover m4b yields 1 book (got \(leftover.count))")
+            expect(leftover.first?.isAlreadyBound == false, "leftover m4b book is not already bound")
+            expect(leftover.first?.chapterCount == 1, "leftover m4b book has 1 chapter (got \(leftover.first?.chapterCount ?? -1))")
+            expect(leftover.first?.existingM4BURL == nil, "leftover m4b is not existingM4BURL")
+            expect(
+                leftover.first?.chapters.first?.url.pathExtension.lowercased() == "mp3",
+                "leftover m4b is not a chapter (got \(leftover.first?.chapters.first?.url.lastPathComponent ?? "nil"))"
+            )
+
+            try writeM4B("wrapper/43/BoundA", "a.m4b")
+            try writeM4B("wrapper/43/BoundB", "b.m4b")
+            let wrapperBound = await scan("wrapper")
+            expect(wrapperBound.count == 2, "wrapper of two m4b books yields 2 books (got \(wrapperBound.count))")
+            expect(folderNames(wrapperBound) == ["BoundA", "BoundB"], "wrapper m4b folders BoundA/BoundB (got \(folderNames(wrapperBound)))")
+            expect(wrapperBound.allSatisfy(\.isAlreadyBound), "wrapper m4b books are already bound")
+            expect(wrapperBound.allSatisfy { !$0.selected }, "wrapper m4b books are not selected")
+            expect(!BookScanner().isSingleBookFolder(fixture("wrapper")), "m4b wrapper is not a single book folder")
+            expect(!BookScanner().isSingleBookFolder(fixture("wrapper/43")), "m4b 43/ is not a single book folder")
+        } catch {
+            expect(false, "already-bound m4b fixtures: \(error)")
+        }
+
         print("== ChapterPlayback ==")
         do {
             @MainActor
@@ -426,27 +551,33 @@ struct AudiobookBinderSelfTest {
             do {
                 let books = try await BookScanner().scan(root: booksRoot)
                 for book in books {
-                    print("  BOOK \(book.title) | \(book.author) | \(book.chapterCount) ch | \(DurationFormat.string(book.totalDuration)) | cover=\(book.coverJPEG != nil)")
-                    expect(book.chapterCount >= 1, "\(book.title) has chapters")
+                    print("  BOOK \(book.title) | \(book.author) | \(book.chapterCount) ch | \(DurationFormat.string(book.totalDuration)) | cover=\(book.coverJPEG != nil)\(book.isAlreadyBound ? " | already-bound" : "")")
+                    if book.isAlreadyBound {
+                        expect(book.chapterCount == 0, "\(book.title) already bound has 0 chapters")
+                        expect(!book.selected, "\(book.title) already bound is not selected")
+                        expect(book.existingM4BURL != nil, "\(book.title) already bound has m4b")
+                    } else {
+                        expect(book.chapterCount >= 1, "\(book.title) has chapters")
+                    }
                     expect(!book.title.isEmpty, "title present")
                 }
 
-                if let taleb = books.first(where: { $0.author.contains("Taleb") }) {
+                if let taleb = books.first(where: { $0.author.contains("Taleb") && !$0.isAlreadyBound }) {
                     expect(taleb.chapterCount == 34, "Antifragile 34 chapters (got \(taleb.chapterCount))")
                     expect(taleb.coverJPEG != nil, "Antifragile cover")
                 }
 
-                if let campbell = books.first(where: { $0.author.contains("Campbell") }) {
+                if let campbell = books.first(where: { $0.author.contains("Campbell") && !$0.isAlreadyBound }) {
                     expect(campbell.chapterCount == 49, "Hero 49 chapters (got \(campbell.chapterCount))")
                     expect(campbell.title.lowercased().contains("hero"), "Hero title from ID3 (\(campbell.title))")
                 }
 
-                if let iger = books.first(where: { $0.author.contains("Iger") }) {
+                if let iger = books.first(where: { $0.author.contains("Iger") && !$0.isAlreadyBound }) {
                     expect(iger.title.lowercased().contains("ride"), "Ride title (\(iger.title))")
                     expect(iger.chapterCount == 16, "Ride 16 chapters")
                 }
 
-                if let systems = books.first(where: { $0.author.contains("Meadows") }) {
+                if let systems = books.first(where: { $0.author.contains("Meadows") && !$0.isAlreadyBound }) {
                     expect(systems.chapterCount == 10, "Systems 10 chapters")
                     print("== Tiny encode \(systems.title) chapters 1+last ==")
                     var tiny = systems

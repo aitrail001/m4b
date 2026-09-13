@@ -1,6 +1,12 @@
 import Foundation
 
 public struct BookScanner: Sendable {
+    private static let audioContainerNames: Set<String> = [
+        "mp3", "mp3s", "m4a", "audio", "audios",
+        "audiobook", "audiobooks", "tracks", "chapters",
+        "files", "media", "music", "sound", "sounds"
+    ]
+
     public init() {}
 
     public func scan(root: URL) async throws -> [Audiobook] {
@@ -10,18 +16,10 @@ public struct BookScanner: Sendable {
             throw BinderError.noBooksFound(root)
         }
 
-        if hasDirectAudio(root) {
-            return [try await loadBook(at: root)]
-        }
-
-        let children = bookSubfolders(root)
-        if children.count == 1 {
-            return [try await loadBook(at: root)]
-        }
-
+        let folders = discoverBookFolders(root)
         var books: [Audiobook] = []
-        for child in children {
-            if let book = try? await loadBook(at: child) {
+        for folder in folders {
+            if let book = try? await loadBook(at: folder) {
                 books.append(book)
             }
         }
@@ -33,7 +31,48 @@ public struct BookScanner: Sendable {
     }
 
     public func isSingleBookFolder(_ folder: URL) -> Bool {
-        hasDirectAudio(folder) || (bookSubfolders(folder).count <= 1 && !collectAudio(in: folder).isEmpty)
+        discoverBookFolders(folder).count == 1
+    }
+
+    func discoverBookFolders(_ folder: URL) -> [URL] {
+        if hasDirectAudio(folder) {
+            return [folder]
+        }
+
+        let children = bookSubfolders(folder)
+        if children.isEmpty {
+            return []
+        }
+
+        if children.count == 1 {
+            let child = children[0]
+            let nested = discoverBookFolders(child)
+            if nested.count > 1 {
+                return nested
+            }
+            // Cover/OPF sit beside mp3/, so the parent is the book.
+            if nested.count == 1 && isAudioContainerName(child.lastPathComponent) {
+                return [folder]
+            }
+            return nested
+        }
+
+        if children.allSatisfy({ isDiscOrPartName($0.lastPathComponent) }) {
+            return [folder]
+        }
+
+        return children.flatMap { discoverBookFolders($0) }
+    }
+
+    func isAudioContainerName(_ name: String) -> Bool {
+        Self.audioContainerNames.contains(name.lowercased())
+    }
+
+    func isDiscOrPartName(_ name: String) -> Bool {
+        name.range(
+            of: #"^(cd|disc|disk|dvd|part|pt|vol|volume)\s*[-._]?\s*\d+$"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 
     func hasDirectAudio(_ folder: URL) -> Bool {

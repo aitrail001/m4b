@@ -174,9 +174,20 @@ public struct ExportSettings: Sendable, Equatable {
         self.writeNextToBook = writeNextToBook
     }
 
+    public static var defaultOutputDirectory: URL {
+        let music = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent("Music", isDirectory: true)
+        return music.appendingPathComponent("Audiobooks", isDirectory: true)
+    }
+
+    public func resolvedOutputDirectory(for book: Audiobook) -> URL {
+        if writeNextToBook { return book.folder }
+        return outputDirectory ?? Self.defaultOutputDirectory
+    }
+
     public func outputURL(for book: Audiobook) -> URL {
-        let dir = writeNextToBook ? book.folder : (outputDirectory ?? book.folder)
-        return dir.appendingPathComponent(book.suggestedFileName)
+        resolvedOutputDirectory(for: book).appendingPathComponent(book.suggestedFileName)
     }
 }
 

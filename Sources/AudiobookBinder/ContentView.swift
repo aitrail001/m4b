@@ -72,7 +72,7 @@ struct ContentView: View {
             Text("Drop a books folder here")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(BinderTheme.ink)
-            Text("Select a single book folder, or a parent folder that contains one subfolder per book. MP3 chapters, covers, and ebook metadata are picked up automatically.")
+            Text("Select a book folder, or a library folder. Nested wrappers are scanned automatically. MP3 chapters, covers, and ebook metadata are picked up on their own.")
                 .font(.system(size: 13))
                 .foregroundStyle(BinderTheme.inkMuted)
                 .multilineTextAlignment(.center)
@@ -153,16 +153,22 @@ struct ContentView: View {
                 .foregroundStyle(appState.lastError == nil ? BinderTheme.inkMuted : Color.red.opacity(0.85))
                 .lineLimit(1)
             Spacer()
-            Toggle("Save next to book", isOn: Bindable(appState).settings.writeNextToBook)
+            Toggle("Save in book folder", isOn: Bindable(appState).settings.writeNextToBook)
                 .toggleStyle(.checkbox)
                 .font(.system(size: 12))
+                .help("Write the .m4b into the same folder as the chapter files")
             if !appState.settings.writeNextToBook {
-                Button(appState.settings.outputDirectory?.lastPathComponent ?? "Output Folder…") {
+                let folderName = appState.settings.outputDirectory?.lastPathComponent
+                    ?? ExportSettings.defaultOutputDirectory.lastPathComponent
+                Button("Save to: \(folderName)") {
                     appState.chooseOutputFolder()
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(BinderTheme.leather)
+                .help(
+                    (appState.settings.outputDirectory ?? ExportSettings.defaultOutputDirectory).path
+                )
             }
             Picker("Bitrate", selection: Bindable(appState).settings.bitrate) {
                 Text("64 kbps").tag(64_000)

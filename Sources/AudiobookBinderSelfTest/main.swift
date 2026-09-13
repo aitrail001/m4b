@@ -77,6 +77,53 @@ struct AudiobookBinderSelfTest {
         expect(lowBitrate.summary.contains("500 bps"), "sub-kbps shows bps (got \(lowBitrate.summary))")
         expect(lowBitrate.summary.contains("3 ch"), "3 channels (got \(lowBitrate.summary))")
 
+        print("== ExportSettings outputURL ==")
+        let book = Audiobook(folder: URL(fileURLWithPath: "/tmp/MyBook"), title: "T", author: "A")
+        expect(book.suggestedFileName == "T - A.m4b", "suggestedFileName is T - A.m4b")
+
+        let nextToBook = ExportSettings(
+            outputDirectory: URL(fileURLWithPath: "/tmp/Out"),
+            writeNextToBook: true
+        )
+        expect(
+            nextToBook.outputURL(for: book).path == "/tmp/MyBook/T - A.m4b",
+            "writeNextToBook uses book folder even if outputDirectory is set (got \(nextToBook.outputURL(for: book).path))"
+        )
+
+        let chosenDir = ExportSettings(
+            outputDirectory: URL(fileURLWithPath: "/tmp/Out"),
+            writeNextToBook: false
+        )
+        expect(
+            chosenDir.outputURL(for: book).path == "/tmp/Out/T - A.m4b",
+            "chosen outputDirectory when not next-to-book (got \(chosenDir.outputURL(for: book).path))"
+        )
+
+        let defaultDir = ExportSettings(outputDirectory: nil, writeNextToBook: false)
+        let defaultURL = defaultDir.outputURL(for: book)
+        expect(defaultURL.lastPathComponent == "T - A.m4b", "default output filename is T - A.m4b")
+        let defaultParent = defaultURL.deletingLastPathComponent()
+        expect(
+            defaultParent.path == ExportSettings.defaultOutputDirectory.path,
+            "nil outputDirectory uses defaultOutputDirectory (got \(defaultParent.path))"
+        )
+        expect(
+            defaultParent.lastPathComponent == "Audiobooks",
+            "default dir lastPathComponent is Audiobooks (got \(defaultParent.lastPathComponent))"
+        )
+        expect(
+            defaultParent.deletingLastPathComponent().lastPathComponent == "Music",
+            "default dir is inside Music (got \(defaultParent.deletingLastPathComponent().lastPathComponent))"
+        )
+
+        let defaultPath = ExportSettings.defaultOutputDirectory.path
+        let pathParts = defaultPath.split(separator: "/").map(String.init)
+        expect(
+            defaultPath.contains("Music/Audiobooks")
+                || pathParts.suffix(2).elementsEqual(["Music", "Audiobooks"]),
+            "defaultOutputDirectory path contains Music/Audiobooks (got \(defaultPath))"
+        )
+
         print("== AudioMetadata file info ==")
         do {
             let fm = FileManager.default

@@ -7,7 +7,7 @@ A macOS app that turns a folder of chapter MP3s into an Apple Books audiobook (`
 Your books look like the library in `~/Documents/books`:
 
 - **One book:** a folder of numbered MP3s, plus an optional cover `.jpg` and/or an `ebook/` folder.
-- **A library:** a parent folder whose subfolders are books.
+- **A library:** a parent folder whose subfolders are books. Nested wrapper folders are found automatically.
 
 It already understands the layouts in that library, including nested audio folders, Calibre `metadata.opf` files, ebook filenames like `Title - Author.epub`, and Chinese helper folders such as `不分章节` (those unchaptered files are skipped when numbered chapters exist).
 
@@ -33,7 +33,7 @@ make app     # dist/AudiobookBinder.app
 
 1. Open a book folder, or the parent folder that contains one folder per book.
 2. Review title, author, narrator, cover, and chapter names.
-3. Choose bitrate (64 kbps is the audiobook default) and whether to write the `.m4b` next to the book.
+3. Choose bitrate (64 kbps is the audiobook default). Save the `.m4b` in the book folder, or uncheck that to write to `~/Music/Audiobooks` (or pick another folder).
 4. Build the selected books.
 
 You can also bind from the command line:

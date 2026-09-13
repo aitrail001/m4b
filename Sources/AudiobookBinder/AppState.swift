@@ -17,7 +17,9 @@ final class AppState {
         }
     }
     var libraryFolder: URL?
-    var settings = ExportSettings()
+    var settings = ExportSettings() {
+        didSet { Self.persistSettings(settings) }
+    }
     var isScanning = false
     var isBuilding = false
     var status: String = "Choose a books folder to begin."
@@ -26,6 +28,10 @@ final class AppState {
     var finishedURLs: [URL] = []
 
     private var buildTask: Task<Void, Never>?
+
+    init() {
+        settings = Self.loadSettings()
+    }
 
     var selectedBook: Audiobook? {
         books.first(where: { $0.id == selectedID })
@@ -43,7 +49,7 @@ final class AppState {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
-        panel.message = "Select a book folder, or a library folder that contains one folder per book."
+        panel.message = "Select a book folder or a library folder. Nested wrappers are scanned automatically."
         panel.prompt = "Scan"
         panel.directoryURL = libraryFolder ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/books")
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -154,5 +160,36 @@ final class AppState {
 
     func openInBooks(_ url: URL) {
         NSWorkspace.shared.open(url)
+    }
+
+    private static func loadSettings() -> ExportSettings {
+        let defaults = UserDefaults.standard
+        var loaded = ExportSettings()
+        if defaults.object(forKey: "audiobookBinder.writeNextToBook") != nil {
+            loaded.writeNextToBook = defaults.bool(forKey: "audiobookBinder.writeNextToBook")
+        }
+        if defaults.object(forKey: "audiobookBinder.overwrite") != nil {
+            loaded.overwrite = defaults.bool(forKey: "audiobookBinder.overwrite")
+        }
+        let bitrate = defaults.integer(forKey: "audiobookBinder.bitrate")
+        if defaults.object(forKey: "audiobookBinder.bitrate") != nil, bitrate > 0 {
+            loaded.bitrate = bitrate
+        }
+        if let path = defaults.string(forKey: "audiobookBinder.outputDirectory"), !path.isEmpty {
+            loaded.outputDirectory = URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return loaded
+    }
+
+    private static func persistSettings(_ settings: ExportSettings) {
+        let defaults = UserDefaults.standard
+        defaults.set(settings.writeNextToBook, forKey: "audiobookBinder.writeNextToBook")
+        defaults.set(settings.overwrite, forKey: "audiobookBinder.overwrite")
+        defaults.set(settings.bitrate, forKey: "audiobookBinder.bitrate")
+        if let path = settings.outputDirectory?.path {
+            defaults.set(path, forKey: "audiobookBinder.outputDirectory")
+        } else {
+            defaults.removeObject(forKey: "audiobookBinder.outputDirectory")
+        }
     }
 }

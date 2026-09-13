@@ -104,15 +104,29 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
+            TextField("Filter", text: $state.bookQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+
             List(selection: $state.selectedID) {
                 ForEach($state.books) { $book in
-                    BookRow(book: $book)
-                        .tag(book.id)
-                        .listRowBackground(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(book.id == state.selectedID ? BinderTheme.gold.opacity(0.22) : Color.clear)
-                                .padding(.horizontal, 6)
-                        )
+                    if book.matches(query: state.bookQuery) {
+                        BookRow(book: $book)
+                            .tag(book.id)
+                            .listRowBackground(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(book.id == state.selectedID ? BinderTheme.gold.opacity(0.22) : Color.clear)
+                                    .padding(.horizontal, 6)
+                            )
+                    }
+                }
+                if !state.books.contains(where: { $0.matches(query: state.bookQuery) }) {
+                    Text("No matching books")
+                        .font(.system(size: 11))
+                        .foregroundStyle(BinderTheme.inkMuted)
+                        .listRowBackground(Color.clear)
                 }
             }
             .listStyle(.sidebar)

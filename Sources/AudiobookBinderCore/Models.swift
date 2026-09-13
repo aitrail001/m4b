@@ -154,6 +154,14 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
             .replacingOccurrences(of: ":", with: " -")
         return base.trimmingCharacters(in: .whitespacesAndNewlines) + ".m4b"
     }
+
+    public func matches(query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return true }
+        return title.localizedCaseInsensitiveContains(q)
+            || author.localizedCaseInsensitiveContains(q)
+            || narrator.localizedCaseInsensitiveContains(q)
+    }
 }
 
 public struct ExportSettings: Sendable, Equatable {

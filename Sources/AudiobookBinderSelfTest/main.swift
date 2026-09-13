@@ -142,6 +142,19 @@ struct AudiobookBinderSelfTest {
         expect(lowBitrate.summary.contains("500 bps"), "sub-kbps shows bps (got \(lowBitrate.summary))")
         expect(lowBitrate.summary.contains("3 ch"), "3 channels (got \(lowBitrate.summary))")
 
+        print("== Audiobook.matches ==")
+        let rework = Audiobook(
+            folder: URL(fileURLWithPath: "/tmp/Rework"),
+            title: "Rework",
+            author: "Jason Fried"
+        )
+        expect(rework.matches(query: ""), "empty query matches")
+        expect(rework.matches(query: "  "), "whitespace query matches")
+        expect(rework.matches(query: "rework"), "title substring")
+        expect(rework.matches(query: "FRIED"), "author case-insensitive")
+        expect(!rework.matches(query: "lean"), "unrelated query does not match")
+        expect(rework.matches(query: "jason"), "author first name")
+
         print("== ExportSettings outputURL ==")
         let book = Audiobook(folder: URL(fileURLWithPath: "/tmp/MyBook"), title: "T", author: "A")
         expect(book.suggestedFileName == "T - A.m4b", "suggestedFileName is T - A.m4b")

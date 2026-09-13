@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 final class AppState {
     let playback = ChapterPlayback()
     var books: [Audiobook] = []
+    var bookQuery: String = ""
     var selectedID: Audiobook.ID? {
         didSet {
             if selectedID != oldValue {
@@ -70,6 +71,7 @@ final class AppState {
 
     func scan(_ url: URL) {
         playback.stop()
+        bookQuery = ""
         libraryFolder = url
         isScanning = true
         lastError = nil

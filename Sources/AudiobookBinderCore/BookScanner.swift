@@ -286,14 +286,10 @@ public struct BookScanner: Sendable {
     }
 
     private func pickTitle(tags: TrackTags, opf: OPFMetadata?, ebook: (title: String?, author: String?)?, folderTitle: String) -> String {
-        let candidates = [
-            tags.album,
-            tags.title,
-            opf?.title,
-            ebook?.title,
-            folderTitle
-        ].compactMap { $0 }.map { TitleCleanup.stripEdition(TitleCleanup.collapseSpaces($0)) }
-        return candidates.first { $0.count >= 3 } ?? folderTitle
+        TitleCleanup.preferredTitle(
+            candidates: [tags.album, tags.title, opf?.title, ebook?.title, folderTitle].compactMap { $0 },
+            folderTitle: folderTitle
+        )
     }
 
     private func pickAuthor(tags: TrackTags, opf: OPFMetadata?, ebook: (title: String?, author: String?)?) -> String {

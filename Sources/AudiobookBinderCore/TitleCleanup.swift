@@ -54,4 +54,27 @@ public enum TitleCleanup {
         ]
         return generic.contains(lowered)
     }
+
+    public static func looksLikeCatalogTitle(_ title: String) -> Bool {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.range(of: #"_ep\d+_[A-Z0-9]{8,}"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        let hasSpaces = t.contains(" ")
+        if !hasSpaces, t.range(of: "AudioCollection", options: .caseInsensitive) != nil {
+            return true
+        }
+        if !hasSpaces, t.count >= 20, t.range(of: #"[a-z][A-Z]"#, options: .regularExpression) != nil {
+            return true
+        }
+        if t.range(of: #"^[A-Z0-9]{10}$"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
+    }
+
+    public static func preferredTitle(candidates: [String], folderTitle: String) -> String {
+        let cleaned = candidates.map { stripEdition(collapseSpaces($0)) }
+        return cleaned.first { $0.count >= 3 && !looksLikeCatalogTitle($0) } ?? folderTitle
+    }
 }

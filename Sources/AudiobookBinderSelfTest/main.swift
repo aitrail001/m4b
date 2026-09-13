@@ -38,6 +38,71 @@ struct AudiobookBinderSelfTest {
         expect(ChapterNamer.title(filename: "001 - T.mp3", index: 1, bookTitle: "The Hero with a Thousand Faces", album: "The Hero with a Thousand Faces", id3Title: "The Hero with a Thousand Faces", paddedWidth: 2) == "Chapter 01", "generic filename -> Chapter 01")
         expect(ChapterNamer.title(filename: "01-Factfulness (Unabridged).mp3", index: 1, bookTitle: "Factfulness", album: nil, id3Title: nil, paddedWidth: 2) == "Chapter 01", "filename is book title -> Chapter")
 
+        print("== Catalog titles ==")
+        expect(
+            TitleCleanup.looksLikeCatalogTitle("OnWritingWellAudioCollection_ep6_A2TTVL6TAAJVUN"),
+            "full Audible SKU is catalog"
+        )
+        expect(
+            TitleCleanup.looksLikeCatalogTitle("OnWritingWellAudioCollection"),
+            "camelCase blob is catalog"
+        )
+        expect(
+            TitleCleanup.looksLikeCatalogTitle("AudioCollection"),
+            "AudioCollection with no spaces is catalog"
+        )
+        expect(
+            TitleCleanup.looksLikeCatalogTitle("B000F77HD8"),
+            "10-char ASIN is catalog"
+        )
+        expect(
+            TitleCleanup.looksLikeCatalogTitle("x_ep6_A2TTVL6TAAJVUN"),
+            "_ep digits + SKU is catalog"
+        )
+        expect(!TitleCleanup.looksLikeCatalogTitle("On Writing Well"), "On Writing Well is not catalog")
+        expect(!TitleCleanup.looksLikeCatalogTitle("The Lean Startup"), "The Lean Startup is not catalog")
+        expect(
+            !TitleCleanup.looksLikeCatalogTitle("The Marketing Gurus Collection"),
+            "Marketing Gurus Collection is not catalog"
+        )
+        expect(
+            !TitleCleanup.looksLikeCatalogTitle("Crucial Conversations: Tools for Talking When Stakes are High"),
+            "Crucial Conversations is not catalog"
+        )
+        expect(!TitleCleanup.looksLikeCatalogTitle("Rework"), "Rework is not catalog")
+        expect(
+            TitleCleanup.preferredTitle(
+                candidates: ["OnWritingWellAudioCollection_ep6_A2TTVL6TAAJVUN"],
+                folderTitle: "On Writing Well"
+            ) == "On Writing Well",
+            "preferredTitle skips catalog SKU for folder title"
+        )
+        expect(
+            TitleCleanup.preferredTitle(
+                candidates: ["On Writing Well (Unabridged)"],
+                folderTitle: "Folder"
+            ) == "On Writing Well",
+            "preferredTitle strips edition before catalog check"
+        )
+
+        do {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-catalog-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmp) }
+            let bookDir = tmp.appendingPathComponent("On Writing Well", isDirectory: true)
+            try fm.createDirectory(at: bookDir, withIntermediateDirectories: true)
+            try Data().write(to: bookDir.appendingPathComponent("01.mp3"))
+            let books = try await BookScanner().scan(root: tmp)
+            expect(books.count == 1, "catalog fixture yields 1 book (got \(books.count))")
+            expect(
+                books.first?.title == "On Writing Well",
+                "empty tags fall back to folder title (got \(books.first?.title ?? "nil"))"
+            )
+        } catch {
+            expect(false, "catalog folder fixture: \(error)")
+        }
+
         print("== OPF ==")
         let opf = OPFParser.parse("""
         <?xml version='1.0'?>

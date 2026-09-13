@@ -9,16 +9,21 @@ public struct BookScanner: Sendable {
 
     public init() {}
 
-    public func scan(root: URL) async throws -> [Audiobook] {
+    public func scan(
+        root: URL,
+        progress: (@Sendable (ScanProgress) -> Void)? = nil
+    ) async throws -> [Audiobook] {
         let root = root.resolvingSymlinksInPath()
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
             throw BinderError.noBooksFound(root)
         }
 
-        let folders = discoverBookFolders(root)
+        let folders = await discoverBookFolders(root, progress: progress)
         var books: [Audiobook] = []
-        for folder in folders {
+        books.reserveCapacity(folders.count)
+        for (index, folder) in folders.enumerated() {
+            await emit(progress, .reading(folder, index: index + 1, count: folders.count))
             if let book = try? await loadBook(at: folder) {
                 books.append(book)
             }
@@ -31,10 +36,22 @@ public struct BookScanner: Sendable {
     }
 
     public func isSingleBookFolder(_ folder: URL) -> Bool {
-        discoverBookFolders(folder).count == 1
+        if hasDirectAudio(folder) || hasDirectM4B(folder) { return true }
+        let children = bookSubfolders(folder)
+        if children.isEmpty { return false }
+        if children.count == 1 {
+            let child = children[0]
+            if isAudioContainerName(child.lastPathComponent) { return true }
+            return isSingleBookFolder(child)
+        }
+        return children.allSatisfy { isDiscOrPartName($0.lastPathComponent) }
     }
 
-    func discoverBookFolders(_ folder: URL) -> [URL] {
+    func discoverBookFolders(
+        _ folder: URL,
+        progress: (@Sendable (ScanProgress) -> Void)? = nil
+    ) async -> [URL] {
+        await emit(progress, .looking(in: folder))
         if hasDirectAudio(folder) {
             return [folder]
         }
@@ -42,14 +59,14 @@ public struct BookScanner: Sendable {
             return [folder]
         }
 
-        let children = bookSubfolders(folder)
+        let children = await bookSubfolders(folder, progress: progress)
         if children.isEmpty {
             return []
         }
 
         if children.count == 1 {
             let child = children[0]
-            let nested = discoverBookFolders(child)
+            let nested = await discoverBookFolders(child, progress: progress)
             if nested.count > 1 {
                 return nested
             }
@@ -64,7 +81,19 @@ public struct BookScanner: Sendable {
             return [folder]
         }
 
-        return children.flatMap { discoverBookFolders($0) }
+        var found: [URL] = []
+        for child in children {
+            found += await discoverBookFolders(child, progress: progress)
+        }
+        return found
+    }
+
+    private func emit(
+        _ progress: (@Sendable (ScanProgress) -> Void)?,
+        _ value: ScanProgress
+    ) async {
+        progress?(value)
+        await Task.yield()
     }
 
     func isAudioContainerName(_ name: String) -> Bool {
@@ -96,7 +125,27 @@ public struct BookScanner: Sendable {
         return items.contains { $0.pathExtension.lowercased() == "m4b" }
     }
 
+    func bookSubfolders(
+        _ folder: URL,
+        progress: (@Sendable (ScanProgress) -> Void)? = nil
+    ) async -> [URL] {
+        var kept: [URL] = []
+        for dir in candidateSubdirectories(folder) {
+            await emit(progress, .checking(dir))
+            if !collectAudio(in: dir).isEmpty || !collectM4B(in: dir).isEmpty {
+                kept.append(dir)
+            }
+        }
+        return kept
+    }
+
     func bookSubfolders(_ folder: URL) -> [URL] {
+        candidateSubdirectories(folder).filter {
+            !collectAudio(in: $0).isEmpty || !collectM4B(in: $0).isEmpty
+        }
+    }
+
+    func candidateSubdirectories(_ folder: URL) -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -105,9 +154,7 @@ public struct BookScanner: Sendable {
         let dirs = items.filter {
             isDirectory($0) && !skippedDirectoryNames.contains($0.lastPathComponent.lowercased())
         }
-        return NaturalSort.sorted(dirs, key: { $0.lastPathComponent }).filter {
-            !collectAudio(in: $0).isEmpty || !collectM4B(in: $0).isEmpty
-        }
+        return NaturalSort.sorted(dirs, key: { $0.lastPathComponent })
     }
 
     public func loadBook(at folder: URL) async throws -> Audiobook {

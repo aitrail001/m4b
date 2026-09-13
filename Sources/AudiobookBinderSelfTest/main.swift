@@ -400,6 +400,47 @@ struct AudiobookBinderSelfTest {
             )
         }
 
+        print("== ScanProgress ==")
+        let looking = ScanProgress.looking(in: URL(fileURLWithPath: "/tmp/lib/43", isDirectory: true))
+        expect(looking.detail == "Looking in 43…", "looking detail (got \(looking.detail))")
+        expect(looking.folderName == "43", "looking folderName")
+        expect(looking.bookCount == 0, "looking has no book count")
+        let checking = ScanProgress.checking(URL(fileURLWithPath: "/tmp/lib/BookA", isDirectory: true))
+        expect(checking.detail == "Checking BookA…", "checking detail (got \(checking.detail))")
+        let reading = ScanProgress.reading(URL(fileURLWithPath: "/tmp/lib/BookA", isDirectory: true), index: 2, count: 5)
+        expect(reading.detail == "Reading BookA (2 of 5)…", "reading detail (got \(reading.detail))")
+        expect(reading.bookIndex == 2 && reading.bookCount == 5, "reading index/count")
+        expect(abs(reading.fraction - 0.2) < 0.001, "reading fraction is 1/5 (got \(reading.fraction))")
+
+        print("== Scan progress callbacks ==")
+        do {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-scan-progress-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmp) }
+            for name in ["BookA", "BookB"] {
+                let dir = tmp.appendingPathComponent(name, isDirectory: true)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                try Data().write(to: dir.appendingPathComponent("01.mp3"))
+            }
+            final class Details: @unchecked Sendable {
+                var values: [String] = []
+            }
+            let details = Details()
+            let scanned = try await BookScanner().scan(root: tmp) { progress in
+                details.values.append(progress.detail)
+            }
+            expect(scanned.count == 2, "progress fixture yields 2 books (got \(scanned.count))")
+            expect(details.values.contains(where: { $0.hasPrefix("Looking in") }), "reports looking in a folder")
+            expect(details.values.contains(where: { $0.contains("Checking BookA") }), "reports checking BookA")
+            expect(details.values.contains(where: { $0.contains("Checking BookB") }), "reports checking BookB")
+            expect(details.values.contains(where: { $0.contains("Reading BookA") }), "reports reading BookA")
+            expect(details.values.contains(where: { $0.contains("Reading BookB") }), "reports reading BookB")
+            expect(details.values.contains(where: { $0.contains("of 2") }), "reading reports of 2")
+        } catch {
+            expect(false, "scan progress fixture: \(error)")
+        }
+
         print("== AudioMetadata file info ==")
         do {
             let fm = FileManager.default

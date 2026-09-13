@@ -238,6 +238,56 @@ public struct BuildProgress: Sendable, Equatable {
     }
 }
 
+public struct ScanProgress: Sendable, Equatable {
+    public var folderName: String
+    public var bookIndex: Int
+    public var bookCount: Int
+    public var fraction: Double
+    public var detail: String
+
+    public init(folderName: String, bookIndex: Int, bookCount: Int, fraction: Double, detail: String) {
+        self.folderName = folderName
+        self.bookIndex = bookIndex
+        self.bookCount = bookCount
+        self.fraction = fraction
+        self.detail = detail
+    }
+
+    public static func looking(in folder: URL) -> ScanProgress {
+        let name = folder.lastPathComponent
+        return ScanProgress(
+            folderName: name,
+            bookIndex: 0,
+            bookCount: 0,
+            fraction: 0,
+            detail: "Looking in \(name)…"
+        )
+    }
+
+    public static func checking(_ folder: URL) -> ScanProgress {
+        let name = folder.lastPathComponent
+        return ScanProgress(
+            folderName: name,
+            bookIndex: 0,
+            bookCount: 0,
+            fraction: 0,
+            detail: "Checking \(name)…"
+        )
+    }
+
+    public static func reading(_ folder: URL, index: Int, count: Int) -> ScanProgress {
+        let name = folder.lastPathComponent
+        let fraction = count > 0 ? Double(index - 1) / Double(count) : 0
+        return ScanProgress(
+            folderName: name,
+            bookIndex: index,
+            bookCount: count,
+            fraction: fraction,
+            detail: "Reading \(name) (\(index) of \(count))…"
+        )
+    }
+}
+
 public enum BinderError: Error, LocalizedError, Sendable {
     case noAudioFiles(URL)
     case noBooksFound(URL)

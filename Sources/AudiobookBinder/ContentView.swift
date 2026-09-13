@@ -200,7 +200,13 @@ struct ContentView: View {
                 ProgressView()
                     .controlSize(.small)
             }
-            if let build = appState.build {
+            if let scan = appState.scanProgress, scan.bookCount > 0 {
+                ProgressView(value: min(max(scan.fraction, 0), 1))
+                    .frame(width: 140)
+                Text("\(scan.bookIndex)/\(scan.bookCount)")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(BinderTheme.inkMuted)
+            } else if let build = appState.build {
                 ProgressView(value: min(max(build.fraction, 0), 1))
                     .frame(width: 140)
                 Text("\(build.bookIndex)/\(build.bookCount)")
@@ -211,6 +217,7 @@ struct ContentView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(appState.lastError == nil ? BinderTheme.inkMuted : Color.red.opacity(0.85))
                 .lineLimit(1)
+                .truncationMode(.middle)
             Spacer()
             Toggle("Save in book folder", isOn: Bindable(appState).settings.writeNextToBook)
                 .toggleStyle(.checkbox)

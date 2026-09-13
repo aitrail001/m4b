@@ -33,6 +33,7 @@ final class AppState {
     var isBuilding = false
     var status: String = "Choose a books folder to begin."
     var lastError: String?
+    var scanProgress: ScanProgress?
     var build: BuildProgress?
     var finishedURLs: [URL] = []
 
@@ -108,10 +109,16 @@ final class AppState {
         UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
         isScanning = true
         lastError = nil
-        status = "Scanning \(url.lastPathComponent)…"
+        scanProgress = ScanProgress.looking(in: folder)
+        status = scanProgress?.detail ?? "Scanning \(folder.lastPathComponent)…"
         Task {
             do {
-                let found = try await BookScanner().scan(root: url)
+                let found = try await BookScanner().scan(root: url) { [weak self] progress in
+                    Task { @MainActor in
+                        self?.scanProgress = progress
+                        self?.status = progress.detail
+                    }
+                }
                 books = found
                 selectedID = found.first?.id
                 selectedFolderURL = folder
@@ -130,6 +137,7 @@ final class AppState {
                 selectedFolderURL = folder
             }
             isScanning = false
+            scanProgress = nil
         }
     }
 

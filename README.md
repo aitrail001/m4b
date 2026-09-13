@@ -31,7 +31,7 @@ make app     # dist/AudiobookBinder.app
 
 ## Use
 
-1. Open a book folder, or a library folder (nested wrappers are fine). The last library reopens on launch.
+1. Open a book folder, or a library folder (nested wrappers are fine). The last library reopens on launch. While scanning, the footer names the folder being checked.
 2. When the library has nested folders, pick a level in the folder tree on the left to show only the books under it. Filter the list if you need to. Folders that already have an `.m4b` show as **Already an audiobook** and stay unselected.
 3. Review title, author, narrator, cover, and chapter names. Uncheck chapters you want to skip; play a chapter to preview.
 4. Choose bitrate (64 kbps is the audiobook default). Save the `.m4b` in the book folder, or uncheck that to write to `~/Music/Audiobooks` (or pick another folder).

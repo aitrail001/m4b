@@ -104,7 +104,9 @@ enum CLI {
         let sem = DispatchSemaphore(value: 0)
         Task {
             do {
-                let books = try await BookScanner().scan(root: root)
+                let books = try await BookScanner().scan(root: root) { progress in
+                    fputs("\(progress.detail)\n", stderr)
+                }
                 if arguments.contains("--scan") {
                     for book in books {
                         print("\(book.title)\t\(book.author)\t\(book.chapterCount) chapters\t\(DurationFormat.string(book.totalDuration))")

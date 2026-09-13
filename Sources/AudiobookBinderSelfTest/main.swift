@@ -168,6 +168,66 @@ struct AudiobookBinderSelfTest {
         expect(already.chapterCount == 0, "chapterCount stays chapters.count")
         expect(!rework.isAlreadyBound, "no existingM4BURL is not already bound")
 
+        print("== Included chapters ==")
+        func dummyChapter(index: Int, duration: TimeInterval, included: Bool = true) -> Chapter {
+            var chapter = Chapter(
+                url: URL(fileURLWithPath: "/tmp/missing-\(index).mp3"),
+                index: index,
+                title: "Chapter \(index)",
+                duration: duration,
+                fileSize: 1
+            )
+            chapter.included = included
+            return chapter
+        }
+
+        let defaultChapter = Chapter(
+            url: URL(fileURLWithPath: "/tmp/missing-default.mp3"),
+            index: 1,
+            title: "Default",
+            duration: 12,
+            fileSize: 1
+        )
+        expect(defaultChapter.included, "default Chapter included is true")
+
+        let first = dummyChapter(index: 1, duration: 10)
+        let secondOff = dummyChapter(index: 2, duration: 25, included: false)
+        let partial = Audiobook(
+            folder: URL(fileURLWithPath: "/tmp/Partial"),
+            title: "Partial",
+            author: "A",
+            chapters: [first, secondOff]
+        )
+        expect(partial.includedChapters.count == 1, "includedChapters skips unchecked (got \(partial.includedChapters.count))")
+        expect(partial.includedChapters.first?.index == 1, "included chapter is the first")
+        expect(partial.totalDuration == 10, "totalDuration sums included only (got \(partial.totalDuration))")
+        expect(partial.chapterCountLabel == "1 of 2 chapters", "partial include label (got \(partial.chapterCountLabel))")
+        expect(partial.chapterCount == 2, "chapterCount stays all chapters")
+        expect(
+            M4BExporter.chaptersReadyForExport(partial.chapters).map(\.index) == [1],
+            "chaptersReadyForExport keeps included dummy URLs"
+        )
+
+        var allIncluded = partial
+        allIncluded.chapters[1].included = true
+        expect(allIncluded.chapterCountLabel == "2 chapters", "all included label (got \(allIncluded.chapterCountLabel))")
+        expect(allIncluded.totalDuration == 35, "all included duration sums both (got \(allIncluded.totalDuration))")
+        expect(
+            M4BExporter.chaptersReadyForExport(allIncluded.chapters).count == 2,
+            "chaptersReadyForExport keeps every included chapter"
+        )
+
+        let oneChapter = Audiobook(
+            folder: URL(fileURLWithPath: "/tmp/OneCh"),
+            title: "One",
+            author: "A",
+            chapters: [first]
+        )
+        expect(oneChapter.chapterCountLabel == "1 chapter", "singular chapter label (got \(oneChapter.chapterCountLabel))")
+
+        expect(already.totalDuration == 99, "already-bound totalDuration still uses boundDuration")
+        expect(already.includedChapters.isEmpty, "already-bound includedChapters is empty")
+
         print("== ExportSettings outputURL ==")
         let book = Audiobook(folder: URL(fileURLWithPath: "/tmp/MyBook"), title: "T", author: "A")
         expect(book.suggestedFileName == "T - A.m4b", "suggestedFileName is T - A.m4b")

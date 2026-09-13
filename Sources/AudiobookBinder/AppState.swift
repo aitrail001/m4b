@@ -124,9 +124,12 @@ final class AppState {
 
     func buildSelected() {
         guard !isBuilding else { return }
-        let queue = books.filter(\.selected)
+        let selectedBooks = books.filter { $0.selected && !$0.isAlreadyBound }
+        let queue = selectedBooks.filter { !$0.includedChapters.isEmpty }
         guard !queue.isEmpty else {
-            status = "Select at least one book."
+            status = selectedBooks.isEmpty
+                ? "Select at least one book."
+                : "Select at least one chapter."
             return
         }
         playback.stop()
@@ -134,12 +137,11 @@ final class AppState {
         lastError = nil
         finishedURLs = []
         status = "Building \(queue.count) audiobook\(queue.count == 1 ? "" : "s")…"
-        let snapshot = books
         let settings = settings
         buildTask = Task {
             do {
                 let urls = try await M4BExporter(bitrate: settings.bitrate).exportAll(
-                    books: snapshot,
+                    books: queue,
                     settings: settings
                 ) { [weak self] progress in
                     Task { @MainActor in

@@ -83,6 +83,7 @@ public struct Chapter: Identifiable, Hashable, Sendable {
     public var duration: TimeInterval
     public var fileSize: Int64
     public var audioInfo: AudioInfo
+    public var included: Bool
 
     public init(
         id: UUID = UUID(),
@@ -91,7 +92,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         title: String,
         duration: TimeInterval,
         fileSize: Int64,
-        audioInfo: AudioInfo = AudioInfo()
+        audioInfo: AudioInfo = AudioInfo(),
+        included: Bool = true
     ) {
         self.id = id
         self.url = url
@@ -100,6 +102,7 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         self.duration = duration
         self.fileSize = fileSize
         self.audioInfo = audioInfo
+        self.included = included
     }
 }
 
@@ -150,11 +153,22 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
 
     public var chapterCount: Int { chapters.count }
 
+    public var includedChapters: [Chapter] { chapters.filter(\.included) }
+
     public var isAlreadyBound: Bool { existingM4BURL != nil && chapters.isEmpty }
 
     public var totalDuration: TimeInterval {
         if chapters.isEmpty { return boundDuration }
-        return chapters.reduce(0) { $0 + $1.duration }
+        return includedChapters.reduce(0) { $0 + $1.duration }
+    }
+
+    public var chapterCountLabel: String {
+        let total = chapters.count
+        let included = includedChapters.count
+        if included == total {
+            return total == 1 ? "1 chapter" : "\(total) chapters"
+        }
+        return "\(included) of \(total) chapters"
     }
 
     public var suggestedFileName: String {

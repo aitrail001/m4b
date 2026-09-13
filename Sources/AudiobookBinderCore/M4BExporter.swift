@@ -10,6 +10,10 @@ public struct M4BExporter: Sendable {
         self.sampleRate = sampleRate
     }
 
+    public static func chaptersReadyForExport(_ chapters: [Chapter]) -> [Chapter] {
+        chapters.filter(\.included)
+    }
+
     public func export(
         book: Audiobook,
         to outputURL: URL,
@@ -34,7 +38,9 @@ public struct M4BExporter: Sendable {
 
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        let chapters = book.chapters.filter { FileManager.default.fileExists(atPath: $0.url.path) }
+        let chapters = Self.chaptersReadyForExport(book.chapters).filter {
+            FileManager.default.fileExists(atPath: $0.url.path)
+        }
         guard !chapters.isEmpty else { throw BinderError.noAudioFiles(book.folder) }
 
         progress?(0.01, "Preparing \(book.title)")

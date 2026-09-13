@@ -269,7 +269,7 @@ struct BookRow: View {
         if book.isAlreadyBound {
             return "\(book.author)  ·  Already an audiobook  ·  \(DurationFormat.string(book.totalDuration))"
         }
-        return "\(book.author)  ·  \(book.chapterCount) chapters  ·  \(DurationFormat.string(book.totalDuration))"
+        return "\(book.author)  ·  \(book.chapterCountLabel)  ·  \(DurationFormat.string(book.totalDuration))"
     }
 }
 
@@ -295,7 +295,7 @@ struct BookEditor: View {
                         labeled("Genre") { TextField("Genre", text: $book.genre) }
                         HStack {
                             Label(DurationFormat.string(book.totalDuration), systemImage: "clock")
-                            Label("\(book.chapterCount) chapters", systemImage: "list.number")
+                            Label(book.chapterCountLabel, systemImage: "list.number")
                         }
                         .font(.system(size: 12))
                         .foregroundStyle(BinderTheme.inkMuted)
@@ -317,9 +317,22 @@ struct BookEditor: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Chapters")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(BinderTheme.inkMuted)
+                    HStack {
+                        Text("Chapters")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(BinderTheme.inkMuted)
+                        if !book.isAlreadyBound {
+                            Spacer()
+                            Button("All") { setChaptersIncluded(true) }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(BinderTheme.leather)
+                            Button("None") { setChaptersIncluded(false) }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(BinderTheme.leather)
+                        }
+                    }
                     if book.isAlreadyBound {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Already an audiobook")
@@ -340,6 +353,9 @@ struct BookEditor: View {
                         VStack(spacing: 0) {
                             ForEach($book.chapters) { $chapter in
                                 HStack(spacing: 10) {
+                                    Toggle("", isOn: $chapter.included)
+                                        .labelsHidden()
+                                        .toggleStyle(.checkbox)
                                     Text(String(format: "%02d", chapter.index))
                                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                                         .foregroundStyle(BinderTheme.gold)
@@ -347,6 +363,7 @@ struct BookEditor: View {
                                     TextField("Chapter title", text: $chapter.title)
                                         .textFieldStyle(.plain)
                                         .font(.system(size: 13))
+                                        .foregroundStyle(chapter.included ? BinderTheme.ink : BinderTheme.inkMuted)
                                     Spacer(minLength: 8)
                                     if !chapter.audioInfo.summary.isEmpty {
                                         Text(chapter.audioInfo.summary)
@@ -391,6 +408,12 @@ struct BookEditor: View {
                     }
                 }
             }
+        }
+    }
+
+    private func setChaptersIncluded(_ included: Bool) {
+        for i in book.chapters.indices {
+            book.chapters[i].included = included
         }
     }
 

@@ -24,6 +24,11 @@ let package = Package(
             name: "AudiobookBinderSelfTest",
             dependencies: ["AudiobookBinderCore"],
             path: "Sources/AudiobookBinderSelfTest"
+        ),
+        .testTarget(
+            name: "AudiobookBinderTests",
+            dependencies: ["AudiobookBinderCore"],
+            path: "Tests/AudiobookBinderTests"
         )
     ]
 )

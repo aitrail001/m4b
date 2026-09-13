@@ -3,6 +3,7 @@
 all: app
 
 test:
+	swift test
 	swift run AudiobookBinderSelfTest
 
 build:

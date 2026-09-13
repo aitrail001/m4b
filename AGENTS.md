@@ -16,10 +16,10 @@ Audiobook Binder is a local macOS 14+ Swift 6 app. It scans a book folder or a l
 ## Workflow
 
 - KISS. No new test target, no new dependencies, unless the task needs them.
-- TDD for scanner, titles, export settings, and other Core logic: fail in `AudiobookBinderSelfTest`, then implement.
-- Fixture folders in `/tmp` (empty `.mp3` is enough for discovery). Do not scan large real libraries in tests.
+- TDD for Core logic: fail in `swift test` (XCTest) or `AudiobookBinderSelfTest`, then implement.
+- Fixture folders in `/tmp` (empty `.mp3` is enough for discovery). Do not scan large real libraries in XCTest.
 - Keep `loadBook` recursive for chapters inside a book (`mp3/`, `CD1`/`CD2`). Library discovery is `discoverBookFolders`.
-- `make test` / `swift run AudiobookBinderSelfTest` must pass before claiming done.
+- `make test` runs `swift test` then `swift run AudiobookBinderSelfTest`. Both must pass.
 - `make app` packages `dist/AudiobookBinder.app`.
 
 ## Versioning

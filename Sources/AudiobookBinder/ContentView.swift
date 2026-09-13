@@ -259,6 +259,14 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(BinderTheme.leather)
                     .help("Open the audiobook in Apple Books")
+                Button("Verify") {
+                    if let book = appState.books.first(where: { $0.existingM4BURL == url }) {
+                        appState.selectedID = book.id
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(BinderTheme.leather)
+                .help("Inspect chapters and play the finished .m4b")
             }
         }
         .padding(.horizontal, 18)
@@ -433,11 +441,11 @@ struct BookEditor: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
+                    if !book.isAlreadyBound {
                     HStack {
                         Text("Chapters")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(BinderTheme.inkMuted)
-                        if !book.isAlreadyBound {
                             Spacer()
                             Button("All") { setChaptersIncluded(true) }
                                 .buttonStyle(.plain)
@@ -447,25 +455,7 @@ struct BookEditor: View {
                                 .buttonStyle(.plain)
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(BinderTheme.leather)
-                        }
                     }
-                    if book.isAlreadyBound {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Already an audiobook")
-                            if let name = book.existingM4BURL?.lastPathComponent {
-                                Text(name)
-                            }
-                        }
-                        .font(.system(size: 13))
-                        .foregroundStyle(BinderTheme.inkMuted)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white.opacity(0.62))
-                        )
-                    } else {
                         VStack(spacing: 0) {
                             ForEach($book.chapters) { $chapter in
                                 HStack(spacing: 10) {
@@ -522,6 +512,9 @@ struct BookEditor: View {
                                 .fill(Color.white.opacity(0.62))
                         )
                     }
+                    if let m4b = appState.boundURL(for: book) {
+                        VerifyM4BSection(book: $book, m4bURL: m4b)
+                    }
                 }
             }
         }
@@ -542,6 +535,194 @@ struct BookEditor: View {
                 .textFieldStyle(.plain)
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.65)))
+        }
+    }
+}
+
+struct VerifyM4BSection: View {
+    @Binding var book: Audiobook
+    var m4bURL: URL
+    @Environment(AppState.self) private var appState
+    @State private var inspection: M4BInspection?
+    @State private var boundChapters: [Chapter] = []
+    @State private var fileChapter: Chapter?
+    @State private var inspecting = false
+    @State private var confirmCleanup = false
+    @State private var cleanupError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Verify .m4b")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(BinderTheme.inkMuted)
+                Spacer()
+                Button(inspecting ? "Reading…" : "Inspect") {
+                    Task { await inspect() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(BinderTheme.leather)
+                .disabled(inspecting)
+            }
+            Text(m4bURL.lastPathComponent)
+                .font(.system(size: 12))
+                .foregroundStyle(BinderTheme.inkMuted)
+                .lineLimit(2)
+
+            if let inspection {
+                let comparison = M4BInspector.compareDurations(
+                    source: book.chapters.isEmpty ? 0 : book.totalDuration,
+                    bound: inspection.duration
+                )
+                HStack(spacing: 14) {
+                    Label(DurationFormat.string(inspection.duration), systemImage: "clock")
+                    Label("\(boundChapters.count) chapters", systemImage: "list.number")
+                    if let fileChapter {
+                        let playingFile = appState.playback.isPlaying(fileChapter)
+                        Button {
+                            appState.playback.toggle(fileChapter)
+                        } label: {
+                            Image(systemName: playingFile ? "pause.circle.fill" : "play.circle")
+                            Text(playingFile ? "Pause" : "Play file")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(BinderTheme.leather)
+                        .font(.system(size: 12, weight: .medium))
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(BinderTheme.inkMuted)
+
+                comparisonView(comparison)
+
+                VStack(spacing: 0) {
+                    ForEach(boundChapters) { chapter in
+                        HStack(spacing: 10) {
+                            Text(String(format: "%02d", chapter.index))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(BinderTheme.gold)
+                                .frame(width: 28, alignment: .trailing)
+                            Text(chapter.title)
+                                .font(.system(size: 13))
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Button {
+                                appState.playback.toggle(chapter)
+                            } label: {
+                                Image(systemName: appState.playback.isPlaying(chapter) ? "pause.circle.fill" : "play.circle")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(
+                                        appState.playback.playingID == chapter.id
+                                            ? BinderTheme.leather
+                                            : BinderTheme.ink
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help(appState.playback.isPlaying(chapter) ? "Pause chapter" : "Play chapter")
+                            Text(DurationFormat.string(chapter.duration))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(BinderTheme.inkMuted)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.62))
+                )
+
+                if book.canCleanupSources {
+                    cleanupControls(comparison: comparison, inspection: inspection)
+                }
+            }
+            if let cleanupError {
+                Text(cleanupError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.red.opacity(0.85))
+            }
+        }
+        .task(id: m4bURL) {
+            await inspect()
+        }
+        .confirmationDialog(
+            "Move original MP3s to Trash?",
+            isPresented: $confirmCleanup,
+            titleVisibility: .visible
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                performCleanup()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            let files = M4BInspector.sourceFilesToRemove(from: book)
+            Text("\(files.count) original chapter file\(files.count == 1 ? "" : "s") will go to Trash. The .m4b stays.")
+        }
+    }
+
+    @ViewBuilder
+    private func comparisonView(_ comparison: DurationComparison) -> some View {
+        switch comparison {
+        case .match(let source, let bound):
+            Text("Duration matches the source (\(DurationFormat.string(source)) vs \(DurationFormat.string(bound))).")
+                .font(.system(size: 12))
+                .foregroundStyle(BinderTheme.inkMuted)
+        case .mismatch(let source, let bound):
+            Text("Duration differs: source \(DurationFormat.string(source)), .m4b \(DurationFormat.string(bound)). Original files were not offered for cleanup.")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.red.opacity(0.85))
+        case .noSource:
+            Text("No source chapters left to compare. Play the .m4b to confirm it.")
+                .font(.system(size: 12))
+                .foregroundStyle(BinderTheme.inkMuted)
+        case .noBoundFile:
+            Text("Could not read duration from the .m4b.")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.red.opacity(0.85))
+        }
+    }
+
+    @ViewBuilder
+    private func cleanupControls(comparison: DurationComparison, inspection: M4BInspection) -> some View {
+        let files = M4BInspector.sourceFilesToRemove(from: book)
+        if files.isEmpty {
+            EmptyView()
+        } else if comparison.durationsMatch {
+            Button("Move \(files.count) original MP3s to Trash") {
+                confirmCleanup = true
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(BinderTheme.leather)
+        }
+    }
+
+    private func inspect() async {
+        inspecting = true
+        cleanupError = nil
+        let result = await M4BInspector.inspect(m4bURL)
+        inspection = result
+        boundChapters = M4BInspector.playableChapters(from: result)
+        fileChapter = Chapter(
+            url: result.url,
+            index: 0,
+            title: book.title,
+            duration: result.duration,
+            fileSize: result.fileSize
+        )
+        inspecting = false
+    }
+
+    private func performCleanup() {
+        guard let inspection else { return }
+        let files = M4BInspector.sourceFilesToRemove(from: book)
+        do {
+            try M4BInspector.trash(files)
+            appState.applyCleanup(to: book.id, inspection: inspection)
+            cleanupError = nil
+        } catch {
+            cleanupError = error.localizedDescription
         }
     }
 }

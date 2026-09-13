@@ -84,6 +84,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
     public var fileSize: Int64
     public var audioInfo: AudioInfo
     public var included: Bool
+    /// Start time inside `url` when this chapter is a range of a single .m4b.
+    public var startOffset: TimeInterval
 
     public init(
         id: UUID = UUID(),
@@ -93,7 +95,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         duration: TimeInterval,
         fileSize: Int64,
         audioInfo: AudioInfo = AudioInfo(),
-        included: Bool = true
+        included: Bool = true,
+        startOffset: TimeInterval = 0
     ) {
         self.id = id
         self.url = url
@@ -103,7 +106,10 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         self.fileSize = fileSize
         self.audioInfo = audioInfo
         self.included = included
+        self.startOffset = startOffset
     }
+
+    public var isEmbedded: Bool { startOffset > 0.01 }
 }
 
 public struct Audiobook: Identifiable, Hashable, Sendable {
@@ -156,6 +162,10 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
     public var includedChapters: [Chapter] { chapters.filter(\.included) }
 
     public var isAlreadyBound: Bool { existingM4BURL != nil && chapters.isEmpty }
+
+    public var hasBoundFile: Bool { existingM4BURL != nil }
+
+    public var canCleanupSources: Bool { existingM4BURL != nil && !includedChapters.isEmpty }
 
     public var totalDuration: TimeInterval {
         if chapters.isEmpty { return boundDuration }

@@ -11,6 +11,7 @@ public final class ChapterPlayback {
     @ObservationIgnored private var player: AVPlayer?
     @ObservationIgnored private var endTask: Task<Void, Never>?
     @ObservationIgnored private var failTask: Task<Void, Never>?
+    @ObservationIgnored private var boundaryToken: Any?
 
     public init() {}
 
@@ -47,8 +48,27 @@ public final class ChapterPlayback {
         self.player = player
         playingID = chapter.id
         listenForEnd(of: item)
-        player.play()
-        isPlaying = true
+        if chapter.isEmbedded {
+            let start = CMTime(seconds: chapter.startOffset, preferredTimescale: 600)
+            let endSeconds = chapter.startOffset + max(chapter.duration, 0.05)
+            let end = CMTime(seconds: endSeconds, preferredTimescale: 600)
+            boundaryToken = player.addBoundaryTimeObserver(
+                forTimes: [NSValue(time: end)],
+                queue: .main
+            ) { [weak self] in
+                self?.stop()
+            }
+            player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                Task { @MainActor in
+                    guard finished else { return }
+                    self?.player?.play()
+                    self?.isPlaying = true
+                }
+            }
+        } else {
+            player.play()
+            isPlaying = true
+        }
     }
 
     public func stop() {
@@ -56,6 +76,10 @@ public final class ChapterPlayback {
         endTask = nil
         failTask?.cancel()
         failTask = nil
+        if let boundaryToken, let player {
+            player.removeTimeObserver(boundaryToken)
+        }
+        boundaryToken = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil

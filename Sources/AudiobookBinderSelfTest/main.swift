@@ -672,7 +672,8 @@ struct AudiobookBinderSelfTest {
             expect(leftover.count == 1, "mp3 + leftover m4b yields 1 book (got \(leftover.count))")
             expect(leftover.first?.isAlreadyBound == false, "leftover m4b book is not already bound")
             expect(leftover.first?.chapterCount == 1, "leftover m4b book has 1 chapter (got \(leftover.first?.chapterCount ?? -1))")
-            expect(leftover.first?.existingM4BURL == nil, "leftover m4b is not existingM4BURL")
+            expect(leftover.first?.existingM4BURL != nil, "leftover m4b is recorded for verify")
+            expect(leftover.first?.canCleanupSources == true, "leftover m4b can offer source cleanup")
             expect(
                 leftover.first?.chapters.first?.url.pathExtension.lowercased() == "mp3",
                 "leftover m4b is not a chapter (got \(leftover.first?.chapters.first?.url.lastPathComponent ?? "nil"))"

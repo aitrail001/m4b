@@ -188,7 +188,13 @@ final class AppState {
                     }
                 }
                 finishedURLs = urls
-                status = "Created \(urls.count) audiobook\(urls.count == 1 ? "" : "s")."
+                for (book, url) in zip(queue, urls) {
+                    if let index = books.firstIndex(where: { $0.id == book.id }) {
+                        books[index].existingM4BURL = url
+                        books[index].boundDuration = AudioMetadata.fileInfo(of: url).duration
+                    }
+                }
+                status = "Created \(urls.count) audiobook\(urls.count == 1 ? "" : "s"). Verify the .m4b in the editor."
             } catch is CancellationError {
                 status = "Cancelled."
             } catch {
@@ -216,6 +222,26 @@ final class AppState {
 
     func openInBooks(_ url: URL) {
         NSWorkspace.shared.open(url)
+    }
+
+    func boundURL(for book: Audiobook) -> URL? {
+        if let url = book.existingM4BURL, FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+        let dest = settings.outputURL(for: book)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            return dest
+        }
+        return nil
+    }
+
+    func applyCleanup(to bookID: Audiobook.ID, inspection: M4BInspection) {
+        guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
+        playback.stop()
+        books[index].chapters = []
+        books[index].existingM4BURL = inspection.url
+        books[index].boundDuration = inspection.duration
+        books[index].selected = false
     }
 
     private static func loadSettings() -> ExportSettings {

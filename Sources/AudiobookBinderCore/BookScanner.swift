@@ -242,6 +242,8 @@ public struct BookScanner: Sendable {
             }
         }
 
+        let leftoverM4B = NaturalSort.sorted(collectM4B(in: folder), key: { $0.lastPathComponent }).first
+        let leftoverDuration = leftoverM4B.map { AudioMetadata.fileInfo(of: $0).duration } ?? 0
         return Audiobook(
             folder: folder,
             title: title,
@@ -250,7 +252,9 @@ public struct BookScanner: Sendable {
             bookDescription: description,
             coverURL: coverURL,
             coverJPEG: coverJPEG,
-            chapters: chapters
+            chapters: chapters,
+            existingM4BURL: leftoverM4B,
+            boundDuration: leftoverDuration
         )
     }
 

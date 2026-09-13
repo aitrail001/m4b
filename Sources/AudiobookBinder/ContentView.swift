@@ -16,7 +16,7 @@ struct ContentView: View {
                     emptyState
                 } else {
                     HSplitView {
-                        bookList
+                        sidebar
                             .frame(minWidth: 280, idealWidth: 340)
                         editor
                             .frame(minWidth: 520)
@@ -42,7 +42,10 @@ struct ContentView: View {
                 Text("Audiobook Binder")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(BinderTheme.ink)
-                Text(appState.libraryFolder?.path ?? "Apple Books .m4b files, with title, author, cover, and chapters")
+                Text(
+                    (appState.selectedFolderURL ?? appState.libraryFolder)?.path
+                        ?? "Apple Books .m4b files, with title, author, cover, and chapters"
+                )
                     .font(.system(size: 12))
                     .foregroundStyle(BinderTheme.inkMuted)
                     .lineLimit(1)
@@ -84,13 +87,47 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            if appState.showsFolderTree {
+                VSplitView {
+                    folderTree
+                        .frame(minHeight: 120)
+                    bookList
+                }
+            } else {
+                bookList
+            }
+        }
+        .background(BinderTheme.paper.opacity(0.4))
+    }
+
+    private var folderTree: some View {
+        @Bindable var state = appState
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("FOLDERS")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(BinderTheme.inkMuted)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            if let outline = appState.folderOutline {
+                List(selection: $state.selectedFolderURL) {
+                    FolderOutlineRows(node: outline, selected: state.selectedFolderURL)
+                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
     private var bookList: some View {
         @Bindable var state = appState
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("BOOKS")
+                Text(booksHeaderTitle)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(BinderTheme.inkMuted)
+                    .lineLimit(1)
                 Spacer()
                 Button("All") { appState.selectAll(true) }
                     .buttonStyle(.plain)
@@ -112,7 +149,7 @@ struct ContentView: View {
 
             List(selection: $state.selectedID) {
                 ForEach($state.books) { $book in
-                    if book.matches(query: state.bookQuery) {
+                    if appState.isVisible(book) {
                         BookRow(book: $book)
                             .tag(book.id)
                             .listRowBackground(
@@ -122,7 +159,7 @@ struct ContentView: View {
                             )
                     }
                 }
-                if !state.books.contains(where: { $0.matches(query: state.bookQuery) }) {
+                if !state.books.contains(where: { appState.isVisible($0) }) {
                     Text("No matching books")
                         .font(.system(size: 11))
                         .foregroundStyle(BinderTheme.inkMuted)
@@ -132,7 +169,15 @@ struct ContentView: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
         }
-        .background(BinderTheme.paper.opacity(0.4))
+    }
+
+    private var booksHeaderTitle: String {
+        guard let folder = appState.selectedFolderURL,
+              let root = appState.libraryFolder,
+              !LibraryOutline.sameFolder(folder, root) else {
+            return "BOOKS"
+        }
+        return "BOOKS IN \(folder.lastPathComponent.uppercased())"
     }
 
     private var editor: some View {
@@ -229,6 +274,66 @@ struct ContentView: View {
             handled = true
         }
         return handled
+    }
+}
+
+struct FolderOutlineRows: View {
+    let node: LibraryNode
+    var selected: URL?
+    @State private var expanded = true
+
+    var body: some View {
+        if node.children.isEmpty {
+            FolderLabel(node: node, isSelected: isSelected)
+                .tag(node.url)
+                .listRowBackground(rowBackground)
+        } else {
+            DisclosureGroup(isExpanded: $expanded) {
+                ForEach(node.children) { child in
+                    FolderOutlineRows(node: child, selected: selected)
+                }
+            } label: {
+                FolderLabel(node: node, isSelected: isSelected)
+            }
+            .tag(node.url)
+            .listRowBackground(rowBackground)
+        }
+    }
+
+    private var isSelected: Bool {
+        guard let selected else { return false }
+        return LibraryOutline.sameFolder(selected, node.url)
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(isSelected ? BinderTheme.gold.opacity(0.22) : Color.clear)
+            .padding(.horizontal, 6)
+    }
+}
+
+struct FolderLabel: View {
+    let node: LibraryNode
+    var isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: node.hasNestedFolders ? "folder.fill" : "folder")
+                .font(.system(size: 12))
+                .foregroundStyle(BinderTheme.gold)
+                .frame(width: 16)
+            Text(node.name)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(BinderTheme.ink)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Text("\(node.bookCount)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(BinderTheme.inkMuted)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .help("Show books in this folder")
     }
 }
 

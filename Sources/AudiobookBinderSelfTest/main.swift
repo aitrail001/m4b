@@ -299,6 +299,107 @@ struct AudiobookBinderSelfTest {
             expect(false, "LibraryBookmark fixtures: \(error)")
         }
 
+        print("== LibraryOutline ==")
+        do {
+            func book(_ path: String) -> Audiobook {
+                Audiobook(
+                    folder: URL(fileURLWithPath: path, isDirectory: true),
+                    title: URL(fileURLWithPath: path).lastPathComponent,
+                    author: "A"
+                )
+            }
+            let root = URL(fileURLWithPath: "/tmp/lib", isDirectory: true)
+
+            let flat = LibraryOutline.build(
+                root: root,
+                books: [book("/tmp/lib/BookA"), book("/tmp/lib/BookB")]
+            )
+            expect(flat.name == "lib", "flat root name is lib (got \(flat.name))")
+            expect(flat.bookCount == 2, "flat root bookCount 2 (got \(flat.bookCount))")
+            expect(flat.children.isEmpty, "flat library has no grouping folders")
+            expect(!flat.hasNestedFolders, "flat hasNestedFolders is false")
+            expect(
+                LibraryOutline.books([book("/tmp/lib/BookA"), book("/tmp/lib/BookB")], under: root).count == 2,
+                "flat books under root are both"
+            )
+
+            let wrapperBooks = [book("/tmp/lib/43/BookA"), book("/tmp/lib/43/BookB")]
+            let wrapper = LibraryOutline.build(root: root, books: wrapperBooks)
+            expect(wrapper.children.count == 1, "wrapper has one grouping folder (got \(wrapper.children.count))")
+            expect(wrapper.children.first?.name == "43", "wrapper child is 43 (got \(wrapper.children.first?.name ?? "nil"))")
+            expect(wrapper.children.first?.bookCount == 2, "43 bookCount 2")
+            expect(wrapper.children.first?.children.isEmpty == true, "43 does not list book folders")
+            expect(wrapper.hasNestedFolders, "wrapper hasNestedFolders is true")
+            let folder43 = URL(fileURLWithPath: "/tmp/lib/43", isDirectory: true)
+            expect(
+                LibraryOutline.books(wrapperBooks, under: folder43).map { $0.folder.lastPathComponent }.sorted() == ["BookA", "BookB"],
+                "books under 43 are BookA/BookB"
+            )
+            expect(
+                !LibraryOutline.book(book("/tmp/lib/Other/BookC"), isUnder: folder43),
+                "book outside 43 is not under 43"
+            )
+
+            let cats = [book("/tmp/lib/Biz/A"), book("/tmp/lib/Life/B")]
+            let catTree = LibraryOutline.build(root: root, books: cats)
+            expect(
+                catTree.children.map(\.name) == ["Biz", "Life"],
+                "category folders Biz/Life (got \(catTree.children.map(\.name)))"
+            )
+            expect(
+                LibraryOutline.books(cats, under: URL(fileURLWithPath: "/tmp/lib/Biz", isDirectory: true))
+                    .map { $0.folder.lastPathComponent } == ["A"],
+                "Biz scope is A"
+            )
+            expect(
+                LibraryOutline.books(cats, under: root).count == 2,
+                "root scope is both categories"
+            )
+
+            let deep = LibraryOutline.build(
+                root: root,
+                books: [book("/tmp/lib/a/b/BookA"), book("/tmp/lib/a/c/BookB")]
+            )
+            expect(deep.children.map(\.name) == ["a"], "deep child is a")
+            expect(
+                deep.children.first?.children.map(\.name) == ["b", "c"],
+                "a has b and c (got \(deep.children.first?.children.map(\.name) ?? []))"
+            )
+            expect(
+                LibraryOutline.books(
+                    [book("/tmp/lib/a/b/BookA"), book("/tmp/lib/a/c/BookB")],
+                    under: URL(fileURLWithPath: "/tmp/lib/a/b", isDirectory: true)
+                ).map { $0.folder.lastPathComponent } == ["BookA"],
+                "b scope is BookA"
+            )
+
+            let mixed = LibraryOutline.build(
+                root: root,
+                books: [book("/tmp/lib/Solo"), book("/tmp/lib/Cat/Nested")]
+            )
+            expect(mixed.children.map(\.name) == ["Cat"], "mixed grouping is Cat only (got \(mixed.children.map(\.name)))")
+            expect(mixed.bookCount == 2, "mixed root still counts Solo + Nested")
+            expect(
+                LibraryOutline.books(
+                    [book("/tmp/lib/Solo"), book("/tmp/lib/Cat/Nested")],
+                    under: URL(fileURLWithPath: "/tmp/lib/Cat", isDirectory: true)
+                ).map { $0.folder.lastPathComponent } == ["Nested"],
+                "Cat scope excludes Solo"
+            )
+
+            let single = LibraryOutline.build(root: root, books: [book("/tmp/lib")])
+            expect(single.children.isEmpty, "single-book root has no grouping folders")
+            expect(single.bookCount == 1, "single-book root bookCount 1")
+            expect(
+                LibraryOutline.book(book("/tmp/lib"), isUnder: root),
+                "book at root is under root"
+            )
+            expect(
+                !LibraryOutline.book(book("/tmp/lib-other/X"), isUnder: root),
+                "sibling-prefix folder is not under root"
+            )
+        }
+
         print("== AudioMetadata file info ==")
         do {
             let fm = FileManager.default

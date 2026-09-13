@@ -8,7 +8,7 @@ Audiobook Binder is a local macOS 14+ Swift 6 app. It scans a book folder or a l
 
 ## Layout
 
-- `Sources/AudiobookBinderCore/` — models, scanner, tags, encoder
+- `Sources/AudiobookBinderCore/` — models, scanner, library folder tree, tags, encoder
 - `Sources/AudiobookBinder/` — UI, `AppState`, CLI
 - `Sources/AudiobookBinderSelfTest/` — `expect()` harness
 - `Info.plist` — shipping version (copied into the `.app` by `scripts/package-app.sh`)

@@ -17,6 +17,14 @@ final class AppState {
             }
         }
     }
+    var selectedFolderURL: URL? {
+        didSet {
+            guard selectedFolderURL != oldValue, let folder = selectedFolderURL else { return }
+            let visible = LibraryOutline.books(books, under: folder)
+            if let selectedID, visible.contains(where: { $0.id == selectedID }) { return }
+            selectedID = visible.first?.id
+        }
+    }
     var libraryFolder: URL?
     var settings = ExportSettings() {
         didSet { Self.persistSettings(settings) }
@@ -44,6 +52,24 @@ final class AppState {
     }
 
     var selectedCount: Int { books.filter(\.selected).count }
+
+    var folderOutline: LibraryNode? {
+        guard let libraryFolder, !books.isEmpty else { return nil }
+        return LibraryOutline.build(root: libraryFolder, books: books)
+    }
+
+    var showsFolderTree: Bool {
+        folderOutline?.hasNestedFolders == true
+    }
+
+    func isVisible(_ book: Audiobook) -> Bool {
+        book.matches(query: bookQuery) && isInSelectedFolder(book)
+    }
+
+    func isInSelectedFolder(_ book: Audiobook) -> Bool {
+        guard let folder = selectedFolderURL ?? libraryFolder else { return true }
+        return LibraryOutline.book(book, isUnder: folder)
+    }
 
     var selectedBookBindingIndex: Int? {
         books.firstIndex(where: { $0.id == selectedID })
@@ -77,8 +103,9 @@ final class AppState {
     func scan(_ url: URL) {
         playback.stop()
         bookQuery = ""
-        libraryFolder = url
-        UserDefaults.standard.set(url.path, forKey: "audiobookBinder.libraryFolder")
+        let folder = LibraryOutline.folderURL(url)
+        libraryFolder = folder
+        UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
         isScanning = true
         lastError = nil
         status = "Scanning \(url.lastPathComponent)…"
@@ -87,6 +114,7 @@ final class AppState {
                 let found = try await BookScanner().scan(root: url)
                 books = found
                 selectedID = found.first?.id
+                selectedFolderURL = folder
                 let boundCount = found.filter(\.isAlreadyBound).count
                 if boundCount > 0 {
                     status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
@@ -99,6 +127,7 @@ final class AppState {
                 lastError = error.localizedDescription
                 status = error.localizedDescription
                 books = []
+                selectedFolderURL = folder
             }
             isScanning = false
         }
@@ -106,6 +135,7 @@ final class AppState {
 
     func selectAll(_ on: Bool) {
         for i in books.indices {
+            guard isVisible(books[i]) else { continue }
             if on, books[i].isAlreadyBound { continue }
             books[i].selected = on
         }

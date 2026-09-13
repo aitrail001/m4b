@@ -2,3 +2,5 @@
 dist/
 Resources/AppIcon.iconset/
 .DS_Store
+.wrangler/
+node_modules/

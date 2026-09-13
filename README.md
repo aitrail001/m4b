@@ -13,6 +13,13 @@ It already understands the layouts in that library, including nested audio folde
 
 Metadata is filled in this order: MP3 tags → OPF/EPUB → ebook filename → folder name. Chapter titles fall back to `Chapter 01`, `Chapter 02`, … when the MP3 titles are just the book name. You can edit everything in the UI before building.
 
+## Download
+
+- Site: [audiobook-binder.nwai.cc](https://audiobook-binder.nwai.cc) (also [audiobook-binder.pages.dev](https://audiobook-binder.pages.dev))
+- DMG: [GitHub Releases](https://github.com/aitrail001/m4b/releases/latest) or `make dmg`
+
+macOS 14+. First launch: if Gatekeeper warns, right-click the app and choose **Open**.
+
 ## Build and run
 
 Requires macOS 14+ and Swift 6.
@@ -25,8 +32,10 @@ make run
 That compiles a release build, packages `dist/AudiobookBinder.app`, and opens it.
 
 ```bash
-make test    # scan ~/Documents/books and encode a short smoke .m4b
-make app     # dist/AudiobookBinder.app
+make test     # XCTest + AudiobookBinderSelfTest
+make app      # dist/AudiobookBinder.app
+make dmg      # signed .app + dist/AudiobookBinder-VERSION.dmg
+make release  # GitHub release with the DMG
 ```
 
 ## Use

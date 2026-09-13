@@ -1,4 +1,4 @@
-.PHONY: all test build app run clean icon
+.PHONY: all test build app run dmg release clean icon
 
 all: app
 
@@ -28,6 +28,14 @@ app: icon build
 
 run: app
 	open dist/AudiobookBinder.app
+
+dmg: app
+	chmod +x scripts/package-dmg.sh
+	./scripts/package-dmg.sh
+
+release: dmg
+	chmod +x scripts/github-release.sh
+	./scripts/github-release.sh
 
 clean:
 	rm -rf .build dist Resources/AppIcon.icns Resources/AppIcon.iconset

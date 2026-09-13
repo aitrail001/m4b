@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audiobook Binder — MP3 chapters into Apple Books</title>
+  <meta name="description" content="A macOS app that turns a folder of chapter MP3s into one Apple Books audiobook (.m4b) with title, author, cover, and chapter marks.">
+  <link rel="icon" href="media/icon-256.png" type="image/png">
+  <link rel="stylesheet" href="fonts.css">
+  <style>
+    :root {
+      --leather: #3a2416;
+      --leather-deep: #24150c;
+      --gold: #c6a15b;
+      --gold-soft: #e4c98a;
+      --paper: #f3eee4;
+      --paper-deep: #e6dccb;
+      --ink: #2c2018;
+      --ink-muted: #6a5344;
+      --rule: rgba(198, 161, 91, 0.45);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--leather-deep);
+      font-family: Figtree, system-ui, sans-serif;
+      font-size: 18px;
+      line-height: 1.5;
+    }
+    ::selection { background: var(--gold); color: var(--leather-deep); }
+    a { color: inherit; }
+    img, video { max-width: 100%; display: block; }
+    .wrap { width: min(1120px, calc(100% - 40px)); margin-inline: auto; }
+    nav {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 22px;
+      background: color-mix(in srgb, var(--leather-deep) 88%, transparent);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--rule);
+    }
+    nav .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--gold-soft); }
+    nav .brand img { width: 36px; height: 36px; border-radius: 8px; }
+    nav .brand span { font-family: "Source Serif 4", Georgia, serif; font-weight: 600; font-size: 1.05rem; }
+    nav .links { display: flex; gap: 22px; align-items: center; font-size: 0.92rem; color: var(--gold-soft); }
+    nav .links a { text-decoration: none; }
+    nav .links a:hover { color: white; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--gold); color: var(--leather-deep);
+      text-decoration: none; font-weight: 700; letter-spacing: 0.01em;
+      padding: 0.85rem 1.25rem; border-radius: 8px;
+      border: 0;
+    }
+    .btn:hover { filter: brightness(1.06); }
+    .btn.ghost {
+      background: transparent; color: var(--gold-soft);
+      outline: 1px solid var(--rule);
+    }
+    hero, .hero {
+      background:
+        radial-gradient(1200px 500px at 80% -10%, rgba(198,161,91,0.18), transparent 55%),
+        linear-gradient(180deg, var(--leather) 0%, var(--leather-deep) 100%);
+      color: var(--paper);
+      padding: 72px 0 0;
+      overflow: hidden;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+      gap: 48px;
+      align-items: end;
+    }
+    h1 {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-size: clamp(2.6rem, 6vw, 4.6rem);
+      line-height: 0.98;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      margin: 0 0 18px;
+      color: var(--gold-soft);
+    }
+    .lede {
+      font-size: 1.15rem;
+      max-width: 38ch;
+      color: color-mix(in srgb, var(--paper) 82%, var(--gold));
+      margin: 0 0 28px;
+    }
+    .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+    .fine { font-size: 0.82rem; color: color-mix(in srgb, var(--paper) 55%, var(--gold)); }
+    .hero-frame {
+      background: #1a0f09;
+      border-radius: 14px 14px 0 0;
+      padding: 14px 14px 0;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.45);
+      border: 1px solid rgba(198,161,91,0.28);
+      border-bottom: 0;
+    }
+    .hero-frame video, .hero-frame img {
+      border-radius: 8px 8px 0 0;
+      width: 100%;
+      aspect-ratio: 1240 / 800;
+      object-fit: cover;
+      object-position: top left;
+    }
+    .paper {
+      background: var(--paper);
+      color: var(--ink);
+      padding: 88px 0;
+    }
+    .paper h2 {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-size: clamp(1.8rem, 3.4vw, 2.6rem);
+      letter-spacing: -0.03em;
+      margin: 0 0 12px;
+    }
+    .paper .intro { max-width: 52ch; color: var(--ink-muted); margin: 0 0 40px; }
+    .split {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 48px;
+      align-items: center;
+    }
+    .shot {
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 18px 40px rgba(44,32,24,0.18);
+      outline: 1px solid rgba(44,32,24,0.08);
+    }
+    ol.guide {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    ol.guide li {
+      display: grid;
+      grid-template-columns: 3.2rem 1fr;
+      gap: 16px;
+    }
+    ol.guide b {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-size: 2rem;
+      color: var(--leather);
+      line-height: 1;
+    }
+    ol.guide h3 { margin: 0 0 6px; font-size: 1.15rem; }
+    ol.guide p { margin: 0; color: var(--ink-muted); }
+    .gallery {
+      display: grid;
+      grid-template-columns: 1fr 1.4fr;
+      gap: 18px;
+      margin-top: 48px;
+    }
+    .leather-band {
+      background: var(--leather-deep);
+      color: var(--paper);
+      padding: 72px 0;
+    }
+    .leather-band h2 { color: var(--gold-soft); }
+    .install {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 40px;
+      align-items: start;
+    }
+    code, kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.88em;
+      background: color-mix(in srgb, var(--paper-deep) 70%, white);
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+    .leather-band code {
+      background: rgba(255,255,255,0.08);
+      color: var(--gold-soft);
+    }
+    footer {
+      padding: 28px 22px 48px;
+      color: color-mix(in srgb, var(--paper) 55%, var(--gold));
+      font-size: 0.88rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    footer a { color: var(--gold-soft); }
+    @media (max-width: 860px) {
+      .hero-grid, .split, .gallery, .install { grid-template-columns: 1fr; }
+      nav .links span { display: none; }
+      h1 { font-size: 2.5rem; }
+      .hero { padding-top: 36px; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    THESIS: One bound audiobook from a pile of chapter files — refuse the SaaS feature-card landing.
+    OWN-WORLD: Dark leather field, gold foil type, paper interiors, Source Serif 4 + Figtree, the real Mac window as the artifact.
+    STORY: Visitor sees the app doing the job, believes it is a local Mac tool, downloads the DMG.
+    FIRST VIEWPORT: Leather ground, gold title left, Download, real app video/screenshot rising from the right like a bound volume.
+    FORM: Bindery catalog spread. Seed: inherited app materials (paper, leather, gold) from Audiobook Binder.
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+  -->
+  <nav>
+    <a class="brand" href="#">
+      <img src="media/icon-256.png" alt="">
+      <span>Audiobook Binder</span>
+    </a>
+    <div class="links">
+      <a href="#how">How to</a>
+      <a href="#install">Install</a>
+      <a class="btn" href="downloads/AudiobookBinder.dmg">Download</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <h1>Loose MP3s, one book in Apple Books.</h1>
+        <p class="lede">Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.</p>
+        <div class="cta">
+          <a class="btn" href="downloads/AudiobookBinder.dmg">Download for macOS 14+</a>
+          <a class="btn ghost" href="https://github.com/aitrail001/m4b/releases/latest">GitHub release</a>
+        </div>
+        <p class="fine">Free. Runs on your Mac. Version 1.3.0 · about 3&nbsp;MB</p>
+      </div>
+      <div class="hero-frame">
+        <video autoplay muted loop playsinline poster="media/app-main.png" aria-label="Audiobook Binder window">
+          <source src="media/app-tour.mp4" type="video/mp4">
+          <img src="media/app-main.png" alt="Audiobook Binder with a library of books and a selected cover">
+        </video>
+      </div>
+    </div>
+  </header>
+
+  <section class="paper" id="what">
+    <div class="wrap">
+      <h2>It binds the library you already have.</h2>
+      <p class="intro">Point it at one book folder, or a parent folder of many books. Nested wrappers (Calibre-style <code>43/Title</code> trees) become a folder list on the left. Already-made <code>.m4b</code> files show as already bound so you do not encode them twice.</p>
+      <div class="split">
+        <div>
+          <p>Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.</p>
+          <p>The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use Open in Books from the footer.</p>
+        </div>
+        <figure class="shot">
+          <img src="media/app-main.png" alt="Library list with covers, checkboxes, and the selected book’s metadata">
+        </figure>
+      </div>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="media/app-sidebar.png" alt="Book list with covers, durations, and already-bound labels">
+        </figure>
+        <figure class="shot">
+          <video autoplay muted loop playsinline poster="media/app-editor.png">
+            <source src="media/app-pan.mp4" type="video/mp4">
+          </video>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="paper" id="how" style="padding-top:0">
+    <div class="wrap">
+      <h2>How to bind a book</h2>
+      <ol class="guide">
+        <li>
+          <b>1</b>
+          <div>
+            <h3>Open a folder</h3>
+            <p>Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. The footer names the folder being read.</p>
+          </div>
+        </li>
+        <li>
+          <b>2</b>
+          <div>
+            <h3>Pick a level, if you need to</h3>
+            <p>When books sit under extra folders, use the folder tree on the left. Filter by title, author, or narrator. Already-bound files stay unchecked.</p>
+          </div>
+        </li>
+        <li>
+          <b>3</b>
+          <div>
+            <h3>Edit, skip, listen</h3>
+            <p>Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate defaults to 64 kbps.</p>
+          </div>
+        </li>
+        <li>
+          <b>4</b>
+          <div>
+            <h3>Build</h3>
+            <p>Save in the book folder, or to Music/Audiobooks. Then Show in Finder or Open in Books. The <code>.m4b</code> carries chapters and cover.</p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="leather-band" id="install">
+    <div class="wrap install">
+      <div>
+        <h2>Install from the disk image</h2>
+        <p>Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.</p>
+        <p>This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.</p>
+        <div class="cta">
+          <a class="btn" href="downloads/AudiobookBinder.dmg">Download AudiobookBinder.dmg</a>
+        </div>
+        <p class="fine">Also on <a href="https://github.com/aitrail001/m4b/releases/latest">GitHub Releases</a>. Source is public.</p>
+      </div>
+      <div>
+        <h2 style="font-size:1.4rem">What it expects</h2>
+        <p>One book: a folder of numbered MP3s, optional <code>cover.jpg</code>, optional <code>ebook/</code>.</p>
+        <p>A library: a parent whose subfolders are books. Helper folders such as <code>不分章节</code> are skipped when numbered chapters exist.</p>
+        <p>Requires macOS 14 or later.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="wrap">
+    <span>Audiobook Binder 1.3.0 · local Mac app, no account</span>
+    <span><a href="https://github.com/aitrail001/m4b">Source</a> · <a href="downloads/AudiobookBinder.dmg">Download</a></span>
+  </footer>
+</body>
+</html>

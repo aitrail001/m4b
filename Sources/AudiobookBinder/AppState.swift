@@ -32,6 +32,11 @@ final class AppState {
 
     init() {
         settings = Self.loadSettings()
+        if let url = LibraryBookmark.resolvedDirectory(
+            path: UserDefaults.standard.string(forKey: "audiobookBinder.libraryFolder")
+        ) {
+            scan(url)
+        }
     }
 
     var selectedBook: Audiobook? {
@@ -73,6 +78,7 @@ final class AppState {
         playback.stop()
         bookQuery = ""
         libraryFolder = url
+        UserDefaults.standard.set(url.path, forKey: "audiobookBinder.libraryFolder")
         isScanning = true
         lastError = nil
         status = "Scanning \(url.lastPathComponent)…"

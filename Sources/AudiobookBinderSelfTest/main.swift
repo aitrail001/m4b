@@ -215,6 +215,30 @@ struct AudiobookBinderSelfTest {
             "defaultOutputDirectory path contains Music/Audiobooks (got \(defaultPath))"
         )
 
+        print("== LibraryBookmark ==")
+        expect(LibraryBookmark.resolvedDirectory(path: nil) == nil, "nil path is nil")
+        expect(LibraryBookmark.resolvedDirectory(path: "") == nil, "empty path is nil")
+        do {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-libbookmark-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmp) }
+
+            let resolved = LibraryBookmark.resolvedDirectory(path: tmp.path)
+            expect(resolved != nil, "temp directory resolves")
+            expect(resolved == tmp, "temp directory URL matches (got \(resolved?.path ?? "nil"))")
+            expect(resolved?.path == tmp.path, "temp directory path matches (got \(resolved?.path ?? "nil"))")
+
+            let file = tmp.appendingPathComponent("file.txt")
+            try Data().write(to: file)
+            expect(LibraryBookmark.resolvedDirectory(path: file.path) == nil, "temp file path is nil")
+
+            let missing = tmp.appendingPathComponent("no-such-dir", isDirectory: true)
+            expect(LibraryBookmark.resolvedDirectory(path: missing.path) == nil, "missing path is nil")
+        } catch {
+            expect(false, "LibraryBookmark fixtures: \(error)")
+        }
+
         print("== AudioMetadata file info ==")
         do {
             let fm = FileManager.default

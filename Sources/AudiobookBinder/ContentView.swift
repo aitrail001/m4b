@@ -39,9 +39,15 @@ struct ContentView: View {
     private var header: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Audiobook Binder")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(BinderTheme.ink)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Audiobook Binder")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(BinderTheme.ink)
+                    Text(AppVersion.display)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(BinderTheme.inkMuted)
+                        .help("Marketing version and build number from Info.plist")
+                }
                 Text(
                     (appState.selectedFolderURL ?? appState.libraryFolder)?.path
                         ?? "Apple Books .m4b files, with title, author, cover, and chapters"

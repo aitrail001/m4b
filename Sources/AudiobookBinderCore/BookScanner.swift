@@ -139,19 +139,19 @@ public struct BookScanner: Sendable {
         var chapters: [Chapter] = []
         chapters.reserveCapacity(sorted.count)
 
-        try await withThrowingTaskGroup(of: (Int, URL, TimeInterval, Int64, String?).self) { group in
+        try await withThrowingTaskGroup(of: (Int, URL, TimeInterval, Int64, String?, AudioInfo).self) { group in
             for (idx, url) in sorted.enumerated() {
                 group.addTask {
-                    let dur = AudioMetadata.duration(of: url)
+                    let info = AudioMetadata.fileInfo(of: url)
                     let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
                     var id3: String?
                     if idx == 0 {
                         id3 = firstTags.title
                     }
-                    return (idx, url, dur, size, id3)
+                    return (idx, url, info.duration, size, id3, info.audioInfo)
                 }
             }
-            var collected: [(Int, URL, TimeInterval, Int64, String?)] = []
+            var collected: [(Int, URL, TimeInterval, Int64, String?, AudioInfo)] = []
             for try await row in group {
                 collected.append(row)
             }
@@ -172,7 +172,8 @@ public struct BookScanner: Sendable {
                         index: row.0 + 1,
                         title: chapterTitle,
                         duration: row.2,
-                        fileSize: row.3
+                        fileSize: row.3,
+                        audioInfo: row.5
                     )
                 )
             }

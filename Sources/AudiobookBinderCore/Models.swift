@@ -17,6 +17,64 @@ public let skippedDirectoryNames: Set<String> = [
     "不分章节", "extras", "scans", "pdf"
 ]
 
+public struct AudioInfo: Sendable, Equatable, Hashable {
+    public var bitrate: Int
+    public var sampleRate: Double
+    public var channelCount: Int
+    public var formatName: String
+
+    public init(
+        bitrate: Int = 0,
+        sampleRate: Double = 0,
+        channelCount: Int = 0,
+        formatName: String = ""
+    ) {
+        self.bitrate = bitrate
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.formatName = formatName
+    }
+
+    public var summary: String {
+        var parts: [String] = []
+        if bitrate > 0 {
+            if bitrate < 1000 {
+                parts.append("\(bitrate) bps")
+            } else {
+                parts.append("\((bitrate + 500) / 1000) kbps")
+            }
+        }
+        if let rate = Self.sampleRateText(sampleRate) {
+            parts.append(rate)
+        }
+        if channelCount == 1 {
+            parts.append("mono")
+        } else if channelCount == 2 {
+            parts.append("stereo")
+        } else if channelCount > 0 {
+            parts.append("\(channelCount) ch")
+        }
+        if !formatName.isEmpty {
+            parts.append(formatName)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func sampleRateText(_ sampleRate: Double) -> String? {
+        guard sampleRate > 0 else { return nil }
+        let hz = Int(sampleRate.rounded())
+        guard hz > 0 else { return nil }
+        if hz % 1000 == 0 {
+            return "\(hz / 1000) kHz"
+        }
+        let kHz = Double(hz) / 1000.0
+        if hz % 100 == 0 {
+            return String(format: "%.1f kHz", kHz)
+        }
+        return String(format: "%.2f kHz", kHz)
+    }
+}
+
 public struct Chapter: Identifiable, Hashable, Sendable {
     public var id: UUID
     public var url: URL
@@ -24,6 +82,7 @@ public struct Chapter: Identifiable, Hashable, Sendable {
     public var title: String
     public var duration: TimeInterval
     public var fileSize: Int64
+    public var audioInfo: AudioInfo
 
     public init(
         id: UUID = UUID(),
@@ -31,7 +90,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         index: Int,
         title: String,
         duration: TimeInterval,
-        fileSize: Int64
+        fileSize: Int64,
+        audioInfo: AudioInfo = AudioInfo()
     ) {
         self.id = id
         self.url = url
@@ -39,6 +99,7 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         self.title = title
         self.duration = duration
         self.fileSize = fileSize
+        self.audioInfo = audioInfo
     }
 }
 

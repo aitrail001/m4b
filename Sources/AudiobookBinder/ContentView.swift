@@ -291,7 +291,16 @@ struct BookEditor: View {
                                 TextField("Chapter title", text: $chapter.title)
                                     .textFieldStyle(.plain)
                                     .font(.system(size: 13))
-                                Spacer()
+                                Spacer(minLength: 8)
+                                if !chapter.audioInfo.summary.isEmpty {
+                                    Text(chapter.audioInfo.summary)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(BinderTheme.inkMuted)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .frame(minWidth: 0)
+                                        .layoutPriority(-1)
+                                }
                                 Text(DurationFormat.string(chapter.duration))
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundStyle(BinderTheme.inkMuted)

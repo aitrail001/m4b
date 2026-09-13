@@ -54,17 +54,88 @@ public enum AudioMetadata {
     }
 
     public static func duration(of url: URL) -> TimeInterval {
+        fileInfo(of: url).duration
+    }
+
+    public static func fileInfo(of url: URL) -> (duration: TimeInterval, audioInfo: AudioInfo) {
         var file: AudioFileID?
         let status = AudioFileOpenURL(url as CFURL, .readPermission, 0, &file)
-        guard status == noErr, let file else { return 0 }
+        guard status == noErr, let file else {
+            return (0, AudioInfo())
+        }
         defer { AudioFileClose(file) }
+
         var duration: Float64 = 0
         var size = UInt32(MemoryLayout<Float64>.size)
-        let prop = AudioFileGetProperty(file, kAudioFilePropertyEstimatedDuration, &size, &duration)
+        var prop = AudioFileGetProperty(file, kAudioFilePropertyEstimatedDuration, &size, &duration)
+        let durationValue: TimeInterval
         if prop == noErr, duration.isFinite, duration > 0 {
-            return TimeInterval(duration)
+            durationValue = TimeInterval(duration)
+        } else {
+            durationValue = 0
         }
-        return 0
+
+        var bitrate: UInt32 = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        prop = AudioFileGetProperty(file, kAudioFilePropertyBitRate, &size, &bitrate)
+        var bitrateValue = prop == noErr ? Int(bitrate) : 0
+
+        var asbd = AudioStreamBasicDescription()
+        size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        prop = AudioFileGetProperty(file, kAudioFilePropertyDataFormat, &size, &asbd)
+        let sampleRate: Double
+        let channelCount: Int
+        let formatName: String
+        if prop == noErr {
+            sampleRate = asbd.mSampleRate.isFinite ? asbd.mSampleRate : 0
+            channelCount = Int(asbd.mChannelsPerFrame)
+            formatName = Self.formatName(for: asbd.mFormatID, url: url)
+        } else {
+            sampleRate = 0
+            channelCount = 0
+            formatName = url.pathExtension.uppercased()
+        }
+
+        if bitrateValue == 0, durationValue > 0 {
+            let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
+            if fileSize > 0 {
+                bitrateValue = Int(Double(fileSize) * 8 / durationValue)
+            }
+        }
+
+        return (
+            durationValue,
+            AudioInfo(
+                bitrate: bitrateValue,
+                sampleRate: sampleRate,
+                channelCount: channelCount,
+                formatName: formatName
+            )
+        )
+    }
+
+    private static func formatName(for formatID: AudioFormatID, url: URL) -> String {
+        switch formatID {
+        case kAudioFormatMPEGLayer3:
+            return "MP3"
+        case kAudioFormatMPEG4AAC,
+             kAudioFormatMPEG4AAC_HE,
+             kAudioFormatMPEG4AAC_HE_V2,
+             kAudioFormatMPEG4AAC_LD,
+             kAudioFormatMPEG4AAC_ELD,
+             kAudioFormatMPEG4AAC_ELD_SBR,
+             kAudioFormatMPEG4AAC_ELD_V2,
+             kAudioFormatMPEG4AAC_Spatial:
+            return "AAC"
+        case kAudioFormatAppleLossless:
+            return "ALAC"
+        case kAudioFormatFLAC:
+            return "FLAC"
+        case kAudioFormatLinearPCM:
+            return "PCM"
+        default:
+            return url.pathExtension.uppercased()
+        }
     }
 
     public static func loadTags(from url: URL, includeArtwork: Bool = true) async -> TrackTags {

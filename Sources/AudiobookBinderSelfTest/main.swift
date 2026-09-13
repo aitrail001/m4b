@@ -38,6 +38,89 @@ struct AudiobookBinderSelfTest {
         expect(opf.title == "Meditations on First Philosophy", "opf title")
         expect(opf.author == "René Descartes", "opf author")
 
+        print("== AudioInfo summary ==")
+        let mp3Info = AudioInfo(bitrate: 128_000, sampleRate: 44_100, channelCount: 1, formatName: "MP3")
+        expect(mp3Info.summary.contains("128 kbps"), "128 kbps in summary (got \(mp3Info.summary))")
+        expect(mp3Info.summary.contains("44.1 kHz"), "44.1 kHz in summary (got \(mp3Info.summary))")
+        expect(mp3Info.summary.contains("mono"), "mono in summary (got \(mp3Info.summary))")
+        expect(mp3Info.summary.contains("MP3"), "MP3 in summary (got \(mp3Info.summary))")
+        expect(mp3Info.summary == "128 kbps · 44.1 kHz · mono · MP3", "mp3 summary exact (got \(mp3Info.summary))")
+
+        let aacInfo = AudioInfo(bitrate: 64_000, sampleRate: 48_000, channelCount: 2, formatName: "AAC")
+        expect(aacInfo.summary.contains("64 kbps"), "64 kbps in summary (got \(aacInfo.summary))")
+        expect(aacInfo.summary.contains("48 kHz"), "48 kHz in summary (got \(aacInfo.summary))")
+        expect(aacInfo.summary.contains("stereo"), "stereo in summary (got \(aacInfo.summary))")
+        expect(aacInfo.summary.contains("AAC"), "AAC in summary (got \(aacInfo.summary))")
+        expect(aacInfo.summary == "64 kbps · 48 kHz · stereo · AAC", "aac summary exact (got \(aacInfo.summary))")
+
+        let emptyInfo = AudioInfo(bitrate: 0, sampleRate: 0, channelCount: 0, formatName: "")
+        expect(emptyInfo.summary == "", "all-unknown summary is empty")
+
+        let rate22050 = AudioInfo(bitrate: 0, sampleRate: 22_050, channelCount: 0, formatName: "")
+        expect(rate22050.summary.contains("22.05 kHz"), "22050 Hz formats as 22.05 kHz (got \(rate22050.summary))")
+        expect(rate22050.summary == "22.05 kHz", "only known sample rate (got \(rate22050.summary))")
+
+        let lowBitrate = AudioInfo(bitrate: 500, sampleRate: 0, channelCount: 3, formatName: "")
+        expect(lowBitrate.summary.contains("500 bps"), "sub-kbps shows bps (got \(lowBitrate.summary))")
+        expect(lowBitrate.summary.contains("3 ch"), "3 channels (got \(lowBitrate.summary))")
+
+        print("== AudioMetadata file info ==")
+        do {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-audioinfo-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmp) }
+
+            let aiff = URL(fileURLWithPath: "/System/Library/Sounds/Tink.aiff")
+            expect(fm.fileExists(atPath: aiff.path), "system Tink.aiff exists")
+
+            let aiffFile = AudioMetadata.fileInfo(of: aiff)
+            expect(aiffFile.duration > 0, "aiff duration > 0 (got \(aiffFile.duration))")
+            expect(aiffFile.audioInfo.sampleRate > 0, "aiff sampleRate > 0 (got \(aiffFile.audioInfo.sampleRate))")
+            expect(aiffFile.audioInfo.channelCount >= 1, "aiff channelCount >= 1 (got \(aiffFile.audioInfo.channelCount))")
+            let aiffFormat = aiffFile.audioInfo.formatName
+            expect(["PCM", "AIFF", "AIF"].contains(aiffFormat), "aiff format PCM/AIFF (got \(aiffFormat))")
+            expect(AudioMetadata.duration(of: aiff) == aiffFile.duration, "duration(of:) matches fileInfo")
+
+            let m4a = tmp.appendingPathComponent("tink.m4a")
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+            proc.arguments = [aiff.path, "-o", m4a.path, "-f", "m4af", "-d", "aac", "-b", "64000"]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try proc.run()
+            proc.waitUntilExit()
+            expect(proc.terminationStatus == 0, "afconvert Tink.aiff -> m4a (status \(proc.terminationStatus))")
+            expect(fm.fileExists(atPath: m4a.path), "converted tink.m4a exists")
+
+            let m4aFile = AudioMetadata.fileInfo(of: m4a)
+            expect(m4aFile.duration > 0, "m4a duration > 0 (got \(m4aFile.duration))")
+            expect(m4aFile.audioInfo.sampleRate > 0, "m4a sampleRate > 0 (got \(m4aFile.audioInfo.sampleRate))")
+            expect(m4aFile.audioInfo.channelCount >= 1, "m4a channelCount >= 1 (got \(m4aFile.audioInfo.channelCount))")
+            let m4aFormat = m4aFile.audioInfo.formatName.uppercased()
+            expect(m4aFormat.contains("AAC") || m4aFormat == "M4A", "m4a format AAC (got \(m4aFile.audioInfo.formatName))")
+            if m4aFile.audioInfo.bitrate > 0 {
+                expect(
+                    m4aFile.audioInfo.bitrate >= 1_000 && m4aFile.audioInfo.bitrate <= 512_000,
+                    "m4a bitrate sane (got \(m4aFile.audioInfo.bitrate))"
+                )
+            }
+            expect(!m4aFile.audioInfo.summary.isEmpty, "m4a summary non-empty (got \(m4aFile.audioInfo.summary))")
+
+            let bookDir = tmp.appendingPathComponent("TinkBook", isDirectory: true)
+            try fm.createDirectory(at: bookDir, withIntermediateDirectories: true)
+            try fm.copyItem(at: m4a, to: bookDir.appendingPathComponent("01.m4a"))
+            let scanned = try await BookScanner().loadBook(at: bookDir)
+            expect(scanned.chapterCount == 1, "fixture book has 1 chapter")
+            expect(
+                !scanned.chapters[0].audioInfo.summary.isEmpty,
+                "scanned chapter summary non-empty (got \(scanned.chapters[0].audioInfo.summary))"
+            )
+            expect(scanned.chapters[0].duration > 0, "scanned chapter duration > 0")
+        } catch {
+            expect(false, "audio file info fixtures: \(error)")
+        }
+
         print("== Nested library scan ==")
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("m4b-scan-\(UUID().uuidString)", isDirectory: true)

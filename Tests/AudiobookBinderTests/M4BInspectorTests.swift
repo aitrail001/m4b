@@ -79,6 +79,73 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(leftovers.map(\.lastPathComponent), ["bad.m4a"])
     }
 
+    func testApplyThrowsAndLeavesOriginalWhenMdatTruncatedAfterMoov() throws {
+        let dir = try TestSupport.tempDir("tag-trunc-mdat")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("partial.m4a")
+        let original = Self.truncatedMdatAfterMoov()
+        try original.write(to: url)
+        XCTAssertThrowsError(
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "T", author: "A"),
+                chapters: []
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), ["partial.m4a"])
+    }
+
+    func testApplyTagsValidMinimalMP4() throws {
+        let dir = try TestSupport.tempDir("tag-valid")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("ok.m4a")
+        let original = Self.minimalTaggableMP4()
+        try original.write(to: url)
+        XCTAssertNoThrow(
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "Tagged", author: "Author"),
+                chapters: []
+            )
+        )
+        let tagged = try Data(contentsOf: url)
+        XCTAssertNotEqual(tagged, original)
+        XCTAssertGreaterThan(tagged.count, original.count)
+        let atoms = try MP4AtomIO.parseHeadersComplete(tagged, range: 0..<tagged.count)
+        XCTAssertTrue(atoms.contains(where: { $0.type == "moov" }))
+        XCTAssertNotNil(tagged.range(of: MP4Box.fourcc("©nam")))
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), ["ok.m4a"])
+    }
+
+    static func truncatedMdatAfterMoov() -> Data {
+        let moov = MP4Box.box("moov", MP4Box.box("mvhd", Data(count: 100)))
+        var mdat = Data()
+        mdat.append(MP4Box.u32(1000))
+        mdat.append(MP4Box.fourcc("mdat"))
+        mdat.append(Data(count: 4))
+        return moov + mdat
+    }
+
+    static func minimalTaggableMP4() -> Data {
+        var mvhd = Data(count: 100)
+        mvhd.replaceSubrange(12..<16, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(16..<20, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(20..<24, with: MP4Box.u32(0x00010000))
+        mvhd.replaceSubrange(24..<26, with: MP4Box.u16(0x0100))
+        mvhd.replaceSubrange(36..<40, with: MP4Box.u32(0x00010000))
+        mvhd.replaceSubrange(52..<56, with: MP4Box.u32(0x00010000))
+        mvhd.replaceSubrange(68..<72, with: MP4Box.u32(0x40000000))
+        mvhd.replaceSubrange(96..<100, with: MP4Box.u32(2))
+        let ftyp = MP4Box.box(
+            "ftyp",
+            MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ") + MP4Box.fourcc("mp42")
+        )
+        return ftyp + MP4Box.box("moov", MP4Box.box("mvhd", mvhd)) + MP4Box.box("mdat", Data(count: 8))
+    }
+
     func testInspectExportedM4B() async throws {
         let dir = try TestSupport.tempDir("inspect")
         defer { try? FileManager.default.removeItem(at: dir) }

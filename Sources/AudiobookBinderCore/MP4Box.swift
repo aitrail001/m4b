@@ -126,6 +126,75 @@ enum MP4AtomIO {
         return atoms
     }
 
+    static func readHeadersComplete(of file: URL) throws -> [MP4AtomHeader] {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        return try parseHeadersComplete(from: handle, fileSize: fileSize)
+    }
+
+    static func parseHeadersComplete(from handle: FileHandle, fileSize: UInt64) throws -> [MP4AtomHeader] {
+        var atoms: [MP4AtomHeader] = []
+        var offset: UInt64 = 0
+        while offset < fileSize {
+            guard atoms.count < maxHeadersPerParse else {
+                throw BinderError.exportFailed("MP4 atom count exceeds parse budget")
+            }
+            guard fileSize - offset >= 8 else {
+                throw BinderError.exportFailed("Trailing incomplete MP4 atom header")
+            }
+            try handle.seek(toOffset: offset)
+            guard let bytes = try handle.read(upToCount: 16), bytes.count >= 8 else {
+                throw BinderError.exportFailed("Could not read MP4 atom header")
+            }
+
+            guard let size32 = readU32(bytes, 0),
+                  let type = readFourCC(bytes, 4)
+            else {
+                throw BinderError.exportFailed("Malformed MP4 atom header")
+            }
+
+            let headerSize: UInt64
+            let size: UInt64
+            if size32 == 1 {
+                guard bytes.count >= 16, let extended = readU64(bytes, 8) else {
+                    throw BinderError.exportFailed("Malformed MP4 atom header")
+                }
+                headerSize = 16
+                size = extended
+            } else if size32 == 0 {
+                headerSize = 8
+                size = fileSize - offset
+            } else {
+                headerSize = 8
+                size = UInt64(size32)
+            }
+
+            guard size >= headerSize else {
+                throw BinderError.exportFailed("Malformed MP4 atom header")
+            }
+            let remaining = fileSize - offset
+            guard size <= remaining else {
+                throw BinderError.exportFailed("MP4 atom does not fit in parent")
+            }
+            guard offset <= UInt64.max - size else {
+                throw BinderError.exportFailed("MP4 atom does not fit in parent")
+            }
+
+            atoms.append(
+                MP4AtomHeader(
+                    offset: offset,
+                    headerSize: headerSize,
+                    size: size,
+                    type: type
+                )
+            )
+            offset += size
+        }
+        return atoms
+    }
+
     static func readAtom(_ header: MP4AtomHeader, from handle: FileHandle) throws -> Data {
         guard let count = Int(exactly: header.size), count >= 8 else {
             throw BinderError.exportFailed("Atom is too large to load")
@@ -210,6 +279,71 @@ enum MP4AtomIO {
             )
             let next = i + sizeInt
             if next <= i { break }
+            i = next
+        }
+        return atoms
+    }
+
+    static func parseHeadersComplete(_ data: Data, range: Range<Int>) throws -> [MP4AtomHeader] {
+        guard range.lowerBound >= 0, range.upperBound <= data.count else {
+            throw BinderError.exportFailed("MP4 atom range is out of bounds")
+        }
+
+        var atoms: [MP4AtomHeader] = []
+        var i = range.lowerBound
+        let end = range.upperBound
+        while i < end {
+            guard atoms.count < maxHeadersPerParse else {
+                throw BinderError.exportFailed("MP4 atom count exceeds parse budget")
+            }
+            guard end - i >= 8 else {
+                throw BinderError.exportFailed("Trailing incomplete MP4 atom header")
+            }
+            guard let size32 = readU32(data, i),
+                  let type = readFourCC(data, i + 4)
+            else {
+                throw BinderError.exportFailed("Malformed MP4 atom header")
+            }
+
+            let headerSize: Int
+            let size: UInt64
+            if size32 == 1 {
+                guard end - i >= 16, let extended = readU64(data, i + 8) else {
+                    throw BinderError.exportFailed("Malformed MP4 atom header")
+                }
+                headerSize = 16
+                size = extended
+            } else if size32 == 0 {
+                headerSize = 8
+                size = UInt64(end - i)
+            } else {
+                headerSize = 8
+                size = UInt64(size32)
+            }
+
+            guard size >= UInt64(headerSize) else {
+                throw BinderError.exportFailed("Malformed MP4 atom header")
+            }
+            let remaining = UInt64(end - i)
+            guard size <= remaining else {
+                throw BinderError.exportFailed("MP4 atom does not fit in parent")
+            }
+            guard let sizeInt = Int(exactly: size), let offset = UInt64(exactly: i) else {
+                throw BinderError.exportFailed("MP4 atom does not fit in parent")
+            }
+
+            atoms.append(
+                MP4AtomHeader(
+                    offset: offset,
+                    headerSize: UInt64(headerSize),
+                    size: size,
+                    type: type
+                )
+            )
+            let next = i + sizeInt
+            if next <= i {
+                throw BinderError.exportFailed("MP4 atom does not fit in parent")
+            }
             i = next
         }
         return atoms

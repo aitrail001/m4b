@@ -56,7 +56,7 @@ public enum MP4AudiobookTagger {
         do {
             let fileSize = try input.seekToEnd()
             try input.seek(toOffset: 0)
-            top = MP4AtomIO.parseHeaders(from: input, fileSize: fileSize)
+            top = try MP4AtomIO.parseHeadersComplete(from: input, fileSize: fileSize)
             guard let moovHeader = top.first(where: { $0.type == "moov" }) else {
                 throw BinderError.exportFailed("No moov atom in exported audio")
             }

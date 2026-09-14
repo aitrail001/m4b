@@ -418,4 +418,68 @@ final class MP4AtomIOTests: XCTestCase {
             MP4AtomIO.slice(claimed, MP4AtomHeader(offset: 0, headerSize: 16, size: .max, type: "mdat")).isEmpty
         )
     }
+
+    func testParseHeadersCompleteRejectsBudgetOverflowWhileTolerantReturnsPrefix() throws {
+        let count = MP4AtomIO.maxHeadersPerParse + 1
+        var data = Data()
+        data.reserveCapacity(count * 8)
+        let atom = MP4Box.box("free", Data())
+        for _ in 0..<count {
+            data.append(atom)
+        }
+        XCTAssertEqual(data.count, count * 8)
+
+        let prefix = MP4AtomIO.parseHeaders(data, range: 0..<data.count)
+        XCTAssertEqual(prefix.count, MP4AtomIO.maxHeadersPerParse)
+        XCTAssertEqual(prefix.last?.end, UInt64(MP4AtomIO.maxHeadersPerParse * 8))
+
+        XCTAssertThrowsError(try MP4AtomIO.parseHeadersComplete(data, range: 0..<data.count))
+
+        let dir = try TestSupport.tempDir("atom-budget")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("many.mp4")
+        try data.write(to: url)
+        let fromFile = try MP4AtomIO.readHeaders(of: url)
+        XCTAssertEqual(fromFile.count, MP4AtomIO.maxHeadersPerParse)
+        XCTAssertThrowsError(try MP4AtomIO.readHeadersComplete(of: url))
+    }
+
+    func testParseHeadersCompleteRejectsTruncatedMdatAfterMoov() {
+        let data = Self.truncatedMdatAfterMoov()
+        let prefix = MP4AtomIO.parseHeaders(data, range: 0..<data.count)
+        XCTAssertEqual(prefix.map(\.type), ["moov"])
+        XCTAssertThrowsError(try MP4AtomIO.parseHeadersComplete(data, range: 0..<data.count))
+    }
+
+    func testParseHeadersCompleteRejectsTrailingMalformedAtom() {
+        var data = MP4Box.box("ftyp", Data(count: 8)) + MP4Box.box("free", Data())
+        data.append(MP4Box.u32(4))
+        data.append(MP4Box.fourcc("free"))
+        let prefix = MP4AtomIO.parseHeaders(data, range: 0..<data.count)
+        XCTAssertEqual(prefix.map(\.type), ["ftyp", "free"])
+        XCTAssertThrowsError(try MP4AtomIO.parseHeadersComplete(data, range: 0..<data.count))
+    }
+
+    func testParseHeadersCompleteAcceptsValidTinyFile() throws {
+        let nested = MP4Box.box("ftyp", Data(count: 16)) + MP4Box.box("moov", MP4Box.box("free", Data()))
+        let atoms = try MP4AtomIO.parseHeadersComplete(nested, range: 0..<nested.count)
+        XCTAssertEqual(atoms.map(\.type), ["ftyp", "moov"])
+        XCTAssertEqual(atoms.last?.end, UInt64(nested.count))
+
+        let dir = try TestSupport.tempDir("atom-complete")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("tiny.mp4")
+        try nested.write(to: url)
+        let fromFile = try MP4AtomIO.readHeadersComplete(of: url)
+        XCTAssertEqual(fromFile.map(\.type), ["ftyp", "moov"])
+    }
+
+    static func truncatedMdatAfterMoov() -> Data {
+        let moov = MP4Box.box("moov", MP4Box.box("mvhd", Data(count: 100)))
+        var mdat = Data()
+        mdat.append(MP4Box.u32(1000))
+        mdat.append(MP4Box.fourcc("mdat"))
+        mdat.append(Data(count: 4))
+        return moov + mdat
+    }
 }

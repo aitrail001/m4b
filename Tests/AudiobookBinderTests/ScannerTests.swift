@@ -59,10 +59,15 @@ final class ScannerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try TestSupport.writeMP3(in: root.appendingPathComponent("DiscBook", isDirectory: true), book: "Disc 1")
         try TestSupport.writeMP3(in: root.appendingPathComponent("DiscBook", isDirectory: true), book: "CD2")
-        let disc = try await BookScanner().scan(root: root.appendingPathComponent("DiscBook", isDirectory: true))
+        let discBook = root.appendingPathComponent("DiscBook", isDirectory: true)
+        let disc = try await BookScanner().scan(root: discBook)
         XCTAssertEqual(disc.count, 1)
         XCTAssertEqual(disc[0].folder.lastPathComponent, "DiscBook")
         XCTAssertEqual(disc[0].chapterCount, 2)
+        XCTAssertEqual(
+            relativePaths(disc[0].chapters.map(\.url), to: discBook),
+            ["Disc 1/01.mp3", "CD2/01.mp3"]
+        )
 
         let nested = try TestSupport.tempDir("audio-dir")
         defer { try? FileManager.default.removeItem(at: nested) }
@@ -233,6 +238,143 @@ final class ScannerTests: XCTestCase {
         )
     }
 
+    func testOrdersMultiDiscRepeatedTrackNamesByDiscThenTrack() async throws {
+        let root = try TestSupport.tempDir("multi-disc-tracks")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("DiscBook", isDirectory: true)
+        for disc in ["CD2", "CD1"] {
+            for file in ["02.mp3", "01.mp3"] {
+                try TestSupport.writeMP3(in: book, book: disc, file: file)
+            }
+        }
+        let loaded = try await BookScanner().loadBook(at: book)
+        XCTAssertEqual(
+            relativePaths(loaded.chapters.map(\.url), to: book),
+            ["CD1/01.mp3", "CD1/02.mp3", "CD2/01.mp3", "CD2/02.mp3"]
+        )
+    }
+
+    func testOrdersCD2BeforeCD10() async throws {
+        let root = try TestSupport.tempDir("cd2-cd10")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("DiscBook", isDirectory: true)
+        for disc in ["CD10", "CD2"] {
+            for file in ["02.mp3", "01.mp3"] {
+                try TestSupport.writeMP3(in: book, book: disc, file: file)
+            }
+        }
+        let loaded = try await BookScanner().loadBook(at: book)
+        XCTAssertEqual(
+            relativePaths(loaded.chapters.map(\.url), to: book),
+            ["CD2/01.mp3", "CD2/02.mp3", "CD10/01.mp3", "CD10/02.mp3"]
+        )
+    }
+
+    func testOrdersDiscAndPartFolderNamesByDiscThenTrack() async throws {
+        let root = try TestSupport.tempDir("disc-part-names")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("DiscBook", isDirectory: true)
+        try TestSupport.writeMP3(in: book, book: "Disc 2", file: "02.mp3")
+        try TestSupport.writeMP3(in: book, book: "Disc 1", file: "01.mp3")
+        try TestSupport.writeMP3(in: book, book: "Disc 2", file: "01.mp3")
+        try TestSupport.writeMP3(in: book, book: "Disc 1", file: "02.mp3")
+        let loaded = try await BookScanner().loadBook(at: book)
+        XCTAssertEqual(
+            relativePaths(loaded.chapters.map(\.url), to: book),
+            ["Disc 1/01.mp3", "Disc 1/02.mp3", "Disc 2/01.mp3", "Disc 2/02.mp3"]
+        )
+
+        let parts = root.appendingPathComponent("PartBook", isDirectory: true)
+        try TestSupport.writeMP3(in: parts, book: "Part-10", file: "02.mp3")
+        try TestSupport.writeMP3(in: parts, book: "Part-03", file: "01.mp3")
+        try TestSupport.writeMP3(in: parts, book: "Part-10", file: "01.mp3")
+        try TestSupport.writeMP3(in: parts, book: "Part-03", file: "02.mp3")
+        let partBook = try await BookScanner().loadBook(at: parts)
+        XCTAssertEqual(
+            relativePaths(partBook.chapters.map(\.url), to: parts),
+            ["Part-03/01.mp3", "Part-03/02.mp3", "Part-10/01.mp3", "Part-10/02.mp3"]
+        )
+    }
+
+    func testSortAudioOrdersByDiscThenTrackThenRelativePath() {
+        let scanner = BookScanner()
+        let root = URL(fileURLWithPath: "/tmp/DiscBook", isDirectory: true)
+        let shuffled = [
+            URL(fileURLWithPath: "/tmp/DiscBook/CD2/01.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD1/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD2/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD1/01.mp3"),
+        ]
+        XCTAssertEqual(
+            relativePaths(scanner.sortAudio(shuffled, relativeTo: root), to: root),
+            ["CD1/01.mp3", "CD1/02.mp3", "CD2/01.mp3", "CD2/02.mp3"]
+        )
+
+        let numericDiscs = [
+            URL(fileURLWithPath: "/tmp/DiscBook/CD10/mp3/01.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD2/mp3/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD10/mp3/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD2/mp3/01.mp3"),
+        ]
+        XCTAssertEqual(
+            relativePaths(scanner.sortAudio(numericDiscs, relativeTo: root), to: root),
+            ["CD2/mp3/01.mp3", "CD2/mp3/02.mp3", "CD10/mp3/01.mp3", "CD10/mp3/02.mp3"]
+        )
+
+        let mixedNames = [
+            URL(fileURLWithPath: "/tmp/DiscBook/Part-10/01.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/Disc 1/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/Part-03/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/Disc 1/01.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/Part-10/02.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/Part-03/01.mp3"),
+        ]
+        XCTAssertEqual(
+            relativePaths(scanner.sortAudio(mixedNames, relativeTo: root), to: root),
+            [
+                "Disc 1/01.mp3",
+                "Disc 1/02.mp3",
+                "Part-03/01.mp3",
+                "Part-03/02.mp3",
+                "Part-10/01.mp3",
+                "Part-10/02.mp3",
+            ]
+        )
+
+        let flat = [
+            URL(fileURLWithPath: "/tmp/Book/10-later.mp3"),
+            URL(fileURLWithPath: "/tmp/Book/2-early.mp3"),
+            URL(fileURLWithPath: "/tmp/Book/Book - 003.mp3"),
+        ]
+        let flatRoot = URL(fileURLWithPath: "/tmp/Book", isDirectory: true)
+        XCTAssertEqual(
+            scanner.sortAudio(flat, relativeTo: flatRoot).map(\.lastPathComponent),
+            ["2-early.mp3", "Book - 003.mp3", "10-later.mp3"]
+        )
+
+        let ties = [
+            URL(fileURLWithPath: "/tmp/DiscBook/CD1/b/01.mp3"),
+            URL(fileURLWithPath: "/tmp/DiscBook/CD1/a/01.mp3"),
+        ]
+        XCTAssertEqual(
+            relativePaths(scanner.sortAudio(ties, relativeTo: root), to: root),
+            ["CD1/a/01.mp3", "CD1/b/01.mp3"]
+        )
+    }
+
+    func testDiscIndexFromRelativePath() {
+        let scanner = BookScanner()
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "01.mp3"), 0)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "CD1/01.mp3"), 1)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "CD2/mp3/02.mp3"), 2)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "CD10/01.mp3"), 10)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "Disc 1/01.mp3"), 1)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "Disc 2/tracks/01.mp3"), 2)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "Part-03/01.mp3"), 3)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "Part-10/01.mp3"), 10)
+        XCTAssertEqual(scanner.discIndex(inRelativePath: "audio/01.mp3"), 0)
+    }
+
     func testSortsLeadingAndTrailingIndexes() async throws {
         let root = try TestSupport.tempDir("sort")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -279,5 +421,16 @@ final class ScannerTests: XCTestCase {
         let books = try await BookScanner().scan(root: dir)
         XCTAssertEqual(books.count, 1)
         XCTAssertEqual(books.first?.title, "On Writing Well")
+    }
+
+    private func relativePaths(_ urls: [URL], to root: URL) -> [String] {
+        let rootParts = root.standardizedFileURL.pathComponents
+        return urls.map { url in
+            let parts = url.standardizedFileURL.pathComponents
+            if parts.starts(with: rootParts) {
+                return parts.dropFirst(rootParts.count).joined(separator: "/")
+            }
+            return url.lastPathComponent
+        }
     }
 }

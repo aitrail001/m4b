@@ -107,6 +107,19 @@ public struct BookScanner: Sendable {
         ) != nil
     }
 
+    func discIndex(inRelativePath path: String) -> Int {
+        let components = path.split(separator: "/").map(String.init)
+        guard components.count > 1 else { return 0 }
+        for component in components.dropLast() {
+            guard isDiscOrPartName(component) else { continue }
+            if let match = component.range(of: #"\d+$"#, options: .regularExpression),
+               let number = Int(component[match]) {
+                return number
+            }
+        }
+        return 0
+    }
+
     func hasDirectAudio(_ folder: URL) -> Bool {
         let items = (try? FileManager.default.contentsOfDirectory(
             at: folder,
@@ -165,7 +178,7 @@ public struct BookScanner: Sendable {
             return try await loadAlreadyBoundBook(at: folder)
         }
 
-        let sorted = sortAudio(audio)
+        let sorted = sortAudio(audio, relativeTo: folder)
         let firstTags = await AudioMetadata.loadTags(from: sorted[0], includeArtwork: true)
 
         var sampleTitles: [String] = []
@@ -368,15 +381,33 @@ public struct BookScanner: Sendable {
         ) != nil
     }
 
-    private func sortAudio(_ files: [URL]) -> [URL] {
+    func sortAudio(_ files: [URL], relativeTo root: URL) -> [URL] {
         files.sorted { a, b in
+            let relA = relativePath(of: a, to: root)
+            let relB = relativePath(of: b, to: root)
+            let discA = discIndex(inRelativePath: relA)
+            let discB = discIndex(inRelativePath: relB)
+            if discA != discB { return discA < discB }
+
             let ia = NaturalSort.leadingIndex(a.lastPathComponent) ?? NaturalSort.trailingIndex(a.lastPathComponent)
             let ib = NaturalSort.leadingIndex(b.lastPathComponent) ?? NaturalSort.trailingIndex(b.lastPathComponent)
             if let ia, let ib, ia != ib { return ia < ib }
             if ia != nil, ib == nil { return true }
             if ia == nil, ib != nil { return false }
-            return a.lastPathComponent.compare(b.lastPathComponent, options: NaturalSort.options) == .orderedAscending
+            return relA.compare(relB, options: NaturalSort.options) == .orderedAscending
         }
+    }
+
+    private func relativePath(of file: URL, to root: URL) -> String {
+        let rootParts = root.standardizedFileURL.pathComponents
+        let fileParts = file.standardizedFileURL.pathComponents
+        if fileParts.starts(with: rootParts) {
+            let rest = fileParts.dropFirst(rootParts.count)
+            if !rest.isEmpty {
+                return rest.joined(separator: "/")
+            }
+        }
+        return file.lastPathComponent
     }
 
     private func recursiveFiles(in folder: URL, skipNames: Set<String> = []) -> [URL] {

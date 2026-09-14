@@ -48,6 +48,7 @@ public enum MP4AudiobookTagger {
         tags: AudiobookTags,
         chapters: [ChapterMark]
     ) throws {
+        try validateChapters(chapters)
         let original = try Data(contentsOf: url, options: [.mappedIfSafe])
         let top = MP4AtomIO.parseHeaders(original, range: 0..<original.count)
         guard let moovHeader = top.first(where: { $0.type == "moov" }) else {
@@ -339,7 +340,7 @@ public enum MP4AudiobookTagger {
         payload.append(MP4Box.u32(0)) // reserved
         payload.append(UInt8(limited.count))
         for chapter in limited {
-            let start100ns = UInt64(max(0, chapter.start) * 10_000_000)
+            let start100ns = clampedUInt64(max(0, chapter.start) * 10_000_000)
             payload.append(MP4Box.u64(start100ns))
             let title = utf8Prefix(chapter.title, maxBytes: 255)
             payload.append(UInt8(title.count))
@@ -404,7 +405,8 @@ public enum MP4AudiobookTagger {
         return marks
     }
 
-    private static func utf8Prefix(_ string: String, maxBytes: Int) -> Data {
+    /// Character-boundary UTF-8 prefix shared by Nero `chpl` (255) and QT text samples (65535).
+    static func utf8Prefix(_ string: String, maxBytes: Int) -> Data {
         var result = Data()
         result.reserveCapacity(min(maxBytes, string.utf8.count))
         for character in string {
@@ -415,21 +417,71 @@ public enum MP4AudiobookTagger {
         return result
     }
 
-    private struct SamplePack {
+    static func validateChapters(_ chapters: [ChapterMark]) throws {
+        for (index, chapter) in chapters.enumerated() {
+            let n = index + 1
+            guard chapter.start.isFinite else {
+                throw BinderError.exportFailed("Chapter \(n) start time is not a finite number")
+            }
+            guard chapter.start >= 0 else {
+                throw BinderError.exportFailed("Chapter \(n) start time is negative")
+            }
+            guard chapter.duration.isFinite else {
+                throw BinderError.exportFailed("Chapter \(n) duration is not a finite number")
+            }
+            guard chapter.duration >= 0 else {
+                throw BinderError.exportFailed("Chapter \(n) duration is negative")
+            }
+            guard String(data: Data(chapter.title.utf8), encoding: .utf8) != nil else {
+                throw BinderError.exportFailed("Chapter \(n) title is not representable as UTF-8")
+            }
+        }
+    }
+
+    struct SamplePack: Equatable, Sendable {
         var payload: Data
         var sizes: [UInt32]
     }
 
-    private static func chapterSampleData(_ chapters: [ChapterMark]) -> SamplePack {
+    static func chapterSampleData(_ chapters: [ChapterMark]) -> SamplePack {
         var payload = Data()
         var sizes: [UInt32] = []
         for chapter in chapters {
-            let utf8 = Data(chapter.title.utf8)
-            let sample = MP4Box.u16(UInt16(utf8.count)) + utf8
-            sizes.append(UInt32(sample.count))
+            let utf8 = utf8Prefix(chapter.title, maxBytes: Int(UInt16.max))
+            let length = UInt16(exactly: utf8.count) ?? UInt16.max
+            let stored = Data(utf8.prefix(Int(length)))
+            let sample = MP4Box.u16(length) + stored
+            sizes.append(UInt32(clamping: sample.count))
             payload.append(sample)
         }
         return SamplePack(payload: payload, sizes: sizes)
+    }
+
+    static func chunkOffsetTable(offset: UInt64) -> Data {
+        if let offset32 = UInt32(exactly: offset) {
+            var stco = Data()
+            stco.append(MP4Box.u32(0))
+            stco.append(MP4Box.u32(1))
+            stco.append(MP4Box.u32(offset32))
+            return MP4Box.box("stco", stco)
+        }
+        var co64 = Data()
+        co64.append(MP4Box.u32(0))
+        co64.append(MP4Box.u32(1))
+        co64.append(MP4Box.u64(offset))
+        return MP4Box.box("co64", co64)
+    }
+
+    private static func clampedUInt32(_ value: Double) -> UInt32 {
+        guard value.isFinite, value > 0 else { return 0 }
+        if value >= Double(UInt32.max) { return .max }
+        return UInt32(value)
+    }
+
+    private static func clampedUInt64(_ value: Double) -> UInt64 {
+        guard value.isFinite, value > 0 else { return 0 }
+        if value >= Double(UInt64.max) { return .max }
+        return UInt64(value)
     }
 
     private static func makeChapterTrack(
@@ -441,9 +493,8 @@ public enum MP4AudiobookTagger {
         chunkOffset: UInt64
     ) -> Data {
         let mediaTimescale: UInt32 = 1000
-        let mediaDuration = UInt32(
-            min(UInt64((chapters.last.map { $0.start + max($0.duration, 0.001) } ?? 0) * 1000), UInt64(UInt32.max))
-        )
+        let lastEnd = chapters.last.map { $0.start + max($0.duration, 0.001) } ?? 0
+        let mediaDuration = clampedUInt32(lastEnd * 1000)
         let tkhdDuration = movieDuration == 0
             ? UInt64(mediaDuration) * UInt64(movieTimescale) / UInt64(mediaTimescale)
             : movieDuration
@@ -563,13 +614,13 @@ public enum MP4AudiobookTagger {
         return MP4Box.box("dinf", MP4Box.box("dref", dref))
     }
 
-    private static func makeChapterStbl(chapters: [ChapterMark], sampleSizes: [UInt32], chunkOffset: UInt64) -> Data {
+    static func makeChapterStbl(chapters: [ChapterMark], sampleSizes: [UInt32], chunkOffset: UInt64) -> Data {
         let stsd = makeTextSampleDescription()
         var stts = Data()
         stts.append(MP4Box.u32(0))
-        stts.append(MP4Box.u32(UInt32(chapters.count)))
+        stts.append(MP4Box.u32(UInt32(clamping: chapters.count)))
         for chapter in chapters {
-            let delta = UInt32(max(chapter.duration, 0.001) * 1000)
+            let delta = max(clampedUInt32(chapter.duration * 1000), 1)
             stts.append(MP4Box.u32(1))
             stts.append(MP4Box.u32(delta))
         }
@@ -577,26 +628,22 @@ public enum MP4AudiobookTagger {
         stsc.append(MP4Box.u32(0))
         stsc.append(MP4Box.u32(1))
         stsc.append(MP4Box.u32(1))
-        stsc.append(MP4Box.u32(UInt32(chapters.count)))
+        stsc.append(MP4Box.u32(UInt32(clamping: chapters.count)))
         stsc.append(MP4Box.u32(1))
         var stsz = Data()
         stsz.append(MP4Box.u32(0))
         stsz.append(MP4Box.u32(0))
-        stsz.append(MP4Box.u32(UInt32(sampleSizes.count)))
+        stsz.append(MP4Box.u32(UInt32(clamping: sampleSizes.count)))
         for size in sampleSizes {
             stsz.append(MP4Box.u32(size))
         }
-        var stco = Data()
-        stco.append(MP4Box.u32(0))
-        stco.append(MP4Box.u32(1))
-        stco.append(MP4Box.u32(UInt32(chunkOffset)))
         return MP4Box.boxes(
             "stbl",
             stsd,
             MP4Box.box("stts", stts),
             MP4Box.box("stsc", stsc),
             MP4Box.box("stsz", stsz),
-            MP4Box.box("stco", stco)
+            chunkOffsetTable(offset: chunkOffset)
         )
     }
 

@@ -143,6 +143,119 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertFalse(titleBytes.isEmpty)
     }
 
+    func testChapterSampleDataFits65535UTF8Bytes() {
+        let title = String(repeating: "A", count: 65_535)
+        XCTAssertEqual(title.utf8.count, 65_535)
+        let pack = MP4AudiobookTagger.chapterSampleData([
+            ChapterMark(start: 0, duration: 1, title: title)
+        ])
+        let parsed = parseQuickTimeTextSample(pack.payload)
+        XCTAssertEqual(parsed.length, 65_535)
+        XCTAssertEqual(parsed.text.count, 65_535)
+        XCTAssertEqual(String(data: parsed.text, encoding: .utf8), title)
+        XCTAssertEqual(pack.sizes, [UInt32(65_537)])
+    }
+
+    func testChapterSampleDataTruncatesOverlongAndMultibyteTitles() {
+        let ascii = String(repeating: "A", count: 65_536)
+        XCTAssertEqual(ascii.utf8.count, 65_536)
+        let asciiPack = MP4AudiobookTagger.chapterSampleData([
+            ChapterMark(start: 0, duration: 1, title: ascii)
+        ])
+        let asciiSample = parseQuickTimeTextSample(asciiPack.payload)
+        XCTAssertLessThanOrEqual(asciiSample.length, 65_535)
+        XCTAssertEqual(asciiSample.length, 65_535)
+        XCTAssertEqual(asciiSample.text.count, asciiSample.length)
+        XCTAssertNotNil(String(data: asciiSample.text, encoding: .utf8))
+        XCTAssertEqual(String(data: asciiSample.text, encoding: .utf8), String(repeating: "A", count: 65_535))
+
+        let accented = String(repeating: "é", count: 32_768)
+        XCTAssertEqual(accented.utf8.count, 65_536)
+        let accentedPack = MP4AudiobookTagger.chapterSampleData([
+            ChapterMark(start: 0, duration: 1, title: accented)
+        ])
+        let accentedSample = parseQuickTimeTextSample(accentedPack.payload)
+        XCTAssertLessThanOrEqual(accentedSample.length, 65_535)
+        XCTAssertEqual(accentedSample.length % 2, 0, "must not split a 2-byte character")
+        XCTAssertEqual(accentedSample.length, 65_534)
+        let decoded = String(data: accentedSample.text, encoding: .utf8)
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded, String(repeating: "é", count: 32_767))
+
+        let mixed = String(repeating: "A", count: 65_534) + "é"
+        XCTAssertEqual(mixed.utf8.count, 65_536)
+        let mixedSample = parseQuickTimeTextSample(
+            MP4AudiobookTagger.chapterSampleData([
+                ChapterMark(start: 0, duration: 1, title: mixed)
+            ]).payload
+        )
+        XCTAssertLessThanOrEqual(mixedSample.length, 65_535)
+        XCTAssertEqual(mixedSample.length, 65_534)
+        XCTAssertEqual(String(data: mixedSample.text, encoding: .utf8), String(repeating: "A", count: 65_534))
+    }
+
+    func testChunkOffsetTableUsesStcoAtUInt32Max() {
+        let table = MP4AudiobookTagger.chunkOffsetTable(offset: UInt64(UInt32.max))
+        XCTAssertEqual(String(bytes: table[4..<8], encoding: .isoLatin1), "stco")
+        XCTAssertEqual(MP4AtomIO.readU32(table, 12), 1)
+        XCTAssertEqual(MP4AtomIO.readU32(table, 16), UInt32.max)
+        XCTAssertNil(table.range(of: Data("co64".utf8)))
+    }
+
+    func testChunkOffsetTableUsesCo64AboveUInt32Max() {
+        let offset: UInt64 = 4_294_967_296
+        XCTAssertEqual(offset, UInt64(UInt32.max) + 1)
+        let table = MP4AudiobookTagger.chunkOffsetTable(offset: offset)
+        XCTAssertEqual(String(bytes: table[4..<8], encoding: .isoLatin1), "co64")
+        XCTAssertEqual(MP4AtomIO.readU32(table, 12), 1)
+        XCTAssertEqual(MP4AtomIO.readU64(table, 16), offset)
+        XCTAssertNil(table.range(of: Data("stco".utf8)))
+
+        let chapters = [ChapterMark(start: 0, duration: 1, title: "A")]
+        let samples = MP4AudiobookTagger.chapterSampleData(chapters)
+        let stbl = MP4AudiobookTagger.makeChapterStbl(
+            chapters: chapters,
+            sampleSizes: samples.sizes,
+            chunkOffset: offset
+        )
+        XCTAssertNotNil(stbl.range(of: Data("co64".utf8)))
+        XCTAssertNil(stbl.range(of: Data("stco".utf8)))
+    }
+
+    func testInvalidChapterTimesThrowWithoutTrapping() {
+        let cases: [(start: TimeInterval, duration: TimeInterval, needle: String)] = [
+            (.nan, 1, "start"),
+            (.infinity, 1, "start"),
+            (-.infinity, 1, "start"),
+            (-1, 1, "start"),
+            (0, .nan, "duration"),
+            (0, .infinity, "duration"),
+            (0, -.infinity, "duration"),
+            (0, -0.5, "duration")
+        ]
+        for item in cases {
+            XCTAssertThrowsError(
+                try MP4AudiobookTagger.validateChapters([
+                    ChapterMark(start: item.start, duration: item.duration, title: "X")
+                ]),
+                "start=\(item.start) duration=\(item.duration)"
+            ) { error in
+                guard case BinderError.exportFailed(let message) = error else {
+                    return XCTFail("\(error)")
+                }
+                XCTAssertTrue(
+                    message.localizedCaseInsensitiveContains(item.needle),
+                    "expected \(item.needle) in \(message)"
+                )
+            }
+        }
+        XCTAssertNoThrow(
+            try MP4AudiobookTagger.validateChapters([
+                ChapterMark(start: 0, duration: 0, title: "OK")
+            ])
+        )
+    }
+
     func testCleanupAuthorizationFailsWhenDestDeletedAfterInspection() throws {
         let fixture = try CleanupFixture.make()
         defer { fixture.tearDown() }
@@ -390,4 +503,11 @@ private func appendChplEntry(_ payload: inout Data, start: TimeInterval, title: 
     let bytes = Data(title.utf8)
     payload.append(UInt8(bytes.count))
     payload.append(bytes)
+}
+
+private func parseQuickTimeTextSample(_ payload: Data) -> (length: Int, text: Data) {
+    precondition(payload.count >= 2)
+    let length = Int(UInt16(payload[0]) << 8 | UInt16(payload[1]))
+    precondition(payload.count >= 2 + length)
+    return (length, payload.subdata(in: 2..<(2 + length)))
 }

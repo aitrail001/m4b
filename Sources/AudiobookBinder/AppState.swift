@@ -40,6 +40,8 @@ final class AppState {
     var finishedURLs: [URL] = []
 
     private var buildTask: Task<Void, Never>?
+    private var scanTask: Task<Void, Never>?
+    private var scanGeneration = ScanGeneration()
 
     init() {
         settings = Self.loadSettings()
@@ -107,44 +109,66 @@ final class AppState {
     }
 
     func scan(_ url: URL) {
+        if isBuilding {
+            status = "Cannot scan while a build is running."
+            return
+        }
         playback.stop()
         bookQuery = ""
         let folder = LibraryOutline.folderURL(url)
         libraryFolder = folder
         lastOpenedFolder = folder
         UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
+        let generation = scanGeneration.begin()
+        scanTask?.cancel()
         isScanning = true
         lastError = nil
         scanProgress = JobProgress.looking(in: folder)
         status = scanProgress?.detail ?? "Scanning \(folder.lastPathComponent)…"
-        Task {
+        scanTask = Task {
             do {
                 let found = try await BookScanner().scan(root: url) { [weak self] progress in
                     Task { @MainActor in
-                        self?.scanProgress = progress
-                        self?.status = progress.detail
+                        self?.applyIfCurrent(generation) {
+                            self?.scanProgress = progress
+                            self?.status = progress.detail
+                        }
                     }
                 }
-                books = found
-                selectedID = found.first?.id
-                selectedFolderURL = folder
-                let boundCount = found.filter(\.isAlreadyBound).count
-                if boundCount > 0 {
-                    status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
-                } else {
-                    status = found.count == 1
-                        ? "Found 1 book — \(found[0].chapterCount) chapters."
-                        : "Found \(found.count) books."
+                try Task.checkCancellation()
+                applyIfCurrent(generation) {
+                    books = found
+                    selectedID = found.first?.id
+                    selectedFolderURL = folder
+                    let boundCount = found.filter(\.isAlreadyBound).count
+                    if boundCount > 0 {
+                        status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
+                    } else {
+                        status = found.count == 1
+                            ? "Found 1 book — \(found[0].chapterCount) chapters."
+                            : "Found \(found.count) books."
+                    }
                 }
+            } catch is CancellationError {
+                // Superseded scans are ignored below. A current cancel only stops.
             } catch {
-                lastError = error.localizedDescription
-                status = error.localizedDescription
-                books = []
-                selectedFolderURL = folder
+                applyIfCurrent(generation) {
+                    lastError = error.localizedDescription
+                    status = error.localizedDescription
+                    books = []
+                    selectedFolderURL = folder
+                }
             }
-            isScanning = false
-            scanProgress = nil
+            applyIfCurrent(generation) {
+                isScanning = false
+                scanProgress = nil
+            }
         }
+    }
+
+    private func applyIfCurrent(_ generation: UInt64, _ body: () -> Void) {
+        guard scanGeneration.isCurrent(generation) else { return }
+        body()
     }
 
     func selectAll(_ on: Bool) {

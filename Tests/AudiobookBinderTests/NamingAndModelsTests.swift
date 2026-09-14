@@ -384,4 +384,12 @@ final class NamingAndModelsTests: XCTestCase {
         let empty = ChapterCompare.summary(original: [], bound: matching, boundDuration: 30)
         XCTAssertEqual(empty.detail, "No original audio left to compare.")
     }
+
+    func testScanGenerationNewestWins() {
+        var generation = ScanGeneration()
+        let a = generation.begin()
+        let b = generation.begin()
+        XCTAssertFalse(generation.isCurrent(a))
+        XCTAssertTrue(generation.isCurrent(b))
+    }
 }

@@ -29,8 +29,8 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .binderOpenURLs)) { note in
-            if let urls = note.object as? [URL], let first = urls.first {
-                appState.scan(first)
+            if let urls = note.object as? [URL], let url = urls.last {
+                appState.scan(url)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -302,20 +302,17 @@ struct ContentView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        var handled = false
-        for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-                let folder = isDir.boolValue ? url : url.deletingLastPathComponent()
-                Task { @MainActor in
-                    appState.scan(folder)
-                }
+        guard let provider = providers.last else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            let folder = isDir.boolValue ? url : url.deletingLastPathComponent()
+            Task { @MainActor in
+                appState.scan(folder)
             }
-            handled = true
         }
-        return handled
+        return true
     }
 }
 

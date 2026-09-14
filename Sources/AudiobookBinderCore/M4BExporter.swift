@@ -77,6 +77,7 @@ public struct M4BExporter: Sendable {
             throw BinderError.cancelled
         }
         try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
+        OutputAssociation.record(outputURL, inBookFolder: book.folder)
         progress?(1.0, "Finished \(book.title)")
     }
 
@@ -98,6 +99,10 @@ public struct M4BExporter: Sendable {
             }
             let dest = destinations[book.id] ?? settings.outputURL(for: book)
             let existed = Self.existingRegularFile(dest)
+            if existed && !settings.owns(dest, for: book) {
+                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                continue
+            }
             if existed && !settings.overwrite {
                 results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
                 continue

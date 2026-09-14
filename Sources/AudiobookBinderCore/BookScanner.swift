@@ -261,7 +261,14 @@ public struct BookScanner: Sendable {
         let leftoverM4B = collectM4B(in: folder).sorted {
             $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
         }.first
-        let leftoverDuration = leftoverM4B.map { AudioMetadata.fileInfo(of: $0).duration } ?? 0
+        let associated = OutputAssociation.load(inBookFolder: folder)
+        let existingM4B: URL?
+        if let associated, OutputAssociation.isExistingRegularFile(associated) {
+            existingM4B = associated
+        } else {
+            existingM4B = leftoverM4B
+        }
+        let leftoverDuration = existingM4B.map { AudioMetadata.fileInfo(of: $0).duration } ?? 0
         return Audiobook(
             folder: folder,
             title: title,
@@ -271,7 +278,7 @@ public struct BookScanner: Sendable {
             coverURL: coverURL,
             coverJPEG: coverJPEG,
             chapters: chapters,
-            existingM4BURL: leftoverM4B,
+            existingM4BURL: existingM4B,
             boundDuration: leftoverDuration
         )
     }

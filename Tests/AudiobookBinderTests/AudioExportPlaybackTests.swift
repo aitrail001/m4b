@@ -272,16 +272,17 @@ final class AudioExportPlaybackTests: XCTestCase {
 
         let book = try makeSilenceBook(folder: bookDir, title: "SkipMe", author: "A")
         let settings = ExportSettings(outputDirectory: out, overwrite: false, writeNextToBook: false)
-        let dest = settings.plannedOutputs(for: [book])[book.id]!
+        let primary = out.appendingPathComponent(book.suggestedFileName)
         let payload = Data("UNRELATED-NOT-AN-M4B".utf8)
-        try payload.write(to: dest)
+        try payload.write(to: primary)
 
         let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [book], settings: settings)
         XCTAssertEqual(results.count, 1)
-        XCTAssertEqual(results[0].outcome, .skippedExisting)
-        XCTAssertNotEqual(results[0].outcome, .created)
-        XCTAssertEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
-        XCTAssertEqual(try Data(contentsOf: dest), payload)
+        XCTAssertEqual(results[0].outcome, .created)
+        XCTAssertNotEqual(results[0].url.standardizedFileURL.path, primary.standardizedFileURL.path)
+        XCTAssertEqual(results[0].url.lastPathComponent, "SkipMe - A - BookA.m4b")
+        XCTAssertEqual(try Data(contentsOf: primary), payload)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
     }
 
     func testExportAllOverwriteReplacesExistingDest() async throws {
@@ -292,10 +293,11 @@ final class AudioExportPlaybackTests: XCTestCase {
         try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
-        let book = try makeSilenceBook(folder: bookDir, title: "ReplaceMe", author: "System")
+        var book = try makeSilenceBook(folder: bookDir, title: "ReplaceMe", author: "System")
         let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
         let dest = settings.plannedOutputs(for: [book])[book.id]!
         try Data("OLD-DEST".utf8).write(to: dest)
+        book.existingM4BURL = dest
 
         let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [book], settings: settings)
         XCTAssertEqual(results.count, 1)
@@ -337,6 +339,121 @@ final class AudioExportPlaybackTests: XCTestCase {
             let size = try FileManager.default.attributesOfItem(atPath: result.url.path)[.size] as? Int64 ?? 0
             XCTAssertGreaterThan(size, 1_000)
         }
+    }
+
+    func testExportAllOverwriteBOnlyDoesNotReplaceABytes() async throws {
+        let root = try TestSupport.tempDir("export-b-only-overwrite")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionA = root.appendingPathComponent("EditionA", isDirectory: true)
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        var bookA = try makeSilenceBook(folder: editionA, title: "Same", author: "Ann")
+        var bookB = try makeSilenceBook(folder: editionB, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let first = settings.plannedOutputs(for: [bookA, bookB])
+        let destA = first[bookA.id]!
+        let destB = first[bookB.id]!
+        let payloadA = Data("SENTINEL-A".utf8)
+        try payloadA.write(to: destA)
+        try Data("SENTINEL-B".utf8).write(to: destB)
+        bookA.existingM4BURL = destA
+        bookB.existingM4BURL = destB
+        try destA.standardizedFileURL.path.write(
+            to: editionA.appendingPathComponent(".audiobookbinder-output"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try destB.standardizedFileURL.path.write(
+            to: editionB.appendingPathComponent(".audiobookbinder-output"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [bookB], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].bookID, bookB.id)
+        XCTAssertEqual(results[0].outcome, .replaced)
+        XCTAssertEqual(results[0].url.standardizedFileURL.path, destB.standardizedFileURL.path)
+        XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+        let sizeB = try FileManager.default.attributesOfItem(atPath: destB.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(sizeB, 1_000)
+    }
+
+    func testExportAllOverwriteOffBOnlyTargetsOwnedDest() async throws {
+        let root = try TestSupport.tempDir("export-b-only-skip")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionA = root.appendingPathComponent("EditionA", isDirectory: true)
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        var bookA = try makeSilenceBook(folder: editionA, title: "Same", author: "Ann")
+        var bookB = try makeSilenceBook(folder: editionB, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: false, writeNextToBook: false)
+        let first = settings.plannedOutputs(for: [bookA, bookB])
+        let destA = first[bookA.id]!
+        let destB = first[bookB.id]!
+        let payloadA = Data("SENTINEL-A".utf8)
+        let payloadB = Data("SENTINEL-B".utf8)
+        try payloadA.write(to: destA)
+        try payloadB.write(to: destB)
+        bookA.existingM4BURL = destA
+        bookB.existingM4BURL = destB
+
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [bookB], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].bookID, bookB.id)
+        XCTAssertEqual(results[0].outcome, .skippedExisting)
+        XCTAssertEqual(results[0].url.standardizedFileURL.path, destB.standardizedFileURL.path)
+        XCTAssertNotEqual(results[0].url.standardizedFileURL.path, destA.standardizedFileURL.path)
+        XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+        XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+    }
+
+    func testExportAllRecordsOutputAssociationSidecar() async throws {
+        let root = try TestSupport.tempDir("export-sidecar")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionA = root.appendingPathComponent("EditionA", isDirectory: true)
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let bookA = try makeSilenceBook(folder: editionA, title: "Same", author: "Ann")
+        let bookB = try makeSilenceBook(folder: editionB, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(
+            books: [bookA, bookB],
+            settings: settings
+        )
+        XCTAssertEqual(results.count, 2)
+        let destByID = Dictionary(uniqueKeysWithValues: results.map { ($0.bookID, $0.url) })
+
+        let storedA = try String(
+            contentsOf: editionA.appendingPathComponent(".audiobookbinder-output"),
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedB = try String(
+            contentsOf: editionB.appendingPathComponent(".audiobookbinder-output"),
+            encoding: .utf8
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(
+            URL(fileURLWithPath: storedA).standardizedFileURL.path,
+            destByID[bookA.id]?.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            URL(fileURLWithPath: storedB).standardizedFileURL.path,
+            destByID[bookB.id]?.standardizedFileURL.path
+        )
+        XCTAssertEqual(URL(fileURLWithPath: storedA).lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(URL(fileURLWithPath: storedB).lastPathComponent, "Same - Ann - EditionB.m4b")
     }
 
     func testExportAllContinuesAfterFailureAndDoesNotPublishFailed() async throws {

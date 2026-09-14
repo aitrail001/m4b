@@ -237,14 +237,65 @@ public struct ExportSettings: Sendable, Equatable {
 
     /// Unique destination per book. Same title/author from different folders, and
     /// names that collide after `suggestedFileName` sanitization, get distinct paths.
+    /// Honors a validated owned dest (`existingM4BURL` or `.audiobookbinder-output`)
+    /// and never assigns an on-disk path this book does not own.
     public func plannedOutputs(for books: [Audiobook]) -> [UUID: URL] {
         var reserved = Set<String>()
+        var owned: [UUID: URL] = [:]
+        owned.reserveCapacity(books.count)
+        for book in books {
+            guard let dest = ownedDestination(for: book) else { continue }
+            let key = Self.destinationKey(dest)
+            guard !reserved.contains(key) else { continue }
+            reserved.insert(key)
+            owned[book.id] = dest
+        }
+
         var plan: [UUID: URL] = [:]
         plan.reserveCapacity(books.count)
         for book in books {
-            plan[book.id] = uniqueOutputURL(for: book, reserved: &reserved)
+            if let dest = owned[book.id] {
+                plan[book.id] = dest
+            } else {
+                plan[book.id] = uniqueOutputURL(for: book, reserved: &reserved)
+            }
         }
         return plan
+    }
+
+    func owns(_ url: URL, for book: Audiobook) -> Bool {
+        guard let dest = ownedDestination(for: book) else { return false }
+        return Self.destinationKey(dest) == Self.destinationKey(url)
+    }
+
+    private func ownedDestination(for book: Audiobook) -> URL? {
+        let dir = resolvedOutputDirectory(for: book).standardizedFileURL
+        let candidates = [book.existingM4BURL, OutputAssociation.load(inBookFolder: book.folder)]
+            .compactMap { $0 }
+        for candidate in candidates {
+            let dest = candidate.standardizedFileURL
+            guard isInOutputDirectory(dest, directory: dir) else { continue }
+            guard Self.destinationMatchesCurrentNaming(dest.lastPathComponent, book: book) else { continue }
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: dest.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                continue
+            }
+            return dest
+        }
+        return nil
+    }
+
+    private func isInOutputDirectory(_ file: URL, directory: URL) -> Bool {
+        Self.destinationKey(file.deletingLastPathComponent()) == Self.destinationKey(directory)
+    }
+
+    private static func destinationMatchesCurrentNaming(_ name: String, book: Audiobook) -> Bool {
+        let stem = (book.suggestedFileName as NSString).deletingPathExtension.lowercased()
+        let destStem = (name as NSString).deletingPathExtension.lowercased()
+        if destStem == stem { return true }
+        if destStem.hasPrefix(stem + " - ") { return true }
+        if destStem.hasPrefix(stem + " ") { return true }
+        return false
     }
 
     private func uniqueOutputURL(for book: Audiobook, reserved: inout Set<String>) -> URL {
@@ -282,6 +333,10 @@ public struct ExportSettings: Sendable, Equatable {
     private func claim(_ url: URL, reserved: inout Set<String>) -> URL? {
         let key = Self.destinationKey(url)
         guard !reserved.contains(key) else { return nil }
+        if FileManager.default.fileExists(atPath: url.path) {
+            reserved.insert(key)
+            return nil
+        }
         reserved.insert(key)
         return url
     }

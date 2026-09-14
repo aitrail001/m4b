@@ -401,6 +401,29 @@ final class ScannerTests: XCTestCase {
         XCTAssertEqual(loaded.author, "OPF Author")
     }
 
+    func testLoadBookRestoresExistingM4BFromSidecar() async throws {
+        let root = try TestSupport.tempDir("load-sidecar")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        try Data().write(to: book.appendingPathComponent("01.mp3"))
+        try Data().write(to: book.appendingPathComponent("leftover.m4b"))
+
+        let dest = out.appendingPathComponent("Same - Ann - EditionB.m4b")
+        try Data("OWNED-B".utf8).write(to: dest)
+        try dest.standardizedFileURL.path.write(
+            to: book.appendingPathComponent(".audiobookbinder-output"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let loaded = try await BookScanner().loadBook(at: book)
+        XCTAssertEqual(loaded.existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertNotEqual(loaded.existingM4BURL?.lastPathComponent, "leftover.m4b")
+    }
+
     func testHasDirectAudioIgnoresM4B() throws {
         let dir = try TestSupport.tempDir("direct")
         defer { try? FileManager.default.removeItem(at: dir) }

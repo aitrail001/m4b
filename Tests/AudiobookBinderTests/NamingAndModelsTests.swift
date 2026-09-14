@@ -328,6 +328,172 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertNil(plan[ignored.id])
     }
 
+    func testBOnlyPlanKeepsOwnedSuffixedDestination() {
+        let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        var editionA = TestSupport.dummyBook(folder: "/tmp/lib/EditionA", title: "Same", author: "Ann")
+        var editionB = TestSupport.dummyBook(folder: "/tmp/lib/EditionB", title: "Same", author: "Ann")
+
+        let first = settings.plannedOutputs(for: [editionA, editionB])
+        XCTAssertEqual(first[editionA.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(first[editionB.id]?.lastPathComponent, "Same - Ann - EditionB.m4b")
+
+        editionA.existingM4BURL = first[editionA.id]
+        editionB.existingM4BURL = first[editionB.id]
+
+        let bOnly = settings.plannedOutputs(for: [editionB])
+        XCTAssertEqual(bOnly[editionB.id]?.standardizedFileURL.path, first[editionB.id]?.standardizedFileURL.path)
+        XCTAssertEqual(bOnly[editionB.id]?.lastPathComponent, "Same - Ann - EditionB.m4b")
+        XCTAssertNotEqual(bOnly[editionB.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertNotEqual(bOnly[editionB.id]?.standardizedFileURL.path, first[editionA.id]?.standardizedFileURL.path)
+    }
+
+    func testReversedQueueKeepsPreviousDestinations() {
+        let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        var editionA = TestSupport.dummyBook(folder: "/tmp/lib/EditionA", title: "Same", author: "Ann")
+        var editionB = TestSupport.dummyBook(folder: "/tmp/lib/EditionB", title: "Same", author: "Ann")
+
+        let first = settings.plannedOutputs(for: [editionA, editionB])
+        editionA.existingM4BURL = first[editionA.id]
+        editionB.existingM4BURL = first[editionB.id]
+
+        let reversed = settings.plannedOutputs(for: [editionB, editionA])
+        XCTAssertEqual(reversed[editionA.id]?.standardizedFileURL.path, first[editionA.id]?.standardizedFileURL.path)
+        XCTAssertEqual(reversed[editionB.id]?.standardizedFileURL.path, first[editionB.id]?.standardizedFileURL.path)
+        XCTAssertEqual(reversed[editionA.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(reversed[editionB.id]?.lastPathComponent, "Same - Ann - EditionB.m4b")
+    }
+
+    func testRescanRestoresOwnedDestinationFromSidecar() async throws {
+        let root = try TestSupport.tempDir("rescan-owned-dest")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionA = root.appendingPathComponent("EditionA", isDirectory: true)
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        try Data().write(to: editionA.appendingPathComponent("01.mp3"))
+        try Data().write(to: editionB.appendingPathComponent("01.mp3"))
+
+        let destA = out.appendingPathComponent("Same - Ann.m4b")
+        let destB = out.appendingPathComponent("Same - Ann - EditionB.m4b")
+        try Data("A-BYTES".utf8).write(to: destA)
+        try Data("B-BYTES".utf8).write(to: destB)
+        try writeOutputSidecar(destA, in: editionA)
+        try writeOutputSidecar(destB, in: editionB)
+
+        let loadedB = try await BookScanner().loadBook(at: editionB)
+        XCTAssertNotEqual(loadedB.id.uuidString, TestSupport.dummyBook(folder: editionB.path).id.uuidString)
+        XCTAssertEqual(loadedB.existingM4BURL?.standardizedFileURL.path, destB.standardizedFileURL.path)
+
+        var rescannedB = loadedB
+        rescannedB.title = "Same"
+        rescannedB.author = "Ann"
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let bOnly = settings.plannedOutputs(for: [rescannedB])
+        XCTAssertEqual(bOnly[rescannedB.id]?.standardizedFileURL.path, destB.standardizedFileURL.path)
+        XCTAssertNotEqual(bOnly[rescannedB.id]?.standardizedFileURL.path, destA.standardizedFileURL.path)
+
+        let freshB = TestSupport.dummyBook(folder: editionB.path, title: "Same", author: "Ann")
+        XCTAssertNil(freshB.existingM4BURL)
+        XCTAssertNotEqual(freshB.id, loadedB.id)
+        let fromSidecar = settings.plannedOutputs(for: [freshB])
+        XCTAssertEqual(fromSidecar[freshB.id]?.standardizedFileURL.path, destB.standardizedFileURL.path)
+    }
+
+    func testUnrelatedPreexistingPrimaryIsNotClaimed() throws {
+        let root = try TestSupport.tempDir("unrelated-primary")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let primary = out.appendingPathComponent("Same - Ann.m4b")
+        try Data("UNRELATED".utf8).write(to: primary)
+        let book = TestSupport.dummyBook(folder: editionB.path, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [book])
+        XCTAssertEqual(plan[book.id]?.lastPathComponent, "Same - Ann - EditionB.m4b")
+        XCTAssertNotEqual(plan[book.id]?.standardizedFileURL.path, primary.standardizedFileURL.path)
+    }
+
+    func testOnDiskCaseEquivalentPrimaryIsNotClaimed() throws {
+        let root = try TestSupport.tempDir("case-occupied-primary")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        try Data("UNRELATED".utf8).write(to: out.appendingPathComponent("Same - Ann.m4b"))
+        let book = TestSupport.dummyBook(folder: editionB.path, title: "same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [book])
+        XCTAssertEqual(plan[book.id]?.lastPathComponent, "same - Ann - EditionB.m4b")
+        XCTAssertNotEqual(plan[book.id]?.lastPathComponent.lowercased(), "same - ann.m4b")
+    }
+
+    func testPersistedDestOutsideOutputDirectoryIsNotReused() throws {
+        let root = try TestSupport.tempDir("dest-dir-change")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let oldOut = root.appendingPathComponent("old-out", isDirectory: true)
+        let newOut = root.appendingPathComponent("new-out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: oldOut, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: newOut, withIntermediateDirectories: true)
+
+        let oldDest = oldOut.appendingPathComponent("Same - Ann - EditionB.m4b")
+        try Data("OLD-B".utf8).write(to: oldDest)
+        try Data("TAKEN".utf8).write(to: newOut.appendingPathComponent("Same - Ann.m4b"))
+        try writeOutputSidecar(oldDest, in: editionB)
+
+        var book = TestSupport.dummyBook(folder: editionB.path, title: "Same", author: "Ann")
+        book.existingM4BURL = oldDest
+        let settings = ExportSettings(outputDirectory: newOut, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [book])
+        XCTAssertEqual(plan[book.id]?.lastPathComponent, "Same - Ann - EditionB.m4b")
+        XCTAssertEqual(plan[book.id]?.deletingLastPathComponent().standardizedFileURL.path, newOut.standardizedFileURL.path)
+        XCTAssertNotEqual(plan[book.id]?.standardizedFileURL.path, oldDest.standardizedFileURL.path)
+        XCTAssertNotEqual(plan[book.id]?.lastPathComponent, "Same - Ann.m4b")
+    }
+
+    func testTitleChangeAllocatesFreshNameWithoutStealing() throws {
+        let root = try TestSupport.tempDir("title-change")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let oldDest = out.appendingPathComponent("Same - Ann - EditionB.m4b")
+        try Data("OLD-B".utf8).write(to: oldDest)
+        try Data("TAKEN".utf8).write(to: out.appendingPathComponent("Other - Ann.m4b"))
+        try writeOutputSidecar(oldDest, in: editionB)
+
+        var book = TestSupport.dummyBook(folder: editionB.path, title: "Other", author: "Ann")
+        book.existingM4BURL = oldDest
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [book])
+        XCTAssertEqual(plan[book.id]?.lastPathComponent, "Other - Ann - EditionB.m4b")
+        XCTAssertNotEqual(plan[book.id]?.standardizedFileURL.path, oldDest.standardizedFileURL.path)
+        XCTAssertNotEqual(plan[book.id]?.lastPathComponent, "Other - Ann.m4b")
+    }
+
+    func testWriteNextToBookStillUsesPrimaryBesideEachFolder() {
+        let nextTo = ExportSettings(writeNextToBook: true)
+        let editionA = TestSupport.dummyBook(folder: "/tmp/lib/EditionA", title: "Same", author: "Ann")
+        let editionB = TestSupport.dummyBook(folder: "/tmp/lib/EditionB", title: "Same", author: "Ann")
+        let beside = nextTo.plannedOutputs(for: [editionA, editionB])
+        XCTAssertEqual(beside[editionA.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(beside[editionB.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(beside[editionA.id]?.deletingLastPathComponent().path, "/tmp/lib/EditionA")
+        XCTAssertEqual(beside[editionB.id]?.deletingLastPathComponent().path, "/tmp/lib/EditionB")
+    }
+
     func testChapterCompareRowsPairOriginalAndBound() {
         let orig = [
             TestSupport.dummyChapter(index: 1),
@@ -391,5 +557,13 @@ final class NamingAndModelsTests: XCTestCase {
         let b = generation.begin()
         XCTAssertFalse(generation.isCurrent(a))
         XCTAssertTrue(generation.isCurrent(b))
+    }
+
+    private func writeOutputSidecar(_ dest: URL, in folder: URL) throws {
+        try dest.standardizedFileURL.path.write(
+            to: folder.appendingPathComponent(".audiobookbinder-output"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 }

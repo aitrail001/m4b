@@ -20,13 +20,7 @@ public struct M4BExporter: Sendable {
         overwrite: Bool,
         progress: (@Sendable (Double, String) -> Void)? = nil
     ) async throws {
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            if overwrite {
-                try FileManager.default.removeItem(at: outputURL)
-            } else {
-                throw BinderError.outputExists(outputURL)
-            }
-        }
+        try Self.preflightDestination(outputURL, book: book, overwrite: overwrite)
 
         try FileManager.default.createDirectory(
             at: outputURL.deletingLastPathComponent(),
@@ -62,10 +56,11 @@ public struct M4BExporter: Sendable {
             chapters: marks
         )
 
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            try FileManager.default.removeItem(at: outputURL)
+        guard FileManager.default.fileExists(atPath: tempURL.path) else {
+            throw BinderError.exportFailed("Encode produced no output")
         }
-        try FileManager.default.moveItem(at: tempURL, to: outputURL)
+
+        try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
         progress?(1.0, "Finished \(book.title)")
     }
 
@@ -279,5 +274,80 @@ public struct M4BExporter: Sendable {
     private func avMetadata(for chapters: [Chapter]) -> [AVMetadataItem] {
         _ = chapters
         return []
+    }
+}
+
+extension M4BExporter {
+    static func preflightDestination(_ dest: URL, book: Audiobook, overwrite: Bool) throws {
+        for chapter in book.chapters where chapter.included {
+            if isSameFileURL(chapter.url, dest) {
+                throw BinderError.exportFailed(
+                    "Destination is the same as a source chapter: \(dest.lastPathComponent)"
+                )
+            }
+        }
+
+        let kind = destinationKind(dest)
+        if kind.isDirectory {
+            throw BinderError.exportFailed("Destination is a directory: \(dest.path)")
+        }
+        if kind.exists && !overwrite {
+            throw BinderError.outputExists(dest)
+        }
+    }
+
+    /// Publishes a ready staging file. Never delete-then-move the previous dest.
+    static func publish(staging: URL, to dest: URL, overwrite: Bool) throws {
+        let kind = destinationKind(dest)
+        if kind.isDirectory {
+            throw BinderError.exportFailed("Destination is a directory: \(dest.path)")
+        }
+        if kind.exists && !overwrite {
+            throw BinderError.outputExists(dest)
+        }
+
+        do {
+            if kind.exists {
+                var resultingItemURL: NSURL?
+                try FileManager.default.replaceItem(
+                    at: dest,
+                    withItemAt: staging,
+                    backupItemName: nil,
+                    options: [],
+                    resultingItemURL: &resultingItemURL
+                )
+            } else {
+                try FileManager.default.moveItem(at: staging, to: dest)
+            }
+        } catch {
+            if overwrite && !FileManager.default.fileExists(atPath: dest.path) {
+                do {
+                    try FileManager.default.moveItem(at: staging, to: dest)
+                    return
+                } catch {
+                    throw BinderError.exportFailed(error.localizedDescription)
+                }
+            }
+            if !overwrite && FileManager.default.fileExists(atPath: dest.path) {
+                throw BinderError.outputExists(dest)
+            }
+            throw BinderError.exportFailed(error.localizedDescription)
+        }
+    }
+
+    private static func destinationKind(_ url: URL) -> (exists: Bool, isDirectory: Bool) {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        return (exists, exists && isDirectory.boolValue)
+    }
+
+    private static func isSameFileURL(_ a: URL, _ b: URL) -> Bool {
+        if let aID = try? a.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
+           let bID = try? b.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
+           aID.isEqual(bID) {
+            return true
+        }
+        return a.resolvingSymlinksInPath().standardizedFileURL.path
+            == b.resolvingSymlinksInPath().standardizedFileURL.path
     }
 }

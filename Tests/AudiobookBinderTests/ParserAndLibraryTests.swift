@@ -143,3 +143,132 @@ final class ParserAndLibraryTests: XCTestCase {
         return dest as Data
     }
 }
+
+final class MP4AtomIOTests: XCTestCase {
+    func testExtendedSizeUInt64MaxDoesNotTrapOrAcceptAtom() {
+        var data = Data()
+        data.append(MP4Box.u32(1))
+        data.append(MP4Box.fourcc("mdat"))
+        data.append(MP4Box.u64(.max))
+        XCTAssertEqual(data.count, 16)
+
+        var atoms: [MP4AtomHeader] = []
+        XCTAssertNoThrow(atoms = MP4AtomIO.parseHeaders(data, range: 0..<data.count))
+        XCTAssertTrue(atoms.isEmpty, "UInt64.max extended size must not be accepted")
+        XCTAssertNoThrow {
+            _ = MP4AtomIO.slice(data, MP4AtomHeader(offset: 0, headerSize: 16, size: .max, type: "mdat"))
+        }
+    }
+
+    func testShortBufferMustNotAcceptOversizedMoov() {
+        var data = Data()
+        data.append(MP4Box.u32(4096))
+        data.append(MP4Box.fourcc("moov"))
+        XCTAssertEqual(data.count, 8)
+
+        var atoms: [MP4AtomHeader] = []
+        XCTAssertNoThrow(atoms = MP4AtomIO.parseHeaders(data, range: 0..<data.count))
+        XCTAssertFalse(atoms.contains(where: { $0.end == 4096 }))
+        XCTAssertTrue(atoms.isEmpty)
+    }
+
+    func testTruncatedHeaderAndInvalidSizesAreRejected() {
+        XCTAssertTrue(MP4AtomIO.parseHeaders(Data([0, 0, 0, 8, 0x66, 0x72, 0x65]), range: 0..<7).isEmpty)
+        XCTAssertTrue(MP4AtomIO.parseHeaders(Data(), range: 0..<0).isEmpty)
+
+        var tooSmall = Data()
+        tooSmall.append(MP4Box.u32(4))
+        tooSmall.append(MP4Box.fourcc("free"))
+        XCTAssertTrue(MP4AtomIO.parseHeaders(tooSmall, range: 0..<tooSmall.count).isEmpty)
+
+        var sizeZero = Data()
+        sizeZero.append(MP4Box.u32(0))
+        sizeZero.append(MP4Box.fourcc("free"))
+        let filled = MP4AtomIO.parseHeaders(sizeZero, range: 0..<sizeZero.count)
+        XCTAssertEqual(filled.count, 1)
+        XCTAssertEqual(filled[0].size, 8)
+        XCTAssertEqual(filled[0].type, "free")
+
+        var shortExtended = Data()
+        shortExtended.append(MP4Box.u32(1))
+        shortExtended.append(MP4Box.fourcc("mdat"))
+        shortExtended.append(MP4Box.u64(10))
+        XCTAssertTrue(MP4AtomIO.parseHeaders(shortExtended, range: 0..<shortExtended.count).isEmpty)
+
+        var truncatedExtended = Data()
+        truncatedExtended.append(MP4Box.u32(1))
+        truncatedExtended.append(MP4Box.fourcc("mdat"))
+        truncatedExtended.append(contentsOf: [0, 0, 0])
+        XCTAssertTrue(
+            MP4AtomIO.parseHeaders(truncatedExtended, range: 0..<truncatedExtended.count).isEmpty
+        )
+    }
+
+    func testChildAtomLargerThanParentPayloadIsRejected() {
+        var data = Data()
+        data.append(MP4Box.u32(24))
+        data.append(MP4Box.fourcc("moov"))
+        data.append(MP4Box.u32(100))
+        data.append(MP4Box.fourcc("free"))
+        data.append(Data(count: 8))
+        XCTAssertEqual(data.count, 24)
+
+        let top = MP4AtomIO.parseHeaders(data, range: 0..<data.count)
+        XCTAssertEqual(top.count, 1)
+        XCTAssertEqual(top[0].type, "moov")
+        XCTAssertEqual(top[0].size, 24)
+
+        guard let payloadStart = Int(exactly: top[0].payloadOffset),
+              let payloadEnd = Int(exactly: top[0].end)
+        else {
+            return XCTFail("valid parent offsets must convert")
+        }
+        let children = MP4AtomIO.parseHeaders(data, range: payloadStart..<payloadEnd)
+        XCTAssertTrue(children.isEmpty, "oversized child must not be accepted")
+    }
+
+    func testValidTinyAtomStillParses() {
+        let free = MP4Box.box("free", Data())
+        XCTAssertEqual(free.count, 8)
+        let atoms = MP4AtomIO.parseHeaders(free, range: 0..<free.count)
+        XCTAssertEqual(atoms.count, 1)
+        XCTAssertEqual(atoms[0].type, "free")
+        XCTAssertEqual(atoms[0].headerSize, 8)
+        XCTAssertEqual(atoms[0].size, 8)
+        XCTAssertEqual(atoms[0].end, 8)
+        XCTAssertEqual(MP4AtomIO.slice(free, atoms[0]), free)
+
+        let nested = MP4Box.box("moov", MP4Box.box("free", Data()))
+        let top = MP4AtomIO.parseHeaders(nested, range: 0..<nested.count)
+        XCTAssertEqual(top.count, 1)
+        XCTAssertEqual(top[0].type, "moov")
+        XCTAssertEqual(top[0].size, UInt64(nested.count))
+        guard let start = Int(exactly: top[0].payloadOffset),
+              let end = Int(exactly: top[0].end)
+        else {
+            return XCTFail("valid nested offsets must convert")
+        }
+        let kids = MP4AtomIO.parseHeaders(nested, range: start..<end)
+        XCTAssertEqual(kids.count, 1)
+        XCTAssertEqual(kids[0].type, "free")
+        XCTAssertEqual(kids[0].size, 8)
+    }
+
+    func testReadersRejectOutOfBoundsWithoutTrapping() {
+        let short = Data([1, 2, 3])
+        XCTAssertNil(MP4AtomIO.readU32(short, 0))
+        XCTAssertNil(MP4AtomIO.readU64(short, 0))
+        XCTAssertNil(MP4AtomIO.readFourCC(short, 0))
+        XCTAssertNil(MP4AtomIO.readU32(short, -1))
+        XCTAssertNil(MP4AtomIO.readU32(Data([0, 1, 2, 3]), 1))
+
+        var claimed = Data()
+        claimed.append(MP4Box.u32(4096))
+        claimed.append(MP4Box.fourcc("moov"))
+        let bogus = MP4AtomHeader(offset: 0, headerSize: 8, size: 4096, type: "moov")
+        XCTAssertTrue(MP4AtomIO.slice(claimed, bogus).isEmpty)
+        XCTAssertTrue(
+            MP4AtomIO.slice(claimed, MP4AtomHeader(offset: 0, headerSize: 16, size: .max, type: "mdat")).isEmpty
+        )
+    }
+}

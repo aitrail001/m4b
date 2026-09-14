@@ -134,20 +134,27 @@ public enum M4BInspector {
     static func neroChapters(in url: URL, duration: TimeInterval) -> [ChapterMark] {
         guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return [] }
         guard let chpl = findAtom(data, type: "chpl") else { return [] }
-        let payloadStart = Int(chpl.payloadOffset)
-        let payloadEnd = Int(chpl.end)
-        guard payloadStart + 8 <= payloadEnd, payloadEnd <= data.count else { return [] }
+        guard let payloadStart = Int(exactly: chpl.payloadOffset),
+              let payloadSize = Int(exactly: chpl.payloadSize),
+              payloadStart >= 0,
+              payloadStart <= data.count,
+              data.count - payloadStart >= payloadSize,
+              payloadSize >= 8
+        else { return [] }
+        let payloadEnd = payloadStart + payloadSize
         var offset = payloadStart + 4
-        let count = Int(MP4AtomIO.readU32(data, offset))
+        guard let count32 = MP4AtomIO.readU32(data, offset),
+              let count = Int(exactly: count32)
+        else { return [] }
         offset += 4
         var starts: [(TimeInterval, String)] = []
         for _ in 0..<count {
-            guard offset + 9 <= payloadEnd else { break }
-            let start100ns = MP4AtomIO.readU64(data, offset)
+            guard offset < payloadEnd, payloadEnd - offset >= 9 else { break }
+            guard let start100ns = MP4AtomIO.readU64(data, offset) else { break }
             offset += 8
             let titleLen = Int(data[offset])
             offset += 1
-            guard offset + titleLen <= payloadEnd else { break }
+            guard titleLen <= payloadEnd - offset else { break }
             let title = String(data: data[offset..<(offset + titleLen)], encoding: .utf8) ?? "Chapter"
             offset += titleLen
             starts.append((Double(start100ns) / 10_000_000.0, title))
@@ -169,10 +176,14 @@ public enum M4BInspector {
             let atom = stack[i]
             if atom.type == type { return atom }
             if MP4AtomIO.containers.contains(atom.type) {
-                let start = Int(atom.payloadOffset)
-                let end = Int(atom.end)
-                if start < end, end <= data.count {
-                    stack.append(contentsOf: MP4AtomIO.parseHeaders(data, range: start..<end))
+                if let start = Int(exactly: atom.payloadOffset),
+                   let size = Int(exactly: atom.payloadSize),
+                   start >= 0,
+                   start <= data.count,
+                   data.count - start >= size,
+                   size > 0
+                {
+                    stack.append(contentsOf: MP4AtomIO.parseHeaders(data, range: start..<(start + size)))
                 }
             }
             i += 1

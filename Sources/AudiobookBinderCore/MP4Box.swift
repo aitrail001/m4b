@@ -66,6 +66,7 @@ enum MP4AtomIO {
         "moov", "trak", "mdia", "minf", "stbl", "udta", "dinf",
         "edts", "mvex", "ilst", "moof", "traf", "skip", "meta"
     ]
+    static let maxHeadersPerParse = 10_000
 
     static func readHeaders(of file: URL) throws -> [MP4AtomHeader] {
         let data = try Data(contentsOf: file, options: [.mappedIfSafe])
@@ -73,54 +74,79 @@ enum MP4AtomIO {
     }
 
     static func parseHeaders(_ data: Data, range: Range<Int>) -> [MP4AtomHeader] {
+        guard range.lowerBound >= 0, range.upperBound <= data.count else { return [] }
+
         var atoms: [MP4AtomHeader] = []
         var i = range.lowerBound
         let end = range.upperBound
-        while i + 8 <= end {
-            let size32 = readU32(data, i)
-            let type = readFourCC(data, i + 4)
-            var headerSize = 8
-            var size = UInt64(size32)
+        while atoms.count < maxHeadersPerParse {
+            guard i < end, end - i >= 8 else { break }
+            guard let size32 = readU32(data, i),
+                  let type = readFourCC(data, i + 4)
+            else { break }
+
+            let headerSize: Int
+            let size: UInt64
             if size32 == 1 {
-                guard i + 16 <= end else { break }
-                size = readU64(data, i + 8)
+                guard end - i >= 16, let extended = readU64(data, i + 8) else { break }
                 headerSize = 16
+                size = extended
             } else if size32 == 0 {
+                headerSize = 8
                 size = UInt64(end - i)
+            } else {
+                headerSize = 8
+                size = UInt64(size32)
             }
-            if size < UInt64(headerSize) { break }
+
+            guard size >= UInt64(headerSize) else { break }
+            let remaining = UInt64(end - i)
+            guard size <= remaining else { break }
+            guard let sizeInt = Int(exactly: size), let offset = UInt64(exactly: i) else { break }
+
             atoms.append(
                 MP4AtomHeader(
-                    offset: UInt64(i),
+                    offset: offset,
                     headerSize: UInt64(headerSize),
                     size: size,
                     type: type
                 )
             )
-            let next = i + Int(size)
+            let next = i + sizeInt
             if next <= i { break }
             i = next
         }
         return atoms
     }
 
-    static func readU32(_ data: Data, _ offset: Int) -> UInt32 {
-        let b = data
-        return (UInt32(b[offset]) << 24) | (UInt32(b[offset + 1]) << 16) | (UInt32(b[offset + 2]) << 8) | UInt32(b[offset + 3])
+    static func readU32(_ data: Data, _ offset: Int) -> UInt32? {
+        guard offset >= 0, data.count >= 4, offset <= data.count - 4 else { return nil }
+        return (UInt32(data[offset]) << 24)
+            | (UInt32(data[offset + 1]) << 16)
+            | (UInt32(data[offset + 2]) << 8)
+            | UInt32(data[offset + 3])
     }
 
-    static func readU64(_ data: Data, _ offset: Int) -> UInt64 {
-        (UInt64(readU32(data, offset)) << 32) | UInt64(readU32(data, offset + 4))
+    static func readU64(_ data: Data, _ offset: Int) -> UInt64? {
+        guard offset >= 0, data.count >= 8, offset <= data.count - 8,
+              let high = readU32(data, offset),
+              let low = readU32(data, offset + 4)
+        else { return nil }
+        return (UInt64(high) << 32) | UInt64(low)
     }
 
-    static func readFourCC(_ data: Data, _ offset: Int) -> String {
-        let slice = data[offset..<offset + 4]
-        return String(bytes: slice, encoding: .isoLatin1) ?? "????"
+    static func readFourCC(_ data: Data, _ offset: Int) -> String? {
+        guard offset >= 0, data.count >= 4, offset <= data.count - 4 else { return nil }
+        return String(bytes: data[offset..<(offset + 4)], encoding: .isoLatin1) ?? "????"
     }
 
     static func slice(_ data: Data, _ header: MP4AtomHeader) -> Data {
-        let start = Int(header.offset)
-        let end = Int(header.end)
-        return data.subdata(in: start..<min(end, data.count))
+        guard let start = Int(exactly: header.offset),
+              let size = Int(exactly: header.size),
+              start >= 0,
+              start <= data.count,
+              data.count - start >= size
+        else { return Data() }
+        return data.subdata(in: start..<(start + size))
     }
 }

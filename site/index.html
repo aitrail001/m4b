@@ -252,7 +252,7 @@
         <button type="button" data-lang="en" aria-pressed="true">EN</button>
         <button type="button" data-lang="zh-Hans" aria-pressed="false">中文</button>
       </div>
-      <a class="btn" href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="nav.download">Download</a>
+      <a class="btn" href="https://github.com/aitrail001/m4b/releases/download/v1.4.6/AudiobookBinder-1.4.6.dmg" data-i18n="nav.download">Download</a>
     </div>
   </nav>
 
@@ -262,7 +262,7 @@
         <h1 data-i18n="hero.title">Loose MP3s, one book in Apple Books.</h1>
         <p class="lede" data-i18n-html="hero.lede">Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.</p>
         <div class="cta">
-          <a class="btn" href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="hero.download">Download for macOS 14+</a>
+          <a class="btn" href="https://github.com/aitrail001/m4b/releases/download/v1.4.6/AudiobookBinder-1.4.6.dmg" data-i18n="hero.download">Download for macOS 14+</a>
           <a class="btn ghost" href="https://github.com/aitrail001/m4b/releases/latest" data-i18n="hero.github">GitHub release</a>
         </div>
         <p class="fine" data-i18n-html="hero.fine">Free. Runs on your Mac. Version 1.4.6 · about 3&nbsp;MB</p>
@@ -345,7 +345,7 @@
         <p data-i18n-html="install.p1">Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.</p>
         <p data-i18n-html="install.p2">This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.</p>
         <div class="cta">
-          <a class="btn" href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="install.dmg">Download AudiobookBinder-1.4.6.dmg</a>
+          <a class="btn" href="https://github.com/aitrail001/m4b/releases/download/v1.4.6/AudiobookBinder-1.4.6.dmg" data-i18n="install.dmg">Download AudiobookBinder-1.4.6.dmg</a>
         </div>
         <p class="fine" data-i18n-html="install.fine">Also on <a href="https://github.com/aitrail001/m4b/releases/latest">GitHub Releases</a>. Source is public.</p>
       </div>
@@ -360,11 +360,11 @@
 
   <footer class="wrap">
     <span data-i18n="footer.left">Audiobook Binder 1.4.6 · local Mac app, no account</span>
-    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="nav.download">Download</a></span>
+    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="https://github.com/aitrail001/m4b/releases/download/v1.4.6/AudiobookBinder-1.4.6.dmg" data-i18n="nav.download">Download</a></span>
   </footer>
   <script>
-    // Public download version. Keep in lockstep with GitHub Releases and
-    // site/downloads/AudiobookBinder-x.y.z.dmg. Change only on an explicit release.
+    // Public download version. Keep in lockstep with GitHub Releases.
+    // Change only on an explicit release. Download hrefs go to GitHub, not Pages.
     const PUBLIC_VERSION = "1.4.6";
     const copy = {
       "zh-Hans": {
@@ -460,8 +460,9 @@
         btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === lang ? "true" : "false");
       });
       try { localStorage.setItem("ab-lang", lang); } catch (_) {}
-      const dmg = "downloads/AudiobookBinder-" + PUBLIC_VERSION + ".dmg";
-      document.querySelectorAll('a[href*="downloads/AudiobookBinder"]').forEach((a) => {
+      const dmg = "https://github.com/aitrail001/m4b/releases/download/v"
+        + PUBLIC_VERSION + "/AudiobookBinder-" + PUBLIC_VERSION + ".dmg";
+      document.querySelectorAll('a[href$=".dmg"]').forEach((a) => {
         a.setAttribute("href", dmg);
       });
     }

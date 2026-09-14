@@ -50,24 +50,24 @@ The website, the DMG it serves, and GitHub Releases are one public version. They
 | Must match | Location |
 |---|---|
 | Latest GitHub Release tag `vX.Y.Z` and its attached DMG | https://github.com/aitrail001/m4b/releases/latest |
-| File visitors download from the site | `site/downloads/AudiobookBinder-x.y.z.dmg` (that same DMG) |
+| File visitors download from the site | GitHub asset `AudiobookBinder-x.y.z.dmg` (site links/redirects there; Pages does not host the DMG) |
 | Version the site advertises | `PUBLIC_VERSION` in `site/index.html` (copy uses `{v}`) |
 
 The public version may lag `Info.plist`. That is correct until a release.
 
-**Do not** create a GitHub release, replace `site/downloads/AudiobookBinder-x.y.z.dmg`, change `PUBLIC_VERSION`, or run `make release` / `scripts/sync-public-release.sh` unless the user **explicitly** asks to release, ship, publish, cut a GitHub release, or update the website download. App features, version bumps, i18n, and ordinary Pages deploys are not a release.
+**Do not** create a GitHub release, change `PUBLIC_VERSION`, or run `make release` / `scripts/sync-public-release.sh` unless the user **explicitly** asks to release, ship, publish, cut a GitHub release, or update the website download. App features, version bumps, i18n, and ordinary Pages deploys are not a release.
 
 Site copy and translations may be edited and deployed without a release. Leave `PUBLIC_VERSION` and the DMG untouched.
 
 `make dmg` is local packaging only. Do not copy that DMG onto the site or GitHub unless this is a release.
 
-The disk image **must** include the marketing version in its file name: `AudiobookBinder-x.y.z.dmg`, taken from `Info.plist` (`CFBundleShortVersionString`). That name is used in `dist/`, as the GitHub Release asset, and as `site/downloads/AudiobookBinder-x.y.z.dmg` (the file visitors save). Never ship a versionless `AudiobookBinder.dmg` as the download. Old unversioned URLs redirect to the versioned file.
+The disk image **must** include the marketing version in its file name: `AudiobookBinder-x.y.z.dmg`, taken from `Info.plist` (`CFBundleShortVersionString`). That name is used in `dist/` and as the GitHub Release asset (the file visitors save). Never ship a versionless `AudiobookBinder.dmg`. The website does not host the DMG; Download buttons and `/downloads/*` redirect to the GitHub asset.
 
 When the user does ask to release:
 
 1. Confirm `Info.plist` is the version to ship (bump first if unreleased app work is still at an old marketing version).
 2. `make test`
 3. Review the website against the shipping app. If features, how-to steps, or UI changed since the last public version, update `site/index.html` (English and 中文) and replace stale screenshots/videos in `site/media/` with captures of the real current UI. No generated watermarks. Leave media that still matches the app.
-4. `make release` — builds the signed DMG, creates or updates GitHub tag `vX.Y.Z`, copies that DMG to `site/downloads/AudiobookBinder-x.y.z.dmg`, sets `PUBLIC_VERSION` and download hrefs.
+4. `make release` — builds the signed DMG, creates or updates GitHub tag `vX.Y.Z`, points the website Download buttons at that GitHub asset, sets `PUBLIC_VERSION`. Do not upload the DMG to Pages.
 5. Deploy Pages: `npx wrangler pages deploy site --project-name audiobook-binder`
 6. Check that GitHub latest, the site version line, and the downloaded DMG all show the same `x.y.z`, and that the live page’s copy and pictures match the app in the DMG.

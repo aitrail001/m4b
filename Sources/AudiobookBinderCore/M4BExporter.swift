@@ -213,6 +213,31 @@ public struct M4BExporter: Sendable {
         }
         writer.startSession(atSourceTime: .zero)
 
+        do {
+            return try encodeAfterWriterStarted(
+                chapters: chapters,
+                writer: writer,
+                input: input,
+                encodeRate: encodeRate,
+                channels: channels,
+                progress: progress,
+                cancellation: cancellation
+            )
+        } catch {
+            Self.cancelIfWriting(writer)
+            throw error
+        }
+    }
+
+    private func encodeAfterWriterStarted(
+        chapters: [Chapter],
+        writer: AVAssetWriter,
+        input: AVAssetWriterInput,
+        encodeRate: Double,
+        channels: Int,
+        progress: (@Sendable (Double, String) -> Void)?,
+        cancellation: EncodeCancellation
+    ) throws -> [ChapterMark] {
         let pcmSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: encodeRate,
@@ -235,7 +260,6 @@ public struct M4BExporter: Sendable {
             )
 
             guard Self.isUsableExportSource(chapter.url) else {
-                writer.cancelWriting()
                 throw BinderError.missingChapters([chapter.url])
             }
 
@@ -267,7 +291,10 @@ public struct M4BExporter: Sendable {
             finishError = writer.error
             finishGroup.leave()
         }
-        finishGroup.wait()
+        guard Self.wait(finishGroup, timeout: Self.finishWritingTimeout) else {
+            Self.cancelIfWriting(writer)
+            throw BinderError.exportFailed("Timed out waiting for encode to finish")
+        }
         if writer.status != .completed {
             throw BinderError.exportFailed(finishError?.localizedDescription ?? "Encode did not complete")
         }
@@ -287,7 +314,9 @@ public struct M4BExporter: Sendable {
         asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
             loaded.signal()
         }
-        loaded.wait()
+        guard Self.wait(loaded, timeout: Self.assetLoadTimeout) else {
+            throw BinderError.exportFailed("Timed out loading \(asset.url.lastPathComponent)")
+        }
         var tracksError: NSError?
         guard asset.statusOfValue(forKey: "tracks", error: &tracksError) == .loaded,
               let track = asset.tracks(withMediaType: .audio).first else {
@@ -312,16 +341,27 @@ public struct M4BExporter: Sendable {
         }
 
         var cursor = start
+        var readyWaitStarted: Date?
 
         while reader.status == .reading {
             try Self.throwIfCancelled(cancellation, writer: writer)
-            if writer.status == .failed {
-                throw BinderError.exportFailed(writer.error?.localizedDescription ?? "Writer failed")
+            if writer.status == .failed || writer.status == .cancelled {
+                throw BinderError.exportFailed(
+                    writer.error?.localizedDescription
+                        ?? (writer.status == .cancelled ? "Writer cancelled" : "Writer failed")
+                )
             }
             if !input.isReadyForMoreMediaData {
+                if readyWaitStarted == nil {
+                    readyWaitStarted = Date()
+                }
+                if let readyWaitStarted, Date().timeIntervalSince(readyWaitStarted) >= Self.writerReadyTimeout {
+                    throw BinderError.exportFailed("Writer stalled waiting for media data")
+                }
                 Thread.sleep(forTimeInterval: 0.002)
                 continue
             }
+            readyWaitStarted = nil
             guard let sample = output.copyNextSampleBuffer() else { break }
             let frames = CMSampleBufferGetNumSamples(sample)
             let timing = Self.pcmTiming(frames: frames, timescale: timescale)
@@ -388,13 +428,33 @@ public struct M4BExporter: Sendable {
 
     private static func throwIfCancelled(_ cancellation: EncodeCancellation, writer: AVAssetWriter) throws {
         if cancellation.isCancelled {
-            writer.cancelWriting()
+            cancelIfWriting(writer)
             throw BinderError.cancelled
+        }
+    }
+
+    private static func cancelIfWriting(_ writer: AVAssetWriter) {
+        if writer.status == .writing {
+            writer.cancelWriting()
         }
     }
 }
 
 extension M4BExporter {
+    package static let assetLoadTimeout: TimeInterval = 30
+    package static let finishWritingTimeout: TimeInterval = 60
+    package static let writerReadyTimeout: TimeInterval = 30
+
+    /// Bounded wait so encode cannot block forever on a semaphore that never signals.
+    package static func wait(_ semaphore: DispatchSemaphore, timeout: TimeInterval) -> Bool {
+        semaphore.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// Bounded wait so encode cannot block forever on a group that never leaves.
+    package static func wait(_ group: DispatchGroup, timeout: TimeInterval) -> Bool {
+        group.wait(timeout: .now() + timeout) == .success
+    }
+
     static func preflightDestination(_ dest: URL, book: Audiobook, overwrite: Bool) throws {
         for chapter in book.chapters where chapter.included {
             if isSameFileURL(chapter.url, dest) {

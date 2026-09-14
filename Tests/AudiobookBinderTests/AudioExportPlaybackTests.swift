@@ -378,6 +378,38 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testWaitSemaphoreTimesOutWhenNeverSignaled() {
+        let semaphore = DispatchSemaphore(value: 0)
+        let start = Date()
+        XCTAssertFalse(M4BExporter.wait(semaphore, timeout: 0.2))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+    }
+
+    func testWaitGroupTimesOutWhenNeverLeft() {
+        let group = DispatchGroup()
+        group.enter()
+        let start = Date()
+        XCTAssertFalse(M4BExporter.wait(group, timeout: 0.2))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+    }
+
+    func testWaitSemaphoreAndGroupSucceedWhenSignaled() {
+        let semaphore = DispatchSemaphore(value: 0)
+        semaphore.signal()
+        XCTAssertTrue(M4BExporter.wait(semaphore, timeout: 0.2))
+
+        let group = DispatchGroup()
+        group.enter()
+        group.leave()
+        XCTAssertTrue(M4BExporter.wait(group, timeout: 0.2))
+    }
+
+    func testEncodeWaitTimeoutsAreBounded() {
+        XCTAssertEqual(M4BExporter.assetLoadTimeout, 30)
+        XCTAssertEqual(M4BExporter.finishWritingTimeout, 60)
+        XCTAssertEqual(M4BExporter.writerReadyTimeout, 30)
+    }
+
     func testEncodeCancellationTokenWorkerCheckSeesCancel() {
         let token = EncodeCancellation()
         XCTAssertFalse(token.isCancelled)

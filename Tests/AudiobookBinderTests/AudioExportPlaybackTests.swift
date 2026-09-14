@@ -378,6 +378,145 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testEncodeCancellationTokenWorkerCheckSeesCancel() {
+        let token = EncodeCancellation()
+        XCTAssertFalse(token.isCancelled)
+
+        token.cancel()
+
+        var workerSawCancel = false
+        DispatchQueue.global(qos: .userInitiated).sync {
+            workerSawCancel = token.isCancelled
+            XCTAssertTrue(token.isCancelled)
+            do {
+                try token.checkCancelled()
+                XCTFail("expected cancelled")
+            } catch let error as BinderError {
+                guard case .cancelled = error else { return XCTFail("\(error)") }
+            } catch {
+                XCTFail("\(error)")
+            }
+        }
+        XCTAssertTrue(workerSawCancel)
+    }
+
+    func testExportCancelDoesNotPublishFreshDest() async throws {
+        let dir = try TestSupport.tempDir("export-cancel-fresh")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(
+            folder: dir,
+            title: "CancelFresh",
+            author: "A",
+            seconds: 5,
+            chapterCount: 12
+        )
+        let dest = dir.appendingPathComponent("out.m4b")
+        let encoding = StartedFlag()
+
+        let task = Task {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true) { _, detail in
+                if detail.contains("Encoding") {
+                    encoding.mark()
+                }
+            }
+        }
+        await waitForFlag(encoding, timeout: 2)
+        try await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("expected cancelled")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        } catch {
+            XCTFail("\(error)")
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+    }
+
+    func testExportCancelLeavesExistingDestUnchanged() async throws {
+        let dir = try TestSupport.tempDir("export-cancel-keep")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(
+            folder: dir,
+            title: "CancelKeep",
+            author: "A",
+            seconds: 5,
+            chapterCount: 12
+        )
+        let dest = dir.appendingPathComponent("keep.m4b")
+        let payload = Data("KEEP-CANCEL-M4B".utf8)
+        try payload.write(to: dest)
+        let encoding = StartedFlag()
+
+        let task = Task {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true) { _, detail in
+                if detail.contains("Encoding") {
+                    encoding.mark()
+                }
+            }
+        }
+        await waitForFlag(encoding, timeout: 2)
+        try await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("expected cancelled")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        } catch {
+            XCTFail("\(error)")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertEqual(try Data(contentsOf: dest), payload)
+    }
+
+    func testExportAllCancelDoesNotTreatBookAsCreated() async throws {
+        let root = try TestSupport.tempDir("export-all-cancel")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book = try makeSilenceBook(
+            folder: bookDir,
+            title: "CancelAll",
+            author: "A",
+            seconds: 5,
+            chapterCount: 12
+        )
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+        let encoding = StartedFlag()
+
+        let task = Task {
+            try await M4BExporter(bitrate: 48_000).exportAll(books: [book], settings: settings) { progress in
+                if progress.detail.contains("Encoding") {
+                    encoding.mark()
+                }
+            }
+        }
+        await waitForFlag(encoding, timeout: 2)
+        try await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+
+        do {
+            let results = try await task.value
+            XCTFail("expected cancelled, got \(results)")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        } catch {
+            XCTFail("\(error)")
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+    }
+
     func testChaptersReadyForExport() {
         let keep = TestSupport.dummyChapter(index: 1, included: true)
         var drop = TestSupport.dummyChapter(index: 2, included: false)
@@ -669,9 +808,9 @@ final class AudioExportPlaybackTests: XCTestCase {
         return sample
     }
 
-    private func makeSilence(in dir: URL) throws -> URL {
+    private func makeSilence(in dir: URL, seconds: Double = 1) throws -> URL {
         let wav = dir.appendingPathComponent("silence.wav")
-        try TestSupport.writeSilenceWAV(to: wav, seconds: 1)
+        try TestSupport.writeSilenceWAV(to: wav, seconds: seconds)
         return wav
     }
 
@@ -679,25 +818,37 @@ final class AudioExportPlaybackTests: XCTestCase {
         folder: URL,
         title: String,
         author: String,
-        selected: Bool = true
+        selected: Bool = true,
+        seconds: Double = 1,
+        chapterCount: Int = 1
     ) throws -> Audiobook {
-        let source = try makeSilence(in: folder)
+        let source = try makeSilence(in: folder, seconds: seconds)
         let info = AudioMetadata.fileInfo(of: source)
-        let chapter = Chapter(
-            url: source,
-            index: 1,
-            title: "Ch",
-            duration: info.duration,
-            fileSize: 1,
-            audioInfo: info.audioInfo
-        )
+        let chapters = (1...max(chapterCount, 1)).map { index in
+            Chapter(
+                url: source,
+                index: index,
+                title: "Ch\(index)",
+                duration: info.duration,
+                fileSize: 1,
+                audioInfo: info.audioInfo
+            )
+        }
         return Audiobook(
             folder: folder,
             title: title,
             author: author,
-            chapters: [chapter],
+            chapters: chapters,
             selected: selected
         )
+    }
+
+    private func waitForFlag(_ flag: StartedFlag, timeout: TimeInterval) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if flag.isSet { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
     }
 
     @MainActor
@@ -708,5 +859,22 @@ final class AudioExportPlaybackTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return condition()
+    }
+}
+
+private final class StartedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+
+    func mark() {
+        lock.lock()
+        flag = true
+        lock.unlock()
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flag
     }
 }

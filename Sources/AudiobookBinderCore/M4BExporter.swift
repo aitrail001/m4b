@@ -73,6 +73,9 @@ public struct M4BExporter: Sendable {
             throw BinderError.exportFailed("Encode produced no output")
         }
 
+        if Task.isCancelled {
+            throw BinderError.cancelled
+        }
         try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
         progress?(1.0, "Finished \(book.title)")
     }
@@ -90,7 +93,9 @@ public struct M4BExporter: Sendable {
         let destinations = settings.plannedOutputs(for: selected)
         var results: [BookExportResult] = []
         for (idx, book) in selected.enumerated() {
-            try Task.checkCancellation()
+            if Task.isCancelled {
+                throw BinderError.cancelled
+            }
             let dest = destinations[book.id] ?? settings.outputURL(for: book)
             let existed = Self.existingRegularFile(dest)
             if existed && !settings.overwrite {
@@ -117,7 +122,7 @@ public struct M4BExporter: Sendable {
                     )
                 )
             } catch is CancellationError {
-                throw CancellationError()
+                throw BinderError.cancelled
             } catch BinderError.cancelled {
                 throw BinderError.cancelled
             } catch let error as BinderError {
@@ -150,22 +155,34 @@ public struct M4BExporter: Sendable {
         to url: URL,
         progress: (@Sendable (Double, String) -> Void)?
     ) async throws -> [ChapterMark] {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let marks = try self.encodeBlocking(chapters: chapters, to: url, progress: progress)
-                    continuation.resume(returning: marks)
-                } catch {
-                    continuation.resume(throwing: error)
+        let cancellation = EncodeCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let marks = try self.encodeBlocking(
+                            chapters: chapters,
+                            to: url,
+                            progress: progress,
+                            cancellation: cancellation
+                        )
+                        try cancellation.checkCancelled()
+                        continuation.resume(returning: marks)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
     private func encodeBlocking(
         chapters: [Chapter],
         to url: URL,
-        progress: (@Sendable (Double, String) -> Void)?
+        progress: (@Sendable (Double, String) -> Void)?,
+        cancellation: EncodeCancellation
     ) throws -> [ChapterMark] {
         let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
         writer.shouldOptimizeForNetworkUse = true
@@ -211,10 +228,7 @@ public struct M4BExporter: Sendable {
         let total = max(chapters.reduce(0.0) { $0 + $1.duration }, 1)
 
         for (index, chapter) in chapters.enumerated() {
-            if Task.isCancelled {
-                writer.cancelWriting()
-                throw BinderError.cancelled
-            }
+            try Self.throwIfCancelled(cancellation, writer: writer)
             progress?(
                 0.02 + 0.88 * (cursor.seconds / total),
                 "Encoding chapter \(index + 1) of \(chapters.count)"
@@ -229,11 +243,21 @@ public struct M4BExporter: Sendable {
                 AVURLAssetPreferPreciseDurationAndTimingKey: true
             ])
             let start = cursor
-            cursor = try append(asset: asset, to: input, writer: writer, pcmSettings: pcmSettings, at: cursor, timescale: Int32(encodeRate))
+            cursor = try append(
+                asset: asset,
+                to: input,
+                writer: writer,
+                pcmSettings: pcmSettings,
+                at: cursor,
+                timescale: Int32(encodeRate),
+                cancellation: cancellation
+            )
             var duration = CMTimeSubtract(cursor, start).seconds
             if duration <= 0 { duration = max(chapter.duration, 0.001) }
             marks.append(ChapterMark(start: start.seconds, duration: duration, title: chapter.title))
         }
+
+        try Self.throwIfCancelled(cancellation, writer: writer)
 
         let finishGroup = DispatchGroup()
         finishGroup.enter()
@@ -256,7 +280,8 @@ public struct M4BExporter: Sendable {
         writer: AVAssetWriter,
         pcmSettings: [String: Any],
         at start: CMTime,
-        timescale: Int32
+        timescale: Int32,
+        cancellation: EncodeCancellation
     ) throws -> CMTime {
         let loaded = DispatchSemaphore(value: 0)
         asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
@@ -289,6 +314,10 @@ public struct M4BExporter: Sendable {
         var cursor = start
 
         while reader.status == .reading {
+            try Self.throwIfCancelled(cancellation, writer: writer)
+            if writer.status == .failed {
+                throw BinderError.exportFailed(writer.error?.localizedDescription ?? "Writer failed")
+            }
             if !input.isReadyForMoreMediaData {
                 Thread.sleep(forTimeInterval: 0.002)
                 continue
@@ -355,6 +384,13 @@ public struct M4BExporter: Sendable {
     private func avMetadata(for chapters: [Chapter]) -> [AVMetadataItem] {
         _ = chapters
         return []
+    }
+
+    private static func throwIfCancelled(_ cancellation: EncodeCancellation, writer: AVAssetWriter) throws {
+        if cancellation.isCancelled {
+            writer.cancelWriting()
+            throw BinderError.cancelled
+        }
     }
 }
 

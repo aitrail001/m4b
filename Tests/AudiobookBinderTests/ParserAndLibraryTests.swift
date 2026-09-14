@@ -213,6 +213,23 @@ final class ParserAndLibraryTests: XCTestCase {
         XCTAssertNil(CoverJPEG.loadAndNormalize(from: huge))
     }
 
+    func testCoverDisplayNeverUsesRawURLWhenJPEGIsNil() throws {
+        XCTAssertFalse(CoverDisplay.usesRawURLFallback)
+
+        let dir = try TestSupport.tempDir("cover-display")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("cover.png")
+        try TestSupport.png1x1.write(to: url)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+
+        XCTAssertNil(CoverDisplay.imageData(jpeg: nil, url: url))
+        XCTAssertEqual(CoverDisplay.source(jpeg: nil, url: url), .placeholder)
+
+        let jpeg = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        XCTAssertEqual(CoverDisplay.imageData(jpeg: jpeg, url: url), jpeg)
+        XCTAssertEqual(CoverDisplay.source(jpeg: jpeg, url: url), .jpeg)
+    }
+
     private func makeEPUB(
         in dir: URL,
         containerFullPath: String = "OPS/content.opf",

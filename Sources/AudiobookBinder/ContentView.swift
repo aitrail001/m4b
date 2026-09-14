@@ -952,9 +952,8 @@ struct CoverView: View {
 
     var body: some View {
         Group {
-            if let data, let image = NSImage(data: data) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-            } else if let url, let image = NSImage(contentsOf: url) {
+            if let data = CoverDisplay.imageData(jpeg: data, url: url),
+               let image = NSImage(data: data) {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
                 ZStack {

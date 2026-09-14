@@ -26,6 +26,8 @@ final class AppState {
         }
     }
     var libraryFolder: URL?
+    /// Last folder the user opened, used only as the Open panel starting point.
+    var lastOpenedFolder: URL?
     var settings = ExportSettings() {
         didSet { Self.persistSettings(settings) }
     }
@@ -41,11 +43,9 @@ final class AppState {
 
     init() {
         settings = Self.loadSettings()
-        if let url = LibraryBookmark.resolvedDirectory(
+        lastOpenedFolder = LibraryBookmark.resolvedDirectory(
             path: UserDefaults.standard.string(forKey: "audiobookBinder.libraryFolder")
-        ) {
-            scan(url)
-        }
+        )
     }
 
     var selectedBook: Audiobook? {
@@ -84,7 +84,9 @@ final class AppState {
         panel.canCreateDirectories = false
         panel.message = "Select a book folder or a library folder. Nested wrappers are scanned automatically."
         panel.prompt = "Scan"
-        panel.directoryURL = libraryFolder ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/books")
+        panel.directoryURL = libraryFolder
+            ?? lastOpenedFolder
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents/books")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         scan(url)
     }
@@ -106,6 +108,7 @@ final class AppState {
         bookQuery = ""
         let folder = LibraryOutline.folderURL(url)
         libraryFolder = folder
+        lastOpenedFolder = folder
         UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
         isScanning = true
         lastError = nil

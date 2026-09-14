@@ -34,19 +34,23 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
+        .background(WindowTitleView(title: "Audiobook Binder \(AppVersion.display)"))
     }
 
     private var header: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     Text("Audiobook Binder")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(BinderTheme.ink)
-                    Text(AppVersion.display)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(BinderTheme.inkMuted)
-                        .help("Marketing version and build number from Info.plist")
+                    Text(AppVersion.badge)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(BinderTheme.leather))
+                        .help("Version \(AppVersion.display)")
                 }
                 Text(
                     (appState.selectedFolderURL ?? appState.libraryFolder)?.path
@@ -202,6 +206,10 @@ struct ContentView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
+            Text(AppVersion.display)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(BinderTheme.inkMuted)
+                .help("Version \(AppVersion.display)")
             if appState.isScanning || appState.isBuilding {
                 ProgressView()
                     .controlSize(.small)
@@ -542,6 +550,20 @@ struct BookEditor: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.65)))
         }
+    }
+}
+
+private struct WindowTitleView: NSViewRepresentable {
+    var title: String
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { view.window?.title = title }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.window?.title = title
     }
 }
 

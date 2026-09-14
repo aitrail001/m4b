@@ -135,6 +135,36 @@ if require_release_commit_matches 'abc123def' ''; then
   fail "empty tag commit must fail"
 fi
 
+# Remote tag is authoritative. A matching local tag must not hide a remote mismatch.
+if require_tag_authority 'abc123def' '999999999' 'abc123def'; then
+  fail "remote tag SHA != HEAD must fail even if local tag == HEAD"
+fi
+
+# Remote tag exists (no Release object) and points elsewhere.
+if require_tag_authority 'abc123def' '999999999' ''; then
+  fail "remote tag exists, no Release, mismatch must fail"
+fi
+
+require_tag_authority 'abc123def' 'abc123def' 'stalelocal' \
+  || fail "remote tag matching HEAD must pass even if local tag differs"
+
+require_tag_authority 'abc123def' '' 'stalelocal' \
+  || fail "missing remote tag must pass (new tag; local is not authority)"
+
+should_create_release_targeting_head '' \
+  || fail "no remote tag must allow gh release create --target HEAD"
+
+if should_create_release_targeting_head 'abc123def'; then
+  fail "existing remote tag must not use gh release create --target HEAD"
+fi
+
+remote_tag_is_missing_error $'gh: Not Found (HTTP 404)' \
+  || fail "HTTP 404 must count as a missing remote tag"
+
+if remote_tag_is_missing_error $'API rate limit exceeded'; then
+  fail "non-404 gh errors must fail closed, not look like a missing tag"
+fi
+
 # resolve_tag_commit: mocked GitHub git-ref objects (no network).
 got="$(resolve_tag_commit commit abc123def)"
 [[ "$got" == "abc123def" ]] || fail "lightweight tag (type=commit) must yield object.sha"
@@ -158,7 +188,56 @@ if resolve_tag_commit unknown abc123def; then
   fail "unknown git ref object type must fail"
 fi
 
-# make release is gated on a clean tree, tests, and a production DMG (dry-run only).
+# Provenance: matching HEAD + hash + version + test stamp passes; stale/wrong/missing fail.
+PROV="$REPO"
+mkdir -p "$PROV/dist"
+print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+HEAD='abc123def'
+VER='1.2.3'
+write_release_tests_ok_stamp "$PROV" "$HEAD"
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+PROV_FILE="$(release_provenance_path "$PROV" "$VER")"
+
+require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
+  || fail "matching provenance HEAD+hash+version+stamp must pass"
+
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" '9.9.9' "$PROV"; then
+  fail "provenance version mismatch must fail"
+fi
+
+python3 - "$PROV_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+obj["commit"] = "stalecommit000"
+with open(path, "w") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "stale provenance commit must fail"
+fi
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+
+print -r -- 'other-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "wrong live DMG hash must fail"
+fi
+
+print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+rm -f "$(release_tests_ok_stamp_path "$PROV")"
+(
+  unset RELEASE_TESTS_OK
+  if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+    fail "missing tests stamp must fail"
+  fi
+)
+
+if require_release_provenance "$PROV/dist/missing.provenance.json" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "missing provenance file must fail"
+fi
+
+# make release is sequential: clean, then tests, then production DMG (dry-run only).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PLAN="$(make -C "$REPO_ROOT" -n release)"
 print -r -- "$PLAN" | grep -q 'require-clean-release' \
@@ -167,5 +246,13 @@ print -r -- "$PLAN" | grep -q 'swift test' \
   || fail "make -n release must include swift test"
 print -r -- "$PLAN" | grep -q 'PRODUCTION=1' \
   || fail "make -n release must package a PRODUCTION=1 DMG"
+clean_n="$(print -r -- "$PLAN" | grep -n 'require-clean-release' | head -1 | cut -d: -f1)"
+test_n="$(print -r -- "$PLAN" | grep -n 'swift test' | head -1 | cut -d: -f1)"
+prod_n="$(print -r -- "$PLAN" | grep -n 'PRODUCTION=1' | head -1 | cut -d: -f1)"
+[[ -n "$clean_n" && -n "$test_n" && -n "$prod_n" ]] \
+  || fail "make -n release must list require-clean-release, swift test, and PRODUCTION=1"
+if (( clean_n >= test_n || test_n >= prod_n )); then
+  fail "make -n release must run require-clean-release, then swift test, then PRODUCTION=1"
+fi
 
 print -r -- "ok: release gates"

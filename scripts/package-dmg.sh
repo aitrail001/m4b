@@ -85,3 +85,8 @@ fi
 
 echo "Built $DMG"
 ls -lh "$DMG"
+
+if [[ "$PRODUCTION" == "1" ]]; then
+  write_release_provenance "$ROOT" "$VERSION" "$(git -C "$ROOT" rev-parse HEAD)" "$DMG"
+  echo "Wrote $(release_provenance_path "$ROOT" "$VERSION")"
+fi

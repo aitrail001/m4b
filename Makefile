@@ -5,6 +5,8 @@ all: app
 test:
 	swift test
 	swift run AudiobookBinderSelfTest
+	mkdir -p dist
+	git rev-parse HEAD > dist/.release-tests-ok
 
 build:
 	swift build -c release
@@ -46,7 +48,10 @@ require-clean-release:
 	chmod +x scripts/require-clean-release.sh
 	./scripts/require-clean-release.sh
 
-release: require-clean-release test production-dmg
+release:
+	$(MAKE) require-clean-release
+	$(MAKE) test
+	$(MAKE) production-dmg
 	chmod +x scripts/github-release.sh scripts/sync-public-release.sh
 	./scripts/github-release.sh
 	./scripts/sync-public-release.sh

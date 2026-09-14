@@ -84,6 +84,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
     public var fileSize: Int64
     public var audioInfo: AudioInfo
     public var included: Bool
+    /// Why this chapter was auto-deselected, if it was. Nil when included.
+    public var exclusionReason: String?
     /// Start time inside `url` when this chapter is a range of a single .m4b.
     public var startOffset: TimeInterval
 
@@ -96,6 +98,7 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         fileSize: Int64,
         audioInfo: AudioInfo = AudioInfo(),
         included: Bool = true,
+        exclusionReason: String? = nil,
         startOffset: TimeInterval = 0
     ) {
         self.id = id
@@ -106,6 +109,7 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         self.fileSize = fileSize
         self.audioInfo = audioInfo
         self.included = included
+        self.exclusionReason = exclusionReason
         self.startOffset = startOffset
     }
 

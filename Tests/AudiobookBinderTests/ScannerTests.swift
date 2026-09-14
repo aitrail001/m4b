@@ -97,7 +97,36 @@ final class ScannerTests: XCTestCase {
         }
     }
 
-    func testDropsHugeConcatenatedFile() async throws {
+    func testKeepsLargeNumberedChapter() async throws {
+        let root = try TestSupport.tempDir("large-chapter")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("Book", isDirectory: true)
+        try FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+        try Data(count: 1000).write(to: book.appendingPathComponent("01.mp3"))
+        try Data(count: 1000).write(to: book.appendingPathComponent("02.mp3"))
+        try Data(count: 9000).write(to: book.appendingPathComponent("03.mp3"))
+        let loaded = try await BookScanner().loadBook(at: book)
+        XCTAssertEqual(loaded.chapterCount, 3)
+        XCTAssertEqual(loaded.chapters.map(\.url.lastPathComponent), ["01.mp3", "02.mp3", "03.mp3"])
+        XCTAssertTrue(loaded.chapters.allSatisfy(\.included))
+        XCTAssertTrue(loaded.chapters.allSatisfy { ($0.exclusionReason ?? "").isEmpty })
+    }
+
+    func testKeepsLargeMixedFormatNumberedChapter() async throws {
+        let root = try TestSupport.tempDir("mixed-format")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("Book", isDirectory: true)
+        try FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+        try Data(count: 200).write(to: book.appendingPathComponent("01.mp3"))
+        try Data(count: 200).write(to: book.appendingPathComponent("02.m4a"))
+        try Data(count: 1800).write(to: book.appendingPathComponent("03.wav"))
+        let loaded = try await BookScanner().loadBook(at: book)
+        XCTAssertEqual(loaded.chapterCount, 3)
+        XCTAssertEqual(Set(loaded.chapters.map(\.url.lastPathComponent)), ["01.mp3", "02.m4a", "03.wav"])
+        XCTAssertTrue(loaded.chapters.allSatisfy(\.included))
+    }
+
+    func testDeselectsHugeConcatenatedFile() async throws {
         let root = try TestSupport.tempDir("concat")
         defer { try? FileManager.default.removeItem(at: root) }
         let book = root.appendingPathComponent("Book", isDirectory: true)
@@ -107,8 +136,101 @@ final class ScannerTests: XCTestCase {
         try Data(count: 210).write(to: book.appendingPathComponent("003.mp3"))
         try Data(count: 20_000).write(to: book.appendingPathComponent("all-in-one.mp3"))
         let loaded = try await BookScanner().loadBook(at: book)
-        XCTAssertEqual(loaded.chapterCount, 3)
-        XCTAssertFalse(loaded.chapters.contains { $0.url.lastPathComponent == "all-in-one.mp3" })
+        XCTAssertEqual(loaded.chapterCount, 4)
+        XCTAssertEqual(loaded.includedChapters.count, 3)
+        let dump = loaded.chapters.first { $0.url.lastPathComponent == "all-in-one.mp3" }
+        XCTAssertNotNil(dump)
+        XCTAssertEqual(dump?.included, false)
+        XCTAssertFalse((dump?.exclusionReason ?? "").isEmpty)
+        XCTAssertFalse(dump!.title.contains(dump!.exclusionReason!))
+        for name in ["001.mp3", "002.mp3", "003.mp3"] {
+            let chapter = loaded.chapters.first { $0.url.lastPathComponent == name }
+            XCTAssertEqual(chapter?.included, true, name)
+            XCTAssertTrue((chapter?.exclusionReason ?? "").isEmpty, name)
+        }
+    }
+
+    func testConcatenationHeuristicNeedsNameAndSize() {
+        XCTAssertFalse(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "03.mp3",
+                size: 9000,
+                medianSize: 1000,
+                fileCount: 3
+            )
+        )
+        XCTAssertFalse(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "Chapter 03.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertFalse(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "extra.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertFalse(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "all-in-one.mp3",
+                size: 400,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertFalse(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "all-in-one.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 2
+            )
+        )
+        XCTAssertTrue(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "all-in-one.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertTrue(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "Complete.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertTrue(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "Full Book.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertTrue(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "entire.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
+        XCTAssertTrue(
+            BookScanner.shouldAutoExcludeAsConcatenation(
+                fileName: "concatenated.mp3",
+                size: 20_000,
+                medianSize: 210,
+                fileCount: 4
+            )
+        )
     }
 
     func testSortsLeadingAndTrailingIndexes() async throws {

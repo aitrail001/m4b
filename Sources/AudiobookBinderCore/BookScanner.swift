@@ -243,6 +243,7 @@ public struct BookScanner: Sendable {
                 )
             }
         }
+        chapters = markSuspectedConcatenations(chapters)
 
         let leftoverM4B = collectM4B(in: folder).sorted {
             $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
@@ -314,23 +315,57 @@ public struct BookScanner: Sendable {
             && url.pathExtension.lowercased() != "m4b"
         }
         if !preferred.isEmpty {
-            return dropConcatenatedDuplicates(preferred)
+            return preferred
         }
         return recursiveFiles(in: folder, skipNames: ["ebook", "ebooks"])
             .filter { audioExtensions.contains($0.pathExtension.lowercased()) && $0.pathExtension.lowercased() != "m4b" }
     }
 
-    private func dropConcatenatedDuplicates(_ files: [URL]) -> [URL] {
-        guard files.count > 2 else { return files }
-        let sizes = files.compactMap { try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize }.map { Double($0) }
-        guard !sizes.isEmpty else { return files }
-        let sortedSizes = sizes.sorted()
+    static func shouldAutoExcludeAsConcatenation(
+        fileName: String,
+        size: Int64,
+        medianSize: Int64,
+        fileCount: Int
+    ) -> Bool {
+        guard fileCount > 2, medianSize > 0, Double(size) >= Double(medianSize) * 8 else { return false }
+        if looksLikeNumberedChapter(fileName) { return false }
+        return looksLikeWholeBookDump(fileName)
+    }
+
+    func markSuspectedConcatenations(_ chapters: [Chapter]) -> [Chapter] {
+        guard chapters.count > 2 else { return chapters }
+        let sortedSizes = chapters.map(\.fileSize).sorted()
         let median = sortedSizes[sortedSizes.count / 2]
-        guard median > 0 else { return files }
-        return files.filter { url in
-            let size = Double((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            return size < median * 8
+        guard median > 0 else { return chapters }
+        return chapters.map { chapter in
+            guard Self.shouldAutoExcludeAsConcatenation(
+                fileName: chapter.url.lastPathComponent,
+                size: chapter.fileSize,
+                medianSize: median,
+                fileCount: chapters.count
+            ) else { return chapter }
+            var marked = chapter
+            marked.included = false
+            marked.exclusionReason = "Looks like a concatenated whole-book file."
+            return marked
         }
+    }
+
+    private static func looksLikeNumberedChapter(_ fileName: String) -> Bool {
+        if NaturalSort.leadingIndex(fileName) != nil { return true }
+        let stem = (fileName as NSString).deletingPathExtension
+        return stem.range(
+            of: #"^(chapter|ch)\s*[-._]?\s*\d+"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    private static func looksLikeWholeBookDump(_ fileName: String) -> Bool {
+        let stem = (fileName as NSString).deletingPathExtension
+        return stem.range(
+            of: #"\b(all[\s_-]*in[\s_-]*one|complete|concatenated|full[\s_-]*book|entire)\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
     }
 
     private func sortAudio(_ files: [URL]) -> [URL] {

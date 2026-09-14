@@ -857,6 +857,7 @@ struct ChaptersCompareSection: View {
     private func inspect() async {
         guard let requested = m4bURL else { return }
         let bookID = book.id
+        let requestedGeneration = SourceCleanup.destGeneration(of: requested)
         inspecting = true
         cleanupError = nil
         let result = await M4BInspector.inspect(requested, bookID: bookID)
@@ -866,7 +867,8 @@ struct ChaptersCompareSection: View {
             result,
             bookID: book.id,
             requestedURL: requested,
-            currentURL: appState.boundURL(for: book)
+            currentURL: appState.boundURL(for: book),
+            requestedGeneration: requestedGeneration
         ) else { return }
         inspection = result
         boundChapters = M4BInspector.playableChapters(from: result)

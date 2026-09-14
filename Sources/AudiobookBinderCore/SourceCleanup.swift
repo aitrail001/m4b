@@ -47,6 +47,9 @@ public enum SourceCleanup {
         if let inspectionBookID = inspection.bookID, inspectionBookID != book.id {
             return deny(sources, "Inspection is for a different book.")
         }
+        guard inspection.identityVerified else {
+            return deny(sources, "Inspection is not a stable snapshot of the bound file.")
+        }
         guard refersToSameFile(dest, inspection.url) else {
             return deny(sources, "Inspection is not this book's bound file.")
         }
@@ -129,14 +132,24 @@ public enum SourceCleanup {
         M4BExporter.isSameFileURL(a, b)
     }
 
+    /// Live dest identity token so an async inspect can refuse a replacement.
+    public static func destGeneration(of url: URL) -> String? {
+        guard let identity = FileIdentity.read(from: url), !identity.isDirectory else {
+            return nil
+        }
+        return identity.generationToken()
+    }
+
     /// True when this inspect snapshot is still the current book's dest and the
     /// live file has not been replaced since the snapshot was captured.
     public static func shouldCommitInspection(
         _ inspection: M4BInspection,
         bookID: UUID,
         requestedURL: URL,
-        currentURL: URL?
+        currentURL: URL?,
+        requestedGeneration: String? = nil
     ) -> Bool {
+        guard inspection.identityVerified else { return false }
         if let inspectionBookID = inspection.bookID, inspectionBookID != bookID {
             return false
         }
@@ -144,6 +157,13 @@ public enum SourceCleanup {
         guard refersToSameFile(requestedURL, inspection.url),
               refersToSameFile(currentURL, inspection.url) else {
             return false
+        }
+        if let requestedGeneration {
+            guard inspection.identityGeneration == requestedGeneration,
+                  destGeneration(of: currentURL) == requestedGeneration
+            else {
+                return false
+            }
         }
         guard let live = FileIdentity.read(from: inspection.url), !live.isDirectory else {
             return false
@@ -221,7 +241,40 @@ struct FileIdentity: Equatable, Sendable {
         return read(from: resolved)
     }
 
+    func generationToken() -> String {
+        let mtime = modificationDate.map { String($0.timeIntervalSince1970) } ?? ""
+        let rid = fileResourceIdentifier?.base64EncodedString() ?? ""
+        return "\(fileSize)|\(mtime)|\(rid)"
+    }
+
+    func isSameVersion(as other: FileIdentity) -> Bool {
+        guard !isDirectory, !other.isDirectory else { return false }
+        guard fileSize == other.fileSize else { return false }
+        switch (modificationDate, other.modificationDate) {
+        case (nil, nil):
+            break
+        case let (expected?, live?):
+            if expected != live { return false }
+        default:
+            return false
+        }
+        switch (fileResourceIdentifier, other.fileResourceIdentifier) {
+        case (nil, nil):
+            return true
+        case let (expected?, live?):
+            if expected == live { return true }
+            guard let savedObject = decodeResourceID(expected),
+                  let liveObject = decodeResourceID(live) else {
+                return false
+            }
+            return savedObject.isEqual(liveObject)
+        default:
+            return false
+        }
+    }
+
     func matches(_ inspection: M4BInspection) -> Bool {
+        guard inspection.identityVerified else { return false }
         guard !isDirectory else { return false }
         guard fileSize == inspection.fileSize else { return false }
         if let expected = inspection.modificationDate {

@@ -9,6 +9,9 @@ public struct M4BInspection: Sendable, Equatable {
     public var modificationDate: Date?
     public var fileResourceIdentifier: Data?
     public var bookID: UUID?
+    /// False when dest identity changed while metadata was being read.
+    public var identityVerified: Bool
+    public var identityGeneration: String?
 
     public init(
         url: URL,
@@ -17,7 +20,9 @@ public struct M4BInspection: Sendable, Equatable {
         fileSize: Int64,
         modificationDate: Date? = nil,
         fileResourceIdentifier: Data? = nil,
-        bookID: UUID? = nil
+        bookID: UUID? = nil,
+        identityVerified: Bool = true,
+        identityGeneration: String? = nil
     ) {
         self.url = url
         self.duration = duration
@@ -26,6 +31,8 @@ public struct M4BInspection: Sendable, Equatable {
         self.modificationDate = modificationDate
         self.fileResourceIdentifier = fileResourceIdentifier
         self.bookID = bookID
+        self.identityVerified = identityVerified
+        self.identityGeneration = identityGeneration
     }
 
     /// Snapshot dest identity at inspect time so cleanup can detect replace/delete.
@@ -36,6 +43,7 @@ public struct M4BInspection: Sendable, Equatable {
         bookID: UUID? = nil
     ) -> M4BInspection {
         let identity = FileIdentity.read(from: url)
+        let verified = identity.map { !$0.isDirectory } ?? false
         return M4BInspection(
             url: url,
             duration: duration,
@@ -43,7 +51,9 @@ public struct M4BInspection: Sendable, Equatable {
             fileSize: identity?.fileSize ?? 0,
             modificationDate: identity?.modificationDate,
             fileResourceIdentifier: identity?.fileResourceIdentifier,
-            bookID: bookID
+            bookID: bookID,
+            identityVerified: verified,
+            identityGeneration: identity?.generationToken()
         )
     }
 }
@@ -106,7 +116,15 @@ public enum M4BInspector {
         }
     }
 
-    public static func inspect(_ url: URL, bookID: UUID? = nil) async -> M4BInspection {
+    public static func inspect(
+        _ url: URL,
+        bookID: UUID? = nil,
+        identityBarrier: (@Sendable (URL) async -> Void)? = nil
+    ) async -> M4BInspection {
+        guard let opening = FileIdentity.read(from: url), !opening.isDirectory else {
+            return rejectedInspection(url: url, bookID: bookID)
+        }
+
         let info = AudioMetadata.fileInfo(of: url)
         var chapters = await avChapters(url)
         if chapters.isEmpty {
@@ -115,11 +133,40 @@ public enum M4BInspector {
         if chapters.isEmpty, info.duration > 0 {
             chapters = [ChapterMark(start: 0, duration: info.duration, title: "Audiobook")]
         }
-        return M4BInspection.capturingIdentity(
+        if let identityBarrier {
+            await identityBarrier(url)
+        }
+
+        guard let closing = FileIdentity.read(from: url),
+              opening.isSameVersion(as: closing)
+        else {
+            return rejectedInspection(url: url, bookID: bookID)
+        }
+
+        return M4BInspection(
             url: url,
             duration: info.duration,
             chapters: chapters,
-            bookID: bookID
+            fileSize: opening.fileSize,
+            modificationDate: opening.modificationDate,
+            fileResourceIdentifier: opening.fileResourceIdentifier,
+            bookID: bookID,
+            identityVerified: true,
+            identityGeneration: opening.generationToken()
+        )
+    }
+
+    private static func rejectedInspection(url: URL, bookID: UUID?) -> M4BInspection {
+        M4BInspection(
+            url: url,
+            duration: 0,
+            chapters: [],
+            fileSize: 0,
+            modificationDate: nil,
+            fileResourceIdentifier: nil,
+            bookID: bookID,
+            identityVerified: false,
+            identityGeneration: nil
         )
     }
 

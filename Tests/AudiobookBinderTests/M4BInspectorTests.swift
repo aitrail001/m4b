@@ -633,6 +633,130 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(afterDir.map(\.lastPathComponent), ["01.mp3"])
     }
 
+    func testInspectRejectsCommitWhenDestReplacedAfterMetadata() async throws {
+        let fixture = try await ExportedInspectFixture.make()
+        defer { fixture.tearDown() }
+
+        let requestedGeneration = SourceCleanup.destGeneration(of: fixture.dest)
+        let originalChapters = await M4BInspector.inspect(fixture.dest, bookID: fixture.book.id).chapters
+        XCTAssertFalse(originalChapters.isEmpty)
+
+        let inspection = await M4BInspector.inspect(
+            fixture.dest,
+            bookID: fixture.book.id,
+            identityBarrier: { dest in
+                try? Data(count: 256).write(to: dest)
+            }
+        )
+
+        assertInspectDidNotCommit(
+            inspection,
+            book: fixture.book,
+            dest: fixture.dest,
+            requestedGeneration: requestedGeneration
+        )
+        XCTAssertNotEqual(
+            inspection.fileSize,
+            256,
+            "Must not attach the replacement's identity to the original chapter list"
+        )
+    }
+
+    func testInspectRejectsCommitWhenDestDeletedAfterMetadata() async throws {
+        let fixture = try await ExportedInspectFixture.make()
+        defer { fixture.tearDown() }
+
+        let requestedGeneration = SourceCleanup.destGeneration(of: fixture.dest)
+        let inspection = await M4BInspector.inspect(
+            fixture.dest,
+            bookID: fixture.book.id,
+            identityBarrier: { dest in
+                try? FileManager.default.removeItem(at: dest)
+            }
+        )
+
+        assertInspectDidNotCommit(
+            inspection,
+            book: fixture.book,
+            dest: fixture.dest,
+            requestedGeneration: requestedGeneration
+        )
+    }
+
+    func testInspectRejectsCommitWhenDestReplacedSameSizeAfterMetadata() async throws {
+        let fixture = try await ExportedInspectFixture.make()
+        defer { fixture.tearDown() }
+
+        let originalSize = try XCTUnwrap(
+            (FileManager.default.attributesOfItem(atPath: fixture.dest.path)[.size] as? NSNumber)?.intValue
+        )
+        let requestedGeneration = SourceCleanup.destGeneration(of: fixture.dest)
+        let inspection = await M4BInspector.inspect(
+            fixture.dest,
+            bookID: fixture.book.id,
+            identityBarrier: { dest in
+                try? replaceFile(at: dest, with: Data(repeating: 0xEF, count: originalSize))
+            }
+        )
+
+        assertInspectDidNotCommit(
+            inspection,
+            book: fixture.book,
+            dest: fixture.dest,
+            requestedGeneration: requestedGeneration
+        )
+        if let live = FileIdentity.read(from: fixture.dest) {
+            XCTAssertFalse(
+                live.matches(inspection) && inspection.identityVerified,
+                "Same-size replace must not look like a verified snapshot of the new dest"
+            )
+        }
+    }
+
+    func testInspectUnchangedDestStillCommitsAndAuthorizes() async throws {
+        let fixture = try await ExportedInspectFixture.make()
+        defer { fixture.tearDown() }
+
+        let requestedGeneration = SourceCleanup.destGeneration(of: fixture.dest)
+        let inspection = await M4BInspector.inspect(fixture.dest, bookID: fixture.book.id)
+        XCTAssertTrue(inspection.identityVerified)
+        XCTAssertGreaterThan(inspection.duration, 0.2)
+        XCTAssertFalse(inspection.chapters.isEmpty)
+        XCTAssertTrue(
+            SourceCleanup.shouldCommitInspection(
+                inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: fixture.book.existingM4BURL
+            )
+        )
+        XCTAssertTrue(
+            SourceCleanup.shouldCommitInspection(
+                inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: fixture.book.existingM4BURL,
+                requestedGeneration: requestedGeneration
+            )
+        )
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(auth.allowed)
+
+        let cached = try CleanupFixture.make()
+        defer { cached.tearDown() }
+        XCTAssertTrue(
+            SourceCleanup.authorization(
+                book: cached.book,
+                inspection: cached.inspection,
+                isBuilding: false
+            ).allowed
+        )
+    }
+
     func testExportRecordsSourceAssociationSidecar() async throws {
         let dir = try TestSupport.tempDir("source-sidecar")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -662,6 +786,77 @@ final class M4BInspectorTests: XCTestCase {
         )
         XCTAssertFalse(M4BExporter.isSameFileURL(URL(fileURLWithPath: entries[0].path), dest))
     }
+}
+
+private struct ExportedInspectFixture {
+    var dir: URL
+    var dest: URL
+    var book: Audiobook
+
+    static func make() async throws -> ExportedInspectFixture {
+        let dir = try TestSupport.tempDir("inspect-race")
+        let wav = dir.appendingPathComponent("silence.wav")
+        try TestSupport.writeSilenceWAV(to: wav, seconds: 1)
+        let info = AudioMetadata.fileInfo(of: wav)
+        let chapter = Chapter(
+            url: wav,
+            index: 1,
+            title: "Silence",
+            duration: info.duration,
+            fileSize: 1,
+            audioInfo: info.audioInfo
+        )
+        var book = Audiobook(folder: dir, title: "Inspect Race", author: "A", chapters: [chapter])
+        let dest = dir.appendingPathComponent("out.m4b")
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+        book.existingM4BURL = dest
+        return ExportedInspectFixture(dir: dir, dest: dest, book: book)
+    }
+
+    func tearDown() {
+        try? FileManager.default.removeItem(at: dir)
+    }
+}
+
+private func assertInspectDidNotCommit(
+    _ inspection: M4BInspection,
+    book: Audiobook,
+    dest: URL,
+    requestedGeneration: String?,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    XCTAssertFalse(inspection.identityVerified, "inspection must not be marked verified", file: file, line: line)
+    XCTAssertFalse(
+        SourceCleanup.shouldCommitInspection(
+            inspection,
+            bookID: book.id,
+            requestedURL: dest,
+            currentURL: dest
+        ),
+        file: file,
+        line: line
+    )
+    XCTAssertFalse(
+        SourceCleanup.shouldCommitInspection(
+            inspection,
+            bookID: book.id,
+            requestedURL: dest,
+            currentURL: book.existingM4BURL,
+            requestedGeneration: requestedGeneration
+        ),
+        file: file,
+        line: line
+    )
+    XCTAssertFalse(
+        SourceCleanup.authorization(
+            book: book,
+            inspection: inspection,
+            isBuilding: false
+        ).allowed,
+        file: file,
+        line: line
+    )
 }
 
 private struct CleanupFixture {

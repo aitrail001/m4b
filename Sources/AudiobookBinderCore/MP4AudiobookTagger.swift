@@ -332,18 +332,87 @@ public enum MP4AudiobookTagger {
         MP4Box.box("covr", dataAtom(type: 13, payload: jpeg))
     }
 
-    private static func makeChpl(_ chapters: [ChapterMark]) -> Data {
+    static func makeChpl(_ chapters: [ChapterMark]) -> Data {
+        let limited = chapters.prefix(255)
         var payload = Data()
-        payload.append(MP4Box.u32(0x01000000)) // version 1
-        payload.append(MP4Box.u32(UInt32(chapters.count)))
-        for chapter in chapters {
+        payload.append(MP4Box.u32(0x01000000)) // version 1, flags 0
+        payload.append(MP4Box.u32(0)) // reserved
+        payload.append(UInt8(limited.count))
+        for chapter in limited {
             let start100ns = UInt64(max(0, chapter.start) * 10_000_000)
             payload.append(MP4Box.u64(start100ns))
-            let title = Data(chapter.title.utf8.prefix(255))
+            let title = utf8Prefix(chapter.title, maxBytes: 255)
             payload.append(UInt8(title.count))
             payload.append(title)
         }
         return MP4Box.box("chpl", payload)
+    }
+
+    /// Version-aware Nero `chpl` payload. Prefers reserved + 1-byte count (v1);
+    /// falls back to the old flags + 32-bit count layout.
+    static func parseChpl(_ payload: Data) -> [ChapterMark] {
+        let data = Data(payload)
+        let conventional = parseChplEntries(data, layout: .conventional)
+        if !conventional.isEmpty {
+            return conventional
+        }
+        return parseChplEntries(data, layout: .legacyU32Count)
+    }
+
+    private enum ChplCountLayout {
+        case conventional
+        case legacyU32Count
+    }
+
+    private static func parseChplEntries(_ payload: Data, layout: ChplCountLayout) -> [ChapterMark] {
+        guard payload.count >= 5 else { return [] }
+        var offset = 4
+        let count: Int
+        switch layout {
+        case .conventional:
+            if payload[0] == 1 {
+                guard payload.count >= 9 else { return [] }
+                offset += 4
+            }
+            guard offset < payload.count else { return [] }
+            count = Int(payload[offset])
+            offset += 1
+        case .legacyU32Count:
+            guard payload.count >= 8,
+                  let count32 = MP4AtomIO.readU32(payload, offset),
+                  let exact = Int(exactly: count32)
+            else { return [] }
+            count = exact
+            offset += 4
+        }
+        guard count > 0 else { return [] }
+
+        var marks: [ChapterMark] = []
+        for _ in 0..<count {
+            guard offset <= payload.count - 9,
+                  let start100ns = MP4AtomIO.readU64(payload, offset)
+            else { break }
+            offset += 8
+            let titleLen = Int(payload[offset])
+            offset += 1
+            guard titleLen <= payload.count - offset else { break }
+            let titleBytes = payload.subdata(in: offset..<(offset + titleLen))
+            let title = String(data: titleBytes, encoding: .utf8) ?? "Chapter"
+            offset += titleLen
+            marks.append(ChapterMark(start: Double(start100ns) / 10_000_000.0, duration: 0, title: title))
+        }
+        return marks
+    }
+
+    private static func utf8Prefix(_ string: String, maxBytes: Int) -> Data {
+        var result = Data()
+        result.reserveCapacity(min(maxBytes, string.utf8.count))
+        for character in string {
+            let piece = Data(String(character).utf8)
+            if result.count + piece.count > maxBytes { break }
+            result.append(piece)
+        }
+        return result
     }
 
     private struct SamplePack {

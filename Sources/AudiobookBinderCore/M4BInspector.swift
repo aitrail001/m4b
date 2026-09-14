@@ -139,32 +139,17 @@ public enum M4BInspector {
               payloadStart >= 0,
               payloadStart <= data.count,
               data.count - payloadStart >= payloadSize,
-              payloadSize >= 8
+              payloadSize >= 5
         else { return [] }
-        let payloadEnd = payloadStart + payloadSize
-        var offset = payloadStart + 4
-        guard let count32 = MP4AtomIO.readU32(data, offset),
-              let count = Int(exactly: count32)
-        else { return [] }
-        offset += 4
-        var starts: [(TimeInterval, String)] = []
-        for _ in 0..<count {
-            guard offset < payloadEnd, payloadEnd - offset >= 9 else { break }
-            guard let start100ns = MP4AtomIO.readU64(data, offset) else { break }
-            offset += 8
-            let titleLen = Int(data[offset])
-            offset += 1
-            guard titleLen <= payloadEnd - offset else { break }
-            let title = String(data: data[offset..<(offset + titleLen)], encoding: .utf8) ?? "Chapter"
-            offset += titleLen
-            starts.append((Double(start100ns) / 10_000_000.0, title))
-        }
-        guard !starts.isEmpty else { return [] }
+        let parsed = MP4AudiobookTagger.parseChpl(
+            data.subdata(in: payloadStart..<(payloadStart + payloadSize))
+        )
+        guard !parsed.isEmpty else { return [] }
         var marks: [ChapterMark] = []
-        for i in starts.indices {
-            let start = starts[i].0
-            let end = i + 1 < starts.count ? starts[i + 1].0 : max(duration, start)
-            marks.append(ChapterMark(start: start, duration: max(0, end - start), title: starts[i].1))
+        for i in parsed.indices {
+            let start = parsed[i].start
+            let end = i + 1 < parsed.count ? parsed[i + 1].start : max(duration, start)
+            marks.append(ChapterMark(start: start, duration: max(0, end - start), title: parsed[i].title))
         }
         return marks
     }

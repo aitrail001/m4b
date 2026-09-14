@@ -79,6 +79,68 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertFalse(inspection.chapters.isEmpty)
         XCTAssertTrue(inspection.chapters.contains(where: { $0.title == "Silence" }))
         XCTAssertTrue(M4BInspector.durationsMatch(source: info.duration, bound: inspection.duration))
+        let nero = M4BInspector.neroChapters(in: dest, duration: inspection.duration)
+        XCTAssertTrue(nero.contains(where: { $0.title == "Silence" }))
+    }
+
+    func testMakeChplWritesReservedAndUInt8Count() {
+        let box = MP4AudiobookTagger.makeChpl([
+            ChapterMark(start: 0, duration: 1, title: "One"),
+            ChapterMark(start: 1, duration: 1, title: "Two")
+        ])
+        XCTAssertEqual(String(bytes: box[4..<8], encoding: .isoLatin1), "chpl")
+        let payload = Data(box.dropFirst(8))
+        XCTAssertGreaterThanOrEqual(payload.count, 9)
+        XCTAssertEqual(payload[0], 1, "version must be 1")
+        XCTAssertEqual(Array(payload[4..<8]), [0, 0, 0, 0], "bytes after flags are reserved 0, not a 32-bit count")
+        XCTAssertEqual(payload[8], 2, "chapter count is a single byte")
+    }
+
+    func testParseChplRoundtripsTwoChapters() {
+        let chapters = [
+            ChapterMark(start: 0, duration: 1, title: "One"),
+            ChapterMark(start: 1, duration: 1, title: "Two")
+        ]
+        let payload = Data(MP4AudiobookTagger.makeChpl(chapters).dropFirst(8))
+        let parsed = MP4AudiobookTagger.parseChpl(payload)
+        XCTAssertEqual(parsed.map(\.title), ["One", "Two"])
+        XCTAssertEqual(parsed.map(\.start), [0, 1])
+    }
+
+    func testParseChplReadsConventionalVersion1Fixture() {
+        var payload = Data([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02])
+        appendChplEntry(&payload, start: 0, title: "One")
+        appendChplEntry(&payload, start: 1, title: "Two")
+        let parsed = MP4AudiobookTagger.parseChpl(payload)
+        XCTAssertEqual(parsed.map(\.title), ["One", "Two"])
+        XCTAssertEqual(parsed.map(\.start), [0, 1])
+    }
+
+    func testParseChplAcceptsLegacyU32CountLayout() {
+        var payload = Data([0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02])
+        appendChplEntry(&payload, start: 0, title: "One")
+        appendChplEntry(&payload, start: 1, title: "Two")
+        let parsed = MP4AudiobookTagger.parseChpl(payload)
+        XCTAssertEqual(parsed.map(\.title), ["One", "Two"])
+        XCTAssertEqual(parsed.map(\.start), [0, 1])
+    }
+
+    func testMakeChplTruncatesMultibyteTitlesOnUTF8Boundaries() {
+        let title = String(repeating: "é", count: 200)
+        XCTAssertGreaterThan(title.utf8.count, 255)
+        let payload = Data(MP4AudiobookTagger.makeChpl([
+            ChapterMark(start: 0, duration: 1, title: title)
+        ]).dropFirst(8))
+        XCTAssertEqual(payload[8], 1)
+        let titleLen = Int(payload[17])
+        XCTAssertLessThanOrEqual(titleLen, 255)
+        let titleBytes = payload.subdata(in: 18..<(18 + titleLen))
+        XCTAssertEqual(titleBytes.count, titleLen)
+        let decoded = String(data: titleBytes, encoding: .utf8)
+        XCTAssertNotNil(decoded)
+        XCTAssertEqual(decoded, String(repeating: "é", count: titleLen / 2))
+        XCTAssertEqual(titleLen % 2, 0, "must not split a 2-byte character")
+        XCTAssertFalse(titleBytes.isEmpty)
     }
 
     func testCleanupAuthorizationFailsWhenDestDeletedAfterInspection() throws {
@@ -321,4 +383,11 @@ private struct CleanupFixture {
     func tearDown() {
         try? FileManager.default.removeItem(at: dir)
     }
+}
+
+private func appendChplEntry(_ payload: inout Data, start: TimeInterval, title: String) {
+    payload.append(MP4Box.u64(UInt64(max(0, start) * 10_000_000)))
+    let bytes = Data(title.utf8)
+    payload.append(UInt8(bytes.count))
+    payload.append(bytes)
 }

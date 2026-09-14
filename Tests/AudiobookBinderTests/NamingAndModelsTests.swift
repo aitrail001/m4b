@@ -134,6 +134,17 @@ final class NamingAndModelsTests: XCTestCase {
             BinderError.outputExists(URL(fileURLWithPath: "/tmp/T - A.m4b")).errorDescription,
             "Already exists: T - A.m4b"
         )
+        XCTAssertEqual(
+            BinderError.missingChapters([URL(fileURLWithPath: "/tmp/a/gone.wav")]).errorDescription,
+            "Missing selected chapter: gone.wav"
+        )
+        XCTAssertEqual(
+            BinderError.missingChapters([
+                URL(fileURLWithPath: "/tmp/a/gone.wav"),
+                URL(fileURLWithPath: "/tmp/b/also.mp3")
+            ]).errorDescription,
+            "Missing selected chapters: gone.wav, also.mp3"
+        )
     }
 
     func testAudiobookSuggestedNameMatchesNarrator() {

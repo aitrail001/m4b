@@ -14,6 +14,22 @@ public struct M4BExporter: Sendable {
         chapters.filter(\.included)
     }
 
+    /// Included chapters that exist as readable regular files.
+    /// Throws `noAudioFiles` when every included file is missing (or none are included).
+    /// Throws `missingChapters` when some included files are missing.
+    /// Excluded chapters are ignored even if their files are absent.
+    public static func chaptersForExport(_ chapters: [Chapter], folder: URL) throws -> [Chapter] {
+        let included = chaptersReadyForExport(chapters)
+        let missing = included.compactMap { isUsableExportSource($0.url) ? nil : $0.url }
+        if included.isEmpty || missing.count == included.count {
+            throw BinderError.noAudioFiles(folder)
+        }
+        if !missing.isEmpty {
+            throw BinderError.missingChapters(missing)
+        }
+        return included
+    }
+
     public func export(
         book: Audiobook,
         to outputURL: URL,
@@ -21,6 +37,7 @@ public struct M4BExporter: Sendable {
         progress: (@Sendable (Double, String) -> Void)? = nil
     ) async throws {
         try Self.preflightDestination(outputURL, book: book, overwrite: overwrite)
+        _ = try Self.chaptersForExport(book.chapters, folder: book.folder)
 
         try FileManager.default.createDirectory(
             at: outputURL.deletingLastPathComponent(),
@@ -32,13 +49,9 @@ public struct M4BExporter: Sendable {
 
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        let chapters = Self.chaptersReadyForExport(book.chapters).filter {
-            FileManager.default.fileExists(atPath: $0.url.path)
-        }
-        guard !chapters.isEmpty else { throw BinderError.noAudioFiles(book.folder) }
-
         progress?(0.01, "Preparing \(book.title)")
 
+        let chapters = try Self.chaptersForExport(book.chapters, folder: book.folder)
         let marks = try await encode(chapters: chapters, to: tempURL, progress: progress)
 
         progress?(0.92, "Writing audiobook tags and chapters")
@@ -168,6 +181,11 @@ public struct M4BExporter: Sendable {
                 0.02 + 0.88 * (cursor.seconds / total),
                 "Encoding chapter \(index + 1) of \(chapters.count)"
             )
+
+            guard Self.isUsableExportSource(chapter.url) else {
+                writer.cancelWriting()
+                throw BinderError.missingChapters([chapter.url])
+            }
 
             let asset = AVURLAsset(url: chapter.url, options: [
                 AVURLAssetPreferPreciseDurationAndTimingKey: true
@@ -333,6 +351,15 @@ extension M4BExporter {
             }
             throw BinderError.exportFailed(error.localizedDescription)
         }
+    }
+
+    private static func isUsableExportSource(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return false
+        }
+        return FileManager.default.isReadableFile(atPath: url.path)
     }
 
     private static func destinationKind(_ url: URL) -> (exists: Bool, isDirectory: Bool) {

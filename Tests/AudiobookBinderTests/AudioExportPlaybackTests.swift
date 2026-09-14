@@ -262,6 +262,118 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(M4BExporter.chaptersReadyForExport([keep, drop]).map(\.index), [1])
     }
 
+    func testChaptersForExportRejectsMissingIncludedAndIgnoresExcluded() throws {
+        let dir = try TestSupport.tempDir("chapters-for-export")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("keep.wav")
+        try TestSupport.writeSilenceWAV(to: wav)
+        let missing = dir.appendingPathComponent("gone.wav")
+
+        let keep = TestSupport.dummyChapter(index: 1, url: wav, included: true)
+        let skip = TestSupport.dummyChapter(index: 2, url: missing, included: false)
+        let gone = TestSupport.dummyChapter(index: 3, url: missing, included: true)
+
+        let ready = try M4BExporter.chaptersForExport([keep, skip], folder: dir)
+        XCTAssertEqual(ready.map(\.index), [1])
+
+        do {
+            _ = try M4BExporter.chaptersForExport([keep, gone], folder: dir)
+            XCTFail("expected missingChapters")
+        } catch let error as BinderError {
+            guard case .missingChapters(let urls) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(urls.map(\.lastPathComponent), ["gone.wav"])
+        }
+
+        do {
+            _ = try M4BExporter.chaptersForExport([gone], folder: dir)
+            XCTFail("expected noAudioFiles")
+        } catch let error as BinderError {
+            guard case .noAudioFiles = error else { return XCTFail("\(error)") }
+        }
+
+        try FileManager.default.removeItem(at: wav)
+        do {
+            _ = try M4BExporter.chaptersForExport([keep], folder: dir)
+            XCTFail("expected failure after source disappeared")
+        } catch let error as BinderError {
+            guard case .noAudioFiles = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testExportFailsWhenSomeIncludedChaptersAreMissing() async throws {
+        let dir = try TestSupport.tempDir("export-partial-missing")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try makeSilence(in: dir)
+        let info = AudioMetadata.fileInfo(of: source)
+        let keep = Chapter(
+            url: source,
+            index: 1,
+            title: "Keep",
+            duration: info.duration,
+            fileSize: 1,
+            audioInfo: info.audioInfo
+        )
+        let gone = Chapter(
+            url: dir.appendingPathComponent("gone.wav"),
+            index: 2,
+            title: "Gone",
+            duration: 1,
+            fileSize: 1
+        )
+        let book = Audiobook(folder: dir, title: "Partial", author: "A", chapters: [keep, gone])
+        let exporter = M4BExporter(bitrate: 48_000)
+
+        let fresh = dir.appendingPathComponent("fresh.m4b")
+        do {
+            try await exporter.export(book: book, to: fresh, overwrite: true)
+            XCTFail("expected missingChapters")
+        } catch let error as BinderError {
+            guard case .missingChapters(let urls) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(urls.map(\.lastPathComponent), ["gone.wav"])
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fresh.path))
+
+        let dest = dir.appendingPathComponent("keep.m4b")
+        let payload = Data("KEEP-PARTIAL".utf8)
+        try payload.write(to: dest)
+        do {
+            try await exporter.export(book: book, to: dest, overwrite: true)
+            XCTFail("expected missingChapters")
+        } catch let error as BinderError {
+            guard case .missingChapters = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: dest), payload)
+    }
+
+    func testExportSucceedsWhenExcludedChapterIsMissing() async throws {
+        let dir = try TestSupport.tempDir("export-excluded-missing")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try makeSilence(in: dir)
+        let info = AudioMetadata.fileInfo(of: source)
+        let keep = Chapter(
+            url: source,
+            index: 1,
+            title: "Keep",
+            duration: info.duration,
+            fileSize: 1,
+            audioInfo: info.audioInfo
+        )
+        var skip = Chapter(
+            url: dir.appendingPathComponent("gone.wav"),
+            index: 2,
+            title: "Skip",
+            duration: 1,
+            fileSize: 1
+        )
+        skip.included = false
+        let book = Audiobook(folder: dir, title: "Excluded Missing", author: "A", chapters: [keep, skip])
+        let dest = dir.appendingPathComponent("out.m4b")
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
+    }
+
     @MainActor
     func testChapterPlaybackStartPauseStopMissing() async throws {
         try XCTSkipUnless(FileManager.default.fileExists(atPath: TestSupport.tink.path), "Tink.aiff missing")

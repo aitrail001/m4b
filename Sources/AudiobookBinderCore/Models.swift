@@ -273,6 +273,7 @@ public enum BinderError: Error, LocalizedError, Sendable {
     case exportFailed(String)
     case cancelled
     case outputExists(URL)
+    case missingChapters([URL])
 
     public var errorDescription: String? {
         switch self {
@@ -286,6 +287,12 @@ public enum BinderError: Error, LocalizedError, Sendable {
             return "Cancelled"
         case .outputExists(let url):
             return "Already exists: \(url.lastPathComponent)"
+        case .missingChapters(let urls):
+            let names = urls.map(\.lastPathComponent).joined(separator: ", ")
+            if urls.count == 1 {
+                return "Missing selected chapter: \(names)"
+            }
+            return "Missing selected chapters: \(names)"
         }
     }
 }

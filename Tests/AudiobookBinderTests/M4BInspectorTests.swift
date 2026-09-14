@@ -30,6 +30,7 @@ final class M4BInspectorTests: XCTestCase {
             ]
         )
         book.existingM4BURL = m4b
+        SourceAssociation.record([mp3a, mp3b, missing, m4b], dest: m4b, inBookFolder: dir)
         let files = M4BInspector.sourceFilesToRemove(from: book)
         XCTAssertEqual(Set(files.map(\.lastPathComponent)), ["01.mp3", "02.mp3"])
         XCTAssertTrue(book.canCleanupSources)
@@ -467,6 +468,200 @@ final class M4BInspectorTests: XCTestCase {
         )
         XCTAssertTrue(finished.didFinish)
     }
+
+    func testCleanupAuthorizationFailsWhenSourceBytesReplacedSameLength() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try replaceFile(at: fixture.sourceA, with: Data(repeating: 0xAB, count: 8))
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(
+            auth.allowed,
+            "Matching dest + cached durations must not authorize replaced source bytes"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testCleanupAuthorizationFailsWhenSourceReplacedByDirectory() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try FileManager.default.removeItem(at: fixture.sourceB)
+        try FileManager.default.createDirectory(at: fixture.sourceB, withIntermediateDirectories: true)
+        try Data("unrelated".utf8).write(to: fixture.sourceB.appendingPathComponent("other.txt"))
+
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path, isDirectory: &isDirectory))
+        XCTAssertTrue(isDirectory.boolValue)
+
+        let files = M4BInspector.sourceFilesToRemove(from: fixture.book)
+        XCTAssertEqual(files.map(\.lastPathComponent), ["01.mp3"])
+        XCTAssertFalse(files.contains { $0.standardizedFileURL.path == fixture.sourceB.standardizedFileURL.path })
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+        XCTAssertFalse(
+            auth.sources.contains { $0.standardizedFileURL.path == fixture.sourceB.standardizedFileURL.path },
+            "A directory substituted for a source must never be authorized"
+        )
+    }
+
+    func testCleanupAuthorizationFailsWhenSourceIsSymlinkToOtherFile() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let other = fixture.dir.appendingPathComponent("other.mp3")
+        try Data(repeating: 0xCD, count: 8).write(to: other)
+        try FileManager.default.removeItem(at: fixture.sourceA)
+        try FileManager.default.createSymbolicLink(at: fixture.sourceA, withDestinationURL: other)
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(
+            auth.allowed,
+            "A symlink to a different object than the captured source must be denied"
+        )
+    }
+
+    func testCleanupAuthorizationFailsWhenSourceMissing() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try FileManager.default.removeItem(at: fixture.sourceA)
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+        let reason = try XCTUnwrap(auth.reason)
+        XCTAssertTrue(
+            reason.localizedCaseInsensitiveContains("missing"),
+            "expected an explicit missing-source reason, got \(reason)"
+        )
+    }
+
+    func testCleanupAuthorizationFailsWhenSourceManifestMissing() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try FileManager.default.removeItem(at: SourceAssociation.sidecarURL(inBookFolder: fixture.dir))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: fixture.dir))
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed, "Matching dest identity is not enough without source provenance")
+        let reason = try XCTUnwrap(auth.reason)
+        XCTAssertTrue(
+            reason.localizedCaseInsensitiveContains("provenance")
+                || reason.localizedCaseInsensitiveContains("manifest"),
+            "expected a missing-provenance reason, got \(reason)"
+        )
+        XCTAssertTrue(auth.sources.isEmpty)
+    }
+
+    func testCleanupAuthorizationFailsWhenSourceManifestUnreadable() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try Data("not-json".utf8).write(to: SourceAssociation.sidecarURL(inBookFolder: fixture.dir))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: fixture.dir))
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+    }
+
+    func testCleanupAuthorizationAllowsRemainingAfterAlreadyMovedSource() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try FileManager.default.removeItem(at: fixture.sourceA)
+        let denied = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(denied.allowed)
+
+        let allowed = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false,
+            alreadyMoved: [fixture.sourceA]
+        )
+        XCTAssertTrue(allowed.allowed)
+        XCTAssertEqual(allowed.sources.map(\.lastPathComponent), ["02.mp3"])
+    }
+
+    func testSourceFilesToRemoveIntersectsManifestAndSkipsDirectory() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let extra = fixture.dir.appendingPathComponent("sneaky.mp3")
+        try Data(count: 8).write(to: extra)
+        var book = fixture.book
+        book.chapters.append(TestSupport.dummyChapter(index: 3, url: extra, duration: 10))
+
+        let files = M4BInspector.sourceFilesToRemove(from: book)
+        XCTAssertEqual(Set(files.map(\.lastPathComponent)), ["01.mp3", "02.mp3"])
+        XCTAssertFalse(files.contains { $0.lastPathComponent == "sneaky.mp3" })
+
+        try FileManager.default.removeItem(at: fixture.sourceB)
+        try FileManager.default.createDirectory(at: fixture.sourceB, withIntermediateDirectories: true)
+        let afterDir = M4BInspector.sourceFilesToRemove(from: book)
+        XCTAssertEqual(afterDir.map(\.lastPathComponent), ["01.mp3"])
+    }
+
+    func testExportRecordsSourceAssociationSidecar() async throws {
+        let dir = try TestSupport.tempDir("source-sidecar")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let wav = dir.appendingPathComponent("silence.wav")
+        try TestSupport.writeSilenceWAV(to: wav, seconds: 1)
+        let info = AudioMetadata.fileInfo(of: wav)
+        let chapter = Chapter(
+            url: wav,
+            index: 1,
+            title: "Silence",
+            duration: info.duration,
+            fileSize: 1,
+            audioInfo: info.audioInfo
+        )
+        let book = Audiobook(folder: dir, title: "Sidecar", author: "A", chapters: [chapter])
+        let dest = dir.appendingPathComponent("out.m4b")
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+
+        let entries = try XCTUnwrap(SourceAssociation.load(inBookFolder: dir))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertTrue(entries[0].isRegularFile)
+        XCTAssertGreaterThan(entries[0].fileSize, 0)
+        XCTAssertNotNil(entries[0].modificationDate)
+        XCTAssertEqual(
+            URL(fileURLWithPath: entries[0].path).standardizedFileURL.path,
+            wav.standardizedFileURL.path
+        )
+        XCTAssertFalse(M4BExporter.isSameFileURL(URL(fileURLWithPath: entries[0].path), dest))
+    }
 }
 
 private struct CleanupFixture {
@@ -494,6 +689,7 @@ private struct CleanupFixture {
             ]
         )
         book.existingM4BURL = dest
+        SourceAssociation.record([sourceA, sourceB], dest: dest, inBookFolder: dir)
 
         let inspection = M4BInspection.capturingIdentity(
             url: dest,
@@ -517,6 +713,12 @@ private struct CleanupFixture {
     func tearDown() {
         try? FileManager.default.removeItem(at: dir)
     }
+}
+
+private func replaceFile(at url: URL, with data: Data) throws {
+    let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
+    try data.write(to: tmp)
+    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
 }
 
 private func appendChplEntry(_ payload: inout Data, start: TimeInterval, title: String) {

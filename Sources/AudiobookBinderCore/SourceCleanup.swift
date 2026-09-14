@@ -27,12 +27,14 @@ public struct SourceCleanupResult: Equatable, Sendable {
 }
 
 /// Authorize and trash original chapter files only when the inspected dest is
-/// still this book's bound file and has not drifted since inspect.
+/// still this book's bound file, recorded source identity still matches, and
+/// neither dest nor sources have drifted since export/inspect.
 public enum SourceCleanup {
     public static func authorization(
         book: Audiobook,
         inspection: M4BInspection,
-        isBuilding: Bool
+        isBuilding: Bool,
+        alreadyMoved: [URL] = []
     ) -> SourceCleanupAuthorization {
         let sources = M4BInspector.sourceFilesToRemove(from: book)
 
@@ -64,6 +66,13 @@ public enum SourceCleanup {
         guard summary.allMatch else {
             return deny(sources, "Original chapters do not match the .m4b.")
         }
+        if let sourceReason = verifyRecordedSources(
+            book: book,
+            dest: dest,
+            alreadyMoved: alreadyMoved
+        ) {
+            return deny(sources, sourceReason)
+        }
         guard !sources.isEmpty else {
             return deny(sources, "No original audio files to remove.")
         }
@@ -85,7 +94,12 @@ public enum SourceCleanup {
         var remaining = initial.sources
 
         while !remaining.isEmpty {
-            let auth = authorization(book: book, inspection: inspection, isBuilding: isBuilding)
+            let auth = authorization(
+                book: book,
+                inspection: inspection,
+                isBuilding: isBuilding,
+                alreadyMoved: moved
+            )
             guard auth.allowed else {
                 return SourceCleanupResult(moved: moved, remaining: remaining, error: auth.reason)
             }
@@ -140,6 +154,38 @@ public enum SourceCleanup {
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
         SourceCleanupAuthorization(allowed: false, sources: sources, reason: reason)
     }
+
+    /// Fail closed unless every recorded source still exists as the same regular file.
+    private static func verifyRecordedSources(
+        book: Audiobook,
+        dest: URL,
+        alreadyMoved: [URL]
+    ) -> String? {
+        guard let entries = SourceAssociation.load(inBookFolder: book.folder) else {
+            return "Cannot verify sources: missing export provenance."
+        }
+        for entry in entries {
+            let url = entry.url(relativeTo: book.folder)
+            if refersToSameFile(url, dest) { continue }
+            if alreadyMoved.contains(where: { refersToSameFile($0, url) }) { continue }
+
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            if !exists {
+                return "A source file is missing since export."
+            }
+            if isDirectory.boolValue || !entry.isRegularFile {
+                return "A source file is no longer a regular file."
+            }
+            guard let live = FileIdentity.readResolved(from: url) else {
+                return "Cannot read a source file's identity."
+            }
+            guard live.matchesCaptured(entry) else {
+                return "Source files changed since they were bound."
+            }
+        }
+        return nil
+    }
 }
 
 struct FileIdentity: Equatable, Sendable {
@@ -167,6 +213,14 @@ struct FileIdentity: Equatable, Sendable {
         )
     }
 
+    /// Identity of the object behind `url` (follows a symlink so cleanup can
+    /// tell a redirected target from the file that was bound).
+    static func readResolved(from url: URL) -> FileIdentity? {
+        var resolved = url.resolvingSymlinksInPath()
+        resolved.removeAllCachedResourceValues()
+        return read(from: resolved)
+    }
+
     func matches(_ inspection: M4BInspection) -> Bool {
         guard !isDirectory else { return false }
         guard fileSize == inspection.fileSize else { return false }
@@ -181,6 +235,28 @@ struct FileIdentity: Equatable, Sendable {
             }
         }
         return true
+    }
+
+    func matchesCaptured(_ entry: SourceAssociation.Entry) -> Bool {
+        guard !isDirectory, entry.isRegularFile else { return false }
+        guard fileSize == entry.fileSize else { return false }
+        guard let expectedDate = entry.modificationDate, let liveDate = modificationDate else {
+            return false
+        }
+        // JSON secondsSince1970 can drop a sliver of sub-second precision.
+        if expectedDate != liveDate,
+           abs(expectedDate.timeIntervalSince1970 - liveDate.timeIntervalSince1970) >= 0.002 {
+            return false
+        }
+        guard let expectedID = entry.fileResourceIdentifier, !expectedID.isEmpty,
+              let liveID = fileResourceIdentifier, !liveID.isEmpty else {
+            return false
+        }
+        guard let savedObject = decodeResourceID(expectedID),
+              let liveObject = decodeResourceID(liveID) else {
+            return false
+        }
+        return savedObject.isEqual(liveObject)
     }
 
     private static func encodeResourceID(

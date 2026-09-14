@@ -78,6 +78,7 @@ public struct M4BExporter: Sendable {
         }
         try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
         OutputAssociation.record(outputURL, inBookFolder: book.folder)
+        SourceAssociation.record(chapters.map(\.url), dest: outputURL, inBookFolder: book.folder)
         progress?(1.0, "Finished \(book.title)")
     }
 

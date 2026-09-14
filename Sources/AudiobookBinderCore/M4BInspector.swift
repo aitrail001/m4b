@@ -60,16 +60,27 @@ public enum M4BInspector {
     }
 
     public static func sourceFilesToRemove(from book: Audiobook) -> [URL] {
-        let m4bPath = book.existingM4BURL?.resolvingSymlinksInPath().path
+        guard let entries = SourceAssociation.load(inBookFolder: book.folder) else {
+            return []
+        }
+        let dest = book.existingM4BURL
         var seen = Set<String>()
         var urls: [URL] = []
         for chapter in book.chapters {
-            let path = chapter.url.resolvingSymlinksInPath().path
-            if path == m4bPath { continue }
-            if chapter.url.pathExtension.lowercased() == "m4b" { continue }
-            guard FileManager.default.fileExists(atPath: path) else { continue }
-            if seen.insert(path).inserted {
-                urls.append(chapter.url)
+            let url = chapter.url
+            if let dest, M4BExporter.isSameFileURL(url, dest) { continue }
+            if url.pathExtension.lowercased() == "m4b" { continue }
+            guard entries.contains(where: { M4BExporter.isSameFileURL($0.url(relativeTo: book.folder), url) }) else {
+                continue
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                continue
+            }
+            let key = url.resolvingSymlinksInPath().standardizedFileURL.path
+            if seen.insert(key).inserted {
+                urls.append(url)
             }
         }
         return urls

@@ -89,7 +89,8 @@ public enum M4BInspector {
                 title: mark.title.isEmpty ? "Chapter \(index + 1)" : mark.title,
                 duration: mark.duration,
                 fileSize: inspection.fileSize,
-                startOffset: mark.start
+                startOffset: mark.start,
+                isEmbedded: true
             )
         }
     }

@@ -88,6 +88,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
     public var exclusionReason: String?
     /// Start time inside `url` when this chapter is a range of a single .m4b.
     public var startOffset: TimeInterval
+    /// Bound chapter from an inspected .m4b — a time range inside a container, including start == 0.
+    public var isEmbedded: Bool
 
     public init(
         id: UUID = UUID(),
@@ -99,7 +101,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         audioInfo: AudioInfo = AudioInfo(),
         included: Bool = true,
         exclusionReason: String? = nil,
-        startOffset: TimeInterval = 0
+        startOffset: TimeInterval = 0,
+        isEmbedded: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -111,9 +114,8 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         self.included = included
         self.exclusionReason = exclusionReason
         self.startOffset = startOffset
+        self.isEmbedded = isEmbedded
     }
-
-    public var isEmbedded: Bool { startOffset > 0.01 }
 }
 
 public struct Audiobook: Identifiable, Hashable, Sendable {

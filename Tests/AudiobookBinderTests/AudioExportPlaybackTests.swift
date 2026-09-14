@@ -728,6 +728,55 @@ final class AudioExportPlaybackTests: XCTestCase {
         }
     }
 
+    func testPlaybackRangeUsesStartOffsetAndDuration() {
+        let first = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.m4b"),
+            index: 1,
+            title: "One",
+            duration: 10,
+            fileSize: 1,
+            startOffset: 0,
+            isEmbedded: true
+        )
+        let second = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.m4b"),
+            index: 2,
+            title: "Two",
+            duration: 20,
+            fileSize: 1,
+            startOffset: 10,
+            isEmbedded: true
+        )
+        let file = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.m4b"),
+            index: 0,
+            title: "Play file",
+            duration: 30,
+            fileSize: 1
+        )
+        let firstRange = ChapterPlayback.playbackRange(for: first)
+        XCTAssertEqual(firstRange.start, 0)
+        XCTAssertEqual(firstRange.end, 10)
+        let secondRange = ChapterPlayback.playbackRange(for: second)
+        XCTAssertEqual(secondRange.start, 10)
+        XCTAssertEqual(secondRange.end, 30)
+        let fileRange = ChapterPlayback.playbackRange(for: file)
+        XCTAssertEqual(fileRange.start, 0)
+        XCTAssertEqual(fileRange.end, 30)
+        let short = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.m4b"),
+            index: 3,
+            title: "Tiny",
+            duration: 0,
+            fileSize: 1,
+            startOffset: 4,
+            isEmbedded: true
+        )
+        let shortRange = ChapterPlayback.playbackRange(for: short)
+        XCTAssertEqual(shortRange.start, 4)
+        XCTAssertEqual(shortRange.end, 4.05)
+    }
+
     @MainActor
     func testChapterPlaybackStartPauseStopMissing() async throws {
         try XCTSkipUnless(FileManager.default.fileExists(atPath: TestSupport.tink.path), "Tink.aiff missing")

@@ -51,10 +51,13 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(chapters.count, 2)
         XCTAssertEqual(chapters[0].title, "One")
         XCTAssertEqual(chapters[0].startOffset, 0)
-        XCTAssertFalse(chapters[0].isEmbedded)
+        XCTAssertEqual(chapters[0].duration, 10)
+        XCTAssertTrue(chapters[0].isEmbedded, "first bound chapter is still a range, even at offset 0")
         XCTAssertEqual(chapters[1].startOffset, 10)
+        XCTAssertEqual(chapters[1].duration, 20)
         XCTAssertTrue(chapters[1].isEmbedded)
         XCTAssertEqual(chapters[1].url, url)
+        XCTAssertFalse(TestSupport.dummyChapter(index: 1).isEmbedded)
     }
 
     func testApplyLeavesFileUnchangedWhenMoovMissing() throws {

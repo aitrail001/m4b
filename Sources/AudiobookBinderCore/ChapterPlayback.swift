@@ -12,8 +12,16 @@ public final class ChapterPlayback {
     @ObservationIgnored private var endTask: Task<Void, Never>?
     @ObservationIgnored private var failTask: Task<Void, Never>?
     @ObservationIgnored private var boundaryToken: Any?
+    @ObservationIgnored private var session: UInt64 = 0
 
     public init() {}
+
+    /// Playback window for a chapter: start at `startOffset`, end at offset + duration (min 0.05s).
+    public nonisolated static func playbackRange(for chapter: Chapter) -> (start: TimeInterval, end: TimeInterval) {
+        let start = chapter.startOffset
+        let end = start + max(chapter.duration, 0.05)
+        return (start, end)
+    }
 
     public func isPlaying(_ chapter: Chapter) -> Bool {
         isPlaying && playingID == chapter.id
@@ -45,33 +53,35 @@ public final class ChapterPlayback {
 
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = false
+        session += 1
+        let request = session
         self.player = player
         playingID = chapter.id
         listenForEnd(of: item)
-        if chapter.isEmbedded {
-            let start = CMTime(seconds: chapter.startOffset, preferredTimescale: 600)
-            let endSeconds = chapter.startOffset + max(chapter.duration, 0.05)
-            let end = CMTime(seconds: endSeconds, preferredTimescale: 600)
-            boundaryToken = player.addBoundaryTimeObserver(
-                forTimes: [NSValue(time: end)],
-                queue: .main
-            ) { [weak self] in
-                self?.stop()
+
+        let range = Self.playbackRange(for: chapter)
+        let start = CMTime(seconds: range.start, preferredTimescale: 600)
+        let end = CMTime(seconds: range.end, preferredTimescale: 600)
+        boundaryToken = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: end)],
+            queue: .main
+        ) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.session == request else { return }
+                self.stop()
             }
-            player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
-                Task { @MainActor in
-                    guard finished else { return }
-                    self?.player?.play()
-                    self?.isPlaying = true
-                }
+        }
+        player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            Task { @MainActor in
+                guard let self, finished, self.session == request, self.player === player else { return }
+                player.play()
+                self.isPlaying = true
             }
-        } else {
-            player.play()
-            isPlaying = true
         }
     }
 
     public func stop() {
+        session += 1
         endTask?.cancel()
         endTask = nil
         failTask?.cancel()

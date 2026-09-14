@@ -241,18 +241,140 @@ final class AudioExportPlaybackTests: XCTestCase {
             selected: false
         )
         let settings = ExportSettings(outputDirectory: dir, overwrite: true, writeNextToBook: false)
-        let urls = try await M4BExporter(bitrate: 48_000).exportAll(
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(
             books: [ignored, selected],
             settings: settings
         )
-        XCTAssertEqual(urls.count, 1)
-        XCTAssertEqual(urls[0].lastPathComponent, selected.suggestedFileName)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: urls[0].path))
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].bookID, selected.id)
+        XCTAssertEqual(results[0].outcome, .created)
+        XCTAssertEqual(results[0].url.lastPathComponent, selected.suggestedFileName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.outputURL(for: ignored).path))
 
         let existsSettings = ExportSettings(outputDirectory: dir, overwrite: false, writeNextToBook: false)
         let again = try await M4BExporter(bitrate: 48_000).exportAll(books: [selected], settings: existsSettings)
         XCTAssertEqual(again.count, 1)
-        XCTAssertEqual(again[0].lastPathComponent, selected.suggestedFileName)
+        XCTAssertEqual(again[0].bookID, selected.id)
+        XCTAssertEqual(again[0].outcome, .skippedExisting)
+        XCTAssertNotEqual(again[0].outcome, .created)
+        XCTAssertEqual(again[0].url.lastPathComponent, selected.suggestedFileName)
+    }
+
+    func testExportAllSkipExistingLeavesUnrelatedBytes() async throws {
+        let root = try TestSupport.tempDir("export-skip-bytes")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book = try makeSilenceBook(folder: bookDir, title: "SkipMe", author: "A")
+        let settings = ExportSettings(outputDirectory: out, overwrite: false, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+        let payload = Data("UNRELATED-NOT-AN-M4B".utf8)
+        try payload.write(to: dest)
+
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [book], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].outcome, .skippedExisting)
+        XCTAssertNotEqual(results[0].outcome, .created)
+        XCTAssertEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertEqual(try Data(contentsOf: dest), payload)
+    }
+
+    func testExportAllOverwriteReplacesExistingDest() async throws {
+        let root = try TestSupport.tempDir("export-all-replace")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book = try makeSilenceBook(folder: bookDir, title: "ReplaceMe", author: "System")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+        try Data("OLD-DEST".utf8).write(to: dest)
+
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [book], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].outcome, .replaced)
+        XCTAssertEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
+        let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
+    }
+
+    func testExportAllCollidingNamesWriteDistinctFiles() async throws {
+        let root = try TestSupport.tempDir("export-collide")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionA = root.appendingPathComponent("EditionA", isDirectory: true)
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let bookA = try makeSilenceBook(folder: editionA, title: "Same", author: "Ann")
+        let bookB = try makeSilenceBook(folder: editionB, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [bookA, bookB])
+        XCTAssertNotEqual(plan[bookA.id]?.standardizedFileURL.path, plan[bookB.id]?.standardizedFileURL.path)
+
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(
+            books: [bookA, bookB],
+            settings: settings
+        )
+        XCTAssertEqual(results.count, 2)
+        XCTAssertTrue(results.allSatisfy { $0.outcome == .created })
+        XCTAssertNotEqual(results[0].url.standardizedFileURL.path, results[1].url.standardizedFileURL.path)
+        XCTAssertEqual(
+            Set(results.map { $0.url.standardizedFileURL.path }),
+            Set(plan.values.map { $0.standardizedFileURL.path })
+        )
+        for result in results {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: result.url.path))
+            let size = try FileManager.default.attributesOfItem(atPath: result.url.path)[.size] as? Int64 ?? 0
+            XCTAssertGreaterThan(size, 1_000)
+        }
+    }
+
+    func testExportAllContinuesAfterFailureAndDoesNotPublishFailed() async throws {
+        let root = try TestSupport.tempDir("export-continue-fail")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let badDir = root.appendingPathComponent("BadBook", isDirectory: true)
+        let goodDir = root.appendingPathComponent("GoodBook", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: badDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: goodDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let missing = Chapter(
+            url: badDir.appendingPathComponent("gone.wav"),
+            index: 1,
+            title: "Gone",
+            duration: 1,
+            fileSize: 1
+        )
+        let bad = Audiobook(folder: badDir, title: "Bad", author: "A", chapters: [missing], selected: true)
+        let good = try makeSilenceBook(folder: goodDir, title: "Good", author: "A")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(
+            books: [bad, good],
+            settings: settings
+        )
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[0].bookID, bad.id)
+        guard case .failed = results[0].outcome else {
+            return XCTFail("expected failed, got \(results[0].outcome)")
+        }
+        XCTAssertFalse(results[0].outcome.isPublished)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: results[0].url.path))
+        XCTAssertEqual(results[1].bookID, good.id)
+        XCTAssertEqual(results[1].outcome, .created)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: results[1].url.path))
+        let size = try FileManager.default.attributesOfItem(atPath: results[1].url.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
     }
 
     func testChaptersReadyForExport() {
@@ -413,6 +535,31 @@ final class AudioExportPlaybackTests: XCTestCase {
         let wav = dir.appendingPathComponent("silence.wav")
         try TestSupport.writeSilenceWAV(to: wav, seconds: 1)
         return wav
+    }
+
+    private func makeSilenceBook(
+        folder: URL,
+        title: String,
+        author: String,
+        selected: Bool = true
+    ) throws -> Audiobook {
+        let source = try makeSilence(in: folder)
+        let info = AudioMetadata.fileInfo(of: source)
+        let chapter = Chapter(
+            url: source,
+            index: 1,
+            title: "Ch",
+            duration: info.duration,
+            fileSize: 1,
+            audioInfo: info.audioInfo
+        )
+        return Audiobook(
+            folder: folder,
+            title: title,
+            author: author,
+            chapters: [chapter],
+            selected: selected
+        )
     }
 
     @MainActor

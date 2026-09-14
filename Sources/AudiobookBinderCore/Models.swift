@@ -232,6 +232,94 @@ public struct ExportSettings: Sendable, Equatable {
     public func outputURL(for book: Audiobook) -> URL {
         resolvedOutputDirectory(for: book).appendingPathComponent(book.suggestedFileName)
     }
+
+    /// Unique destination per book. Same title/author from different folders, and
+    /// names that collide after `suggestedFileName` sanitization, get distinct paths.
+    public func plannedOutputs(for books: [Audiobook]) -> [UUID: URL] {
+        var reserved = Set<String>()
+        var plan: [UUID: URL] = [:]
+        plan.reserveCapacity(books.count)
+        for book in books {
+            plan[book.id] = uniqueOutputURL(for: book, reserved: &reserved)
+        }
+        return plan
+    }
+
+    private func uniqueOutputURL(for book: Audiobook, reserved: inout Set<String>) -> URL {
+        let dir = resolvedOutputDirectory(for: book).standardizedFileURL
+        let primary = book.suggestedFileName
+        if let url = claim(dir.appendingPathComponent(primary), reserved: &reserved) {
+            return url
+        }
+
+        let stem = (primary as NSString).deletingPathExtension
+        let folder = Self.sanitizedPathComponent(book.folder.lastPathComponent)
+        if !folder.isEmpty {
+            if let url = claim(dir.appendingPathComponent("\(stem) - \(folder).m4b"), reserved: &reserved) {
+                return url
+            }
+            var n = 2
+            while n < 10_000 {
+                if let url = claim(dir.appendingPathComponent("\(stem) - \(folder) \(n).m4b"), reserved: &reserved) {
+                    return url
+                }
+                n += 1
+            }
+        } else {
+            var n = 2
+            while n < 10_000 {
+                if let url = claim(dir.appendingPathComponent("\(stem) \(n).m4b"), reserved: &reserved) {
+                    return url
+                }
+                n += 1
+            }
+        }
+        return dir.appendingPathComponent("\(stem) - \(UUID().uuidString).m4b")
+    }
+
+    private func claim(_ url: URL, reserved: inout Set<String>) -> URL? {
+        let key = Self.destinationKey(url)
+        guard !reserved.contains(key) else { return nil }
+        reserved.insert(key)
+        return url
+    }
+
+    private static func destinationKey(_ url: URL) -> String {
+        url.standardizedFileURL.path.lowercased()
+    }
+
+    private static func sanitizedPathComponent(_ name: String) -> String {
+        name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: " -")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+public enum ExportOutcome: Sendable, Equatable {
+    case created
+    case replaced
+    case skippedExisting
+    case failed(String)
+
+    public var isPublished: Bool {
+        switch self {
+        case .created, .replaced: return true
+        case .skippedExisting, .failed: return false
+        }
+    }
+}
+
+public struct BookExportResult: Sendable, Equatable {
+    public var bookID: UUID
+    public var url: URL
+    public var outcome: ExportOutcome
+
+    public init(bookID: UUID, url: URL, outcome: ExportOutcome) {
+        self.bookID = bookID
+        self.url = url
+        self.outcome = outcome
+    }
 }
 
 public struct JobProgress: Sendable, Equatable {
@@ -329,5 +417,83 @@ public enum BinderCopy {
         default:
             return "Created \(names.count) audiobooks — \(names.joined(separator: ", ")). Verify the .m4b files in the editor."
         }
+    }
+
+    public static func exportSummary(_ items: [(title: String, outcome: ExportOutcome)]) -> String {
+        var created: [String] = []
+        var replaced: [String] = []
+        var skipped: [String] = []
+        var failed: [String] = []
+
+        for item in items {
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch item.outcome {
+            case .created:
+                created.append(title)
+            case .replaced:
+                replaced.append(title)
+            case .skippedExisting:
+                skipped.append(title)
+            case .failed(let message):
+                let reason = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                if title.isEmpty {
+                    failed.append(reason)
+                } else if reason.isEmpty {
+                    failed.append(title)
+                } else {
+                    failed.append("\(title) (\(reason))")
+                }
+            }
+        }
+
+        if replaced.isEmpty && skipped.isEmpty && failed.isEmpty {
+            return createdAudiobooks(titles: created)
+        }
+
+        var parts: [String] = []
+        if !created.isEmpty {
+            parts.append(countPhrase("Created", count: created.count, singular: "audiobook", plural: "audiobooks", names: created))
+        }
+        if !replaced.isEmpty {
+            parts.append(countPhrase("Replaced", count: replaced.count, singular: "audiobook", plural: "audiobooks", names: replaced))
+        }
+        if !skipped.isEmpty {
+            parts.append(countPhrase("Skipped", count: skipped.count, singular: "existing audiobook", plural: "existing audiobooks", names: skipped))
+        }
+        if !failed.isEmpty {
+            parts.append(countPhrase("Failed", count: failed.count, singular: "audiobook", plural: "audiobooks", names: failed))
+        }
+        if parts.isEmpty {
+            return createdAudiobooks(titles: [])
+        }
+
+        var summary = parts.joined(separator: " ")
+        if !created.isEmpty || !replaced.isEmpty {
+            let published = created.count + replaced.count
+            summary += published == 1
+                ? " Verify the .m4b in the editor."
+                : " Verify the .m4b files in the editor."
+        }
+        return summary
+    }
+
+    private static func countPhrase(
+        _ verb: String,
+        count: Int,
+        singular: String,
+        plural: String,
+        names: [String]
+    ) -> String {
+        let noun = count == 1 ? singular : plural
+        let labeled = names.filter { !$0.isEmpty }
+        if labeled.isEmpty {
+            return "\(verb) \(count) \(noun)."
+        }
+        return "\(verb) \(count) \(noun) — \(labeled.joined(separator: ", "))."
+    }
+
+    public static func exportSummary(results: [BookExportResult], books: [Audiobook]) -> String {
+        let titles = Dictionary(uniqueKeysWithValues: books.map { ($0.id, $0.title) })
+        return exportSummary(results.map { (titles[$0.bookID] ?? "", $0.outcome) })
     }
 }

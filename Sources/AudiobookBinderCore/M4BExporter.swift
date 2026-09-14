@@ -77,16 +77,26 @@ public struct M4BExporter: Sendable {
         progress?(1.0, "Finished \(book.title)")
     }
 
+    public static func plan(books: [Audiobook], settings: ExportSettings) -> [UUID: URL] {
+        settings.plannedOutputs(for: books.filter(\.selected))
+    }
+
     public func exportAll(
         books: [Audiobook],
         settings: ExportSettings,
         progress: (@Sendable (JobProgress) -> Void)? = nil
-    ) async throws -> [URL] {
+    ) async throws -> [BookExportResult] {
         let selected = books.filter(\.selected)
-        var written: [URL] = []
+        let destinations = settings.plannedOutputs(for: selected)
+        var results: [BookExportResult] = []
         for (idx, book) in selected.enumerated() {
             try Task.checkCancellation()
-            let dest = settings.outputURL(for: book)
+            let dest = destinations[book.id] ?? settings.outputURL(for: book)
+            let existed = Self.existingRegularFile(dest)
+            if existed && !settings.overwrite {
+                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                continue
+            }
             do {
                 try await export(book: book, to: dest, overwrite: settings.overwrite) { fraction, detail in
                     progress?(
@@ -99,12 +109,40 @@ public struct M4BExporter: Sendable {
                         )
                     )
                 }
-                written.append(dest)
-            } catch BinderError.outputExists {
-                written.append(dest)
+                results.append(
+                    BookExportResult(
+                        bookID: book.id,
+                        url: dest,
+                        outcome: existed ? .replaced : .created
+                    )
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch BinderError.cancelled {
+                throw BinderError.cancelled
+            } catch let error as BinderError {
+                if case .outputExists = error {
+                    results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                } else {
+                    results.append(
+                        BookExportResult(
+                            bookID: book.id,
+                            url: dest,
+                            outcome: .failed(error.localizedDescription)
+                        )
+                    )
+                }
+            } catch {
+                results.append(
+                    BookExportResult(
+                        bookID: book.id,
+                        url: dest,
+                        outcome: .failed(error.localizedDescription)
+                    )
+                )
             }
         }
-        return written
+        return results
     }
 
     private func encode(
@@ -360,6 +398,11 @@ extension M4BExporter {
             return false
         }
         return FileManager.default.isReadableFile(atPath: url.path)
+    }
+
+    private static func existingRegularFile(_ url: URL) -> Bool {
+        let kind = destinationKind(url)
+        return kind.exists && !kind.isDirectory
     }
 
     private static func destinationKind(_ url: URL) -> (exists: Bool, isDirectory: Bool) {

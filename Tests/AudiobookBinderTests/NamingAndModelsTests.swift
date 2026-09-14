@@ -206,6 +206,126 @@ final class NamingAndModelsTests: XCTestCase {
             BinderCopy.createdAudiobooks(titles: ["  ", ""]),
             "Created 0 audiobooks."
         )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([("The Personal MBA", .created)]),
+            BinderCopy.createdAudiobooks(titles: ["The Personal MBA"])
+        )
+    }
+
+    func testExportSummaryDistinguishesCreatedSkippedReplacedFailed() {
+        XCTAssertEqual(
+            BinderCopy.exportSummary([
+                ("The Personal MBA", .created),
+                ("Rework", .skippedExisting)
+            ]),
+            "Created 1 audiobook — The Personal MBA. Skipped 1 existing audiobook — Rework. Verify the .m4b in the editor."
+        )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([
+                ("Antifragile", .skippedExisting),
+                ("Rework", .skippedExisting)
+            ]),
+            "Skipped 2 existing audiobooks — Antifragile, Rework."
+        )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([("The Personal MBA", .replaced)]),
+            "Replaced 1 audiobook — The Personal MBA. Verify the .m4b in the editor."
+        )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([("Broken", .failed("encode failed"))]),
+            "Failed 1 audiobook — Broken (encode failed)."
+        )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([
+                ("A", .created),
+                ("B", .replaced),
+                ("C", .skippedExisting),
+                ("D", .failed("disk full"))
+            ]),
+            "Created 1 audiobook — A. Replaced 1 audiobook — B. Skipped 1 existing audiobook — C. Failed 1 audiobook — D (disk full). Verify the .m4b files in the editor."
+        )
+    }
+
+    func testPlannedOutputsDisambiguatesSameTitleAuthorAndSanitizedNames() {
+        let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let editionA = TestSupport.dummyBook(folder: "/tmp/lib/EditionA", title: "Same", author: "Ann")
+        let editionB = TestSupport.dummyBook(folder: "/tmp/lib/EditionB", title: "Same", author: "Ann")
+        XCTAssertEqual(editionA.suggestedFileName, editionB.suggestedFileName)
+
+        let plan = settings.plannedOutputs(for: [editionA, editionB])
+        XCTAssertEqual(plan.count, 2)
+        XCTAssertNotEqual(plan[editionA.id]?.standardizedFileURL.path, plan[editionB.id]?.standardizedFileURL.path)
+        XCTAssertEqual(plan[editionA.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(plan[editionB.id]?.lastPathComponent, "Same - Ann - EditionB.m4b")
+        XCTAssertEqual(plan[editionA.id]?.deletingLastPathComponent().standardizedFileURL.path, out.standardizedFileURL.path)
+        XCTAssertEqual(plan[editionB.id]?.deletingLastPathComponent().standardizedFileURL.path, out.standardizedFileURL.path)
+
+        let slash = TestSupport.dummyBook(folder: "/tmp/lib/SlashBook", title: "Foo/Bar", author: "Ann")
+        let dash = TestSupport.dummyBook(folder: "/tmp/lib/DashBook", title: "Foo-Bar", author: "Ann")
+        XCTAssertEqual(slash.suggestedFileName, dash.suggestedFileName)
+        XCTAssertEqual(slash.suggestedFileName, "Foo-Bar - Ann.m4b")
+
+        let sanitized = settings.plannedOutputs(for: [slash, dash])
+        XCTAssertNotEqual(sanitized[slash.id]?.standardizedFileURL.path, sanitized[dash.id]?.standardizedFileURL.path)
+        XCTAssertEqual(sanitized[slash.id]?.lastPathComponent, "Foo-Bar - Ann.m4b")
+        XCTAssertEqual(sanitized[dash.id]?.lastPathComponent, "Foo-Bar - Ann - DashBook.m4b")
+
+        let nextTo = ExportSettings(writeNextToBook: true)
+        let beside = nextTo.plannedOutputs(for: [editionA, editionB])
+        XCTAssertEqual(beside[editionA.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(beside[editionB.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertNotEqual(beside[editionA.id]?.standardizedFileURL.path, beside[editionB.id]?.standardizedFileURL.path)
+
+        let sameFolderNameA = TestSupport.dummyBook(folder: "/tmp/lib/one/Book", title: "Same", author: "Ann")
+        let sameFolderNameB = TestSupport.dummyBook(folder: "/tmp/lib/two/Book", title: "Same", author: "Ann")
+        let sameFolderNameC = TestSupport.dummyBook(folder: "/tmp/lib/three/Book", title: "Same", author: "Ann")
+        let numbered = settings.plannedOutputs(for: [sameFolderNameA, sameFolderNameB, sameFolderNameC])
+        XCTAssertEqual(numbered[sameFolderNameA.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(numbered[sameFolderNameB.id]?.lastPathComponent, "Same - Ann - Book.m4b")
+        XCTAssertEqual(numbered[sameFolderNameC.id]?.lastPathComponent, "Same - Ann - Book 2.m4b")
+
+        let dotted = ExportSettings(
+            outputDirectory: URL(fileURLWithPath: "/tmp/OutShared/./", isDirectory: true),
+            writeNextToBook: false
+        )
+        let equivalent = dotted.plannedOutputs(for: [editionA, editionB])
+        XCTAssertNotEqual(
+            equivalent[editionA.id]?.standardizedFileURL.path,
+            equivalent[editionB.id]?.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            Set(equivalent.values.map(\.standardizedFileURL.path)),
+            Set(plan.values.map(\.standardizedFileURL.path))
+        )
+    }
+
+    func testPlannedOutputsDisambiguatesCaseInsensitiveFileNames() {
+        let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let titled = TestSupport.dummyBook(folder: "/tmp/lib/EditionA", title: "Same", author: "Ann", selected: true)
+        let lower = TestSupport.dummyBook(folder: "/tmp/lib/EditionB", title: "same", author: "Ann", selected: true)
+        XCTAssertEqual(titled.suggestedFileName.lowercased(), lower.suggestedFileName.lowercased())
+        XCTAssertNotEqual(titled.suggestedFileName, lower.suggestedFileName)
+
+        let plan = settings.plannedOutputs(for: [titled, lower])
+        let pathA = plan[titled.id]?.standardizedFileURL.path
+        let pathB = plan[lower.id]?.standardizedFileURL.path
+        XCTAssertNotEqual(pathA, pathB)
+        XCTAssertNotEqual(pathA?.lowercased(), pathB?.lowercased())
+        XCTAssertEqual(plan[titled.id]?.lastPathComponent, "Same - Ann.m4b")
+        XCTAssertEqual(plan[lower.id]?.lastPathComponent, "same - Ann - EditionB.m4b")
+    }
+
+    func testPlanIgnoresUnselectedBooks() {
+        let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let selected = TestSupport.dummyBook(folder: "/tmp/lib/Keep", title: "Same", author: "Ann", selected: true)
+        let ignored = TestSupport.dummyBook(folder: "/tmp/lib/Skip", title: "Same", author: "Ann", selected: false)
+        let plan = M4BExporter.plan(books: [ignored, selected], settings: settings)
+        XCTAssertEqual(plan.count, 1)
+        XCTAssertEqual(plan[selected.id]?.lastPathComponent, selected.suggestedFileName)
+        XCTAssertNil(plan[ignored.id])
     }
 
     func testChapterCompareRowsPairOriginalAndBound() {

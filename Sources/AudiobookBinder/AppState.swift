@@ -184,7 +184,7 @@ final class AppState {
         let settings = settings
         buildTask = Task {
             do {
-                let urls = try await M4BExporter(bitrate: settings.bitrate).exportAll(
+                let results = try await M4BExporter(bitrate: settings.bitrate).exportAll(
                     books: queue,
                     settings: settings
                 ) { [weak self] progress in
@@ -193,14 +193,15 @@ final class AppState {
                         self?.status = progress.detail
                     }
                 }
-                finishedURLs = urls
-                for (book, url) in zip(queue, urls) {
-                    if let index = books.firstIndex(where: { $0.id == book.id }) {
-                        books[index].existingM4BURL = url
-                        books[index].boundDuration = AudioMetadata.fileInfo(of: url).duration
+                let published = results.filter(\.outcome.isPublished)
+                finishedURLs = published.map(\.url)
+                for result in published {
+                    if let index = books.firstIndex(where: { $0.id == result.bookID }) {
+                        books[index].existingM4BURL = result.url
+                        books[index].boundDuration = AudioMetadata.fileInfo(of: result.url).duration
                     }
                 }
-                status = BinderCopy.createdAudiobooks(titles: queue.map(\.title))
+                status = BinderCopy.exportSummary(results: results, books: queue)
             } catch is CancellationError {
                 status = "Cancelled."
             } catch {
@@ -231,14 +232,11 @@ final class AppState {
     }
 
     func boundURL(for book: Audiobook) -> URL? {
-        if let url = book.existingM4BURL, FileManager.default.fileExists(atPath: url.path) {
-            return url
+        guard let url = book.existingM4BURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
         }
-        let dest = settings.outputURL(for: book)
-        if FileManager.default.fileExists(atPath: dest.path) {
-            return dest
-        }
-        return nil
+        return url
     }
 
     func applyCleanup(to bookID: Audiobook.ID, inspection: M4BInspection) {

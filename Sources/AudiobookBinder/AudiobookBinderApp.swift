@@ -119,14 +119,27 @@ enum CLI {
                     overwrite: overwrite,
                     writeNextToBook: output == nil
                 )
-                let urls = try await M4BExporter(bitrate: bitrate).exportAll(books: books, settings: settings) { progress in
+                let results = try await M4BExporter(bitrate: bitrate).exportAll(books: books, settings: settings) { progress in
                     fputs(
                         String(format: "[%d/%d] %.0f%% %@\n", progress.index, progress.count, progress.fraction * 100, progress.detail),
                         stderr
                     )
                 }
-                for url in urls { print(url.path) }
-                Darwin.exit(0)
+                var anyFailed = false
+                for result in results {
+                    switch result.outcome {
+                    case .created:
+                        print("created\t\(result.url.path)")
+                    case .replaced:
+                        print("replaced\t\(result.url.path)")
+                    case .skippedExisting:
+                        print("skipped\t\(result.url.path)")
+                    case .failed(let message):
+                        anyFailed = true
+                        print("failed\t\(result.url.path)\t\(message)")
+                    }
+                }
+                Darwin.exit(anyFailed ? 1 : 0)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
                 Darwin.exit(1)

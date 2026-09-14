@@ -218,42 +218,62 @@ public enum AudioMetadata {
 }
 
 public enum CoverJPEG {
-    public static func loadAndNormalize(from url: URL, maxEdge: CGFloat = 1400) -> Data? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return normalize(data, maxEdge: maxEdge)
+    /// Source images larger than this are rejected before decode.
+    public static let maxSourceBytes = 16 * 1024 * 1024
+    public static let defaultMaxEdge: CGFloat = 1400
+
+    public static func loadAndNormalize(from url: URL, maxEdge: CGFloat = defaultMaxEdge) -> Data? {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              let size = values.fileSize,
+              size > 0,
+              size <= maxSourceBytes
+        else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions()) else {
+            return nil
+        }
+        return jpegThumbnail(from: source, maxEdge: maxEdge)
     }
 
-    public static func normalize(_ data: Data, maxEdge: CGFloat = 1400) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            return data.isEmpty ? nil : data
+    public static func normalize(_ data: Data, maxEdge: CGFloat = defaultMaxEdge) -> Data? {
+        guard !data.isEmpty, data.count <= maxSourceBytes else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions()) else {
+            return nil
         }
-        let w = CGFloat(image.width)
-        let h = CGFloat(image.height)
-        let longest = max(w, h)
-        let scale = longest > maxEdge ? maxEdge / longest : 1
-        let tw = max(1, Int(w * scale))
-        let th = max(1, Int(h * scale))
-        let color = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: tw,
-            height: th,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: color,
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return data }
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: tw, height: th))
-        guard let scaled = ctx.makeImage() else { return data }
+        return jpegThumbnail(from: source, maxEdge: maxEdge)
+    }
+
+    private static func sourceOptions() -> CFDictionary {
+        [
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldCacheImmediately: false
+        ] as CFDictionary
+    }
+
+    private static func jpegThumbnail(from source: CGImageSource, maxEdge: CGFloat) -> Data? {
+        let pixelSize = max(1, Int(maxEdge))
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+            kCGImageSourceThumbnailMaxPixelSize: pixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
         let dest = NSMutableData()
-        guard let destSrc = CGImageDestinationCreateWithData(dest, "public.jpeg" as CFString, 1, nil) else {
-            return data
+        guard let destination = CGImageDestinationCreateWithData(dest, "public.jpeg" as CFString, 1, nil) else {
+            return nil
         }
-        let opts: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.88]
-        CGImageDestinationAddImage(destSrc, scaled, opts as CFDictionary)
-        CGImageDestinationFinalize(destSrc)
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: 0.88] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination), dest.length > 0 else {
+            return nil
+        }
         return dest as Data
     }
 }

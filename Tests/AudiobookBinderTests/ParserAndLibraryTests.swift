@@ -175,6 +175,8 @@ final class ParserAndLibraryTests: XCTestCase {
         let small = CoverJPEG.normalize(TestSupport.png1x1)
         XCTAssertNotNil(small)
         XCTAssertGreaterThan(small?.count ?? 0, 0)
+        XCTAssertTrue(isJPEG(small!))
+        XCTAssertEqual(imageSourceType(small!), "public.jpeg")
 
         let dir = try TestSupport.tempDir("cover")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -182,15 +184,33 @@ final class ParserAndLibraryTests: XCTestCase {
         try TestSupport.png1x1.write(to: png)
         let loaded = CoverJPEG.loadAndNormalize(from: png)
         XCTAssertNotNil(loaded)
+        XCTAssertTrue(isJPEG(loaded!))
 
         let large = makeJPEG(width: 2000, height: 1000)
         XCTAssertNotNil(large)
         let scaled = CoverJPEG.normalize(large!, maxEdge: 200)
         XCTAssertNotNil(scaled)
+        XCTAssertTrue(isJPEG(scaled!))
         let source = CGImageSourceCreateWithData(scaled! as CFData, nil)
         let image = source.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
         XCTAssertNotNil(image)
         XCTAssertLessThanOrEqual(max(image?.width ?? 0, image?.height ?? 0), 200)
+    }
+
+    func testCoverJPEGRejectsInvalidEmptyAndOversized() throws {
+        XCTAssertNil(CoverJPEG.normalize(Data()))
+        XCTAssertNil(CoverJPEG.normalize(Data("not-an-image".utf8)))
+        XCTAssertNil(CoverJPEG.normalize(Data([0xFF, 0xD8, 0x00])))
+        XCTAssertNil(CoverJPEG.normalize(Data(count: CoverJPEG.maxSourceBytes + 1)))
+
+        let dir = try TestSupport.tempDir("cover-oversize")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let huge = dir.appendingPathComponent("huge.bin")
+        XCTAssertTrue(FileManager.default.createFile(atPath: huge.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: huge)
+        try handle.truncate(atOffset: UInt64(CoverJPEG.maxSourceBytes) + 1)
+        try handle.close()
+        XCTAssertNil(CoverJPEG.loadAndNormalize(from: huge))
     }
 
     private func makeEPUB(
@@ -241,8 +261,17 @@ final class ParserAndLibraryTests: XCTestCase {
             return nil
         }
         CGImageDestinationAddImage(d, image, nil)
-        CGImageDestinationFinalize(d)
+        guard CGImageDestinationFinalize(d), dest.length > 0 else { return nil }
         return dest as Data
+    }
+
+    private func isJPEG(_ data: Data) -> Bool {
+        data.count >= 2 && data[0] == 0xFF && data[1] == 0xD8
+    }
+
+    private func imageSourceType(_ data: Data) -> String? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceGetType(source) as String?
     }
 }
 
@@ -354,6 +383,22 @@ final class MP4AtomIOTests: XCTestCase {
         XCTAssertEqual(kids.count, 1)
         XCTAssertEqual(kids[0].type, "free")
         XCTAssertEqual(kids[0].size, 8)
+    }
+
+    func testReadHeadersFromFileMatchesDataParser() throws {
+        let nested = MP4Box.box("ftyp", Data(count: 16)) + MP4Box.box("moov", MP4Box.box("free", Data()))
+        let fromData = MP4AtomIO.parseHeaders(nested, range: 0..<nested.count)
+        XCTAssertEqual(fromData.map(\.type), ["ftyp", "moov"])
+
+        let dir = try TestSupport.tempDir("atom-io")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("tiny.mp4")
+        try nested.write(to: url)
+        let fromFile = try MP4AtomIO.readHeaders(of: url)
+        XCTAssertEqual(fromFile.map(\.type), fromData.map(\.type))
+        XCTAssertEqual(fromFile.map(\.size), fromData.map(\.size))
+        XCTAssertEqual(fromFile.map(\.offset), fromData.map(\.offset))
+        XCTAssertEqual(fromFile.map(\.headerSize), fromData.map(\.headerSize))
     }
 
     func testReadersRejectOutOfBoundsWithoutTrapping() {

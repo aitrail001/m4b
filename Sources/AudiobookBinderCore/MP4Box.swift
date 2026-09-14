@@ -67,10 +67,106 @@ enum MP4AtomIO {
         "edts", "mvex", "ilst", "moof", "traf", "skip", "meta"
     ]
     static let maxHeadersPerParse = 10_000
+    static let ioChunkSize = 1_048_576
 
     static func readHeaders(of file: URL) throws -> [MP4AtomHeader] {
-        let data = try Data(contentsOf: file, options: [.mappedIfSafe])
-        return parseHeaders(data, range: 0..<data.count)
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+        return parseHeaders(from: handle, fileSize: fileSize)
+    }
+
+    static func parseHeaders(from handle: FileHandle, fileSize: UInt64) -> [MP4AtomHeader] {
+        var atoms: [MP4AtomHeader] = []
+        var offset: UInt64 = 0
+        while atoms.count < maxHeadersPerParse {
+            guard fileSize > offset, fileSize - offset >= 8 else { break }
+            let headerBytes: Data
+            do {
+                try handle.seek(toOffset: offset)
+                guard let bytes = try handle.read(upToCount: 16), bytes.count >= 8 else { break }
+                headerBytes = bytes
+            } catch {
+                break
+            }
+            guard let size32 = readU32(headerBytes, 0),
+                  let type = readFourCC(headerBytes, 4)
+            else { break }
+
+            let headerSize: UInt64
+            let size: UInt64
+            if size32 == 1 {
+                guard headerBytes.count >= 16, let extended = readU64(headerBytes, 8) else { break }
+                headerSize = 16
+                size = extended
+            } else if size32 == 0 {
+                headerSize = 8
+                size = fileSize - offset
+            } else {
+                headerSize = 8
+                size = UInt64(size32)
+            }
+
+            guard size >= headerSize else { break }
+            let remaining = fileSize - offset
+            guard size <= remaining else { break }
+            guard offset <= UInt64.max - size else { break }
+
+            atoms.append(
+                MP4AtomHeader(
+                    offset: offset,
+                    headerSize: headerSize,
+                    size: size,
+                    type: type
+                )
+            )
+            offset += size
+        }
+        return atoms
+    }
+
+    static func readAtom(_ header: MP4AtomHeader, from handle: FileHandle) throws -> Data {
+        guard let count = Int(exactly: header.size), count >= 8 else {
+            throw BinderError.exportFailed("Atom is too large to load")
+        }
+        try handle.seek(toOffset: header.offset)
+        guard let data = try handle.read(upToCount: count), data.count == count else {
+            throw BinderError.exportFailed("Could not read MP4 atom")
+        }
+        return data
+    }
+
+    static func copyBytes(
+        from input: FileHandle,
+        offset: UInt64,
+        count: UInt64,
+        to output: FileHandle
+    ) throws {
+        try input.seek(toOffset: offset)
+        var remaining = count
+        while remaining > 0 {
+            let chunk = Int(min(remaining, UInt64(ioChunkSize)))
+            guard let data = try input.read(upToCount: chunk), !data.isEmpty else {
+                throw BinderError.exportFailed("Unexpected end of file while copying MP4 data")
+            }
+            try output.write(contentsOf: data)
+            remaining -= UInt64(data.count)
+        }
+    }
+
+    static func writeFreeAtom(size: UInt64, to output: FileHandle) throws {
+        guard size >= 8, let size32 = UInt32(exactly: size) else {
+            throw BinderError.exportFailed("Cannot replace moov with a free atom")
+        }
+        try output.write(contentsOf: MP4Box.u32(size32) + MP4Box.fourcc("free"))
+        var remaining = size - 8
+        let zeros = Data(count: min(ioChunkSize, Int(clamping: remaining)))
+        while remaining > 0 {
+            let n = Int(min(remaining, UInt64(zeros.count)))
+            try output.write(contentsOf: zeros.prefix(n))
+            remaining -= UInt64(n)
+        }
     }
 
     static func parseHeaders(_ data: Data, range: Range<Int>) -> [MP4AtomHeader] {

@@ -57,6 +57,24 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(chapters[1].url, url)
     }
 
+    func testApplyLeavesFileUnchangedWhenMoovMissing() throws {
+        let dir = try TestSupport.tempDir("tag-nomov")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("bad.m4a")
+        let original = Data("not-an-mp4-file".utf8)
+        try original.write(to: url)
+        XCTAssertThrowsError(
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "T", author: "A"),
+                chapters: []
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), ["bad.m4a"])
+    }
+
     func testInspectExportedM4B() async throws {
         let dir = try TestSupport.tempDir("inspect")
         defer { try? FileManager.default.removeItem(at: dir) }

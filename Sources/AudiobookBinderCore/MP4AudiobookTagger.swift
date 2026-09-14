@@ -49,34 +49,85 @@ public enum MP4AudiobookTagger {
         chapters: [ChapterMark]
     ) throws {
         try validateChapters(chapters)
-        let original = try Data(contentsOf: url, options: [.mappedIfSafe])
-        let top = MP4AtomIO.parseHeaders(original, range: 0..<original.count)
-        guard let moovHeader = top.first(where: { $0.type == "moov" }) else {
-            throw BinderError.exportFailed("No moov atom in exported audio")
+
+        let input = try FileHandle(forReadingFrom: url)
+        let top: [MP4AtomHeader]
+        let moovData: Data
+        do {
+            let fileSize = try input.seekToEnd()
+            try input.seek(toOffset: 0)
+            top = MP4AtomIO.parseHeaders(from: input, fileSize: fileSize)
+            guard let moovHeader = top.first(where: { $0.type == "moov" }) else {
+                throw BinderError.exportFailed("No moov atom in exported audio")
+            }
+            moovData = try MP4AtomIO.readAtom(moovHeader, from: input)
+        } catch {
+            try? input.close()
+            throw error
         }
 
-        var rebuilt = Data()
-        rebuilt.reserveCapacity(original.count + 64_000)
-
-        for atom in top {
-            if atom.type == "moov" {
-                guard let size = Int(exactly: atom.size), size >= 8 else { continue }
-                rebuilt.append(MP4Box.box("free", Data(count: size - 8)))
-            } else {
-                rebuilt.append(MP4AtomIO.slice(original, atom))
+        let staging = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tagging")
+        var replaced = false
+        defer {
+            if !replaced {
+                try? FileManager.default.removeItem(at: staging)
             }
         }
 
-        let moovData = MP4AtomIO.slice(original, moovHeader)
-        let extra = try buildExtras(
-            originalMoov: moovData,
-            tags: tags,
-            chapters: chapters,
-            extraMdatFileOffset: UInt64(rebuilt.count)
+        do {
+            guard FileManager.default.createFile(atPath: staging.path, contents: nil) else {
+                throw BinderError.exportFailed("Could not create tagging scratch file")
+            }
+            let output = try FileHandle(forWritingTo: staging)
+            do {
+                var written: UInt64 = 0
+                for atom in top {
+                    guard written <= UInt64.max - atom.size else {
+                        throw BinderError.exportFailed("MP4 atom layout overflow")
+                    }
+                    if atom.type == "moov" {
+                        try MP4AtomIO.writeFreeAtom(size: atom.size, to: output)
+                    } else {
+                        try MP4AtomIO.copyBytes(
+                            from: input,
+                            offset: atom.offset,
+                            count: atom.size,
+                            to: output
+                        )
+                    }
+                    written += atom.size
+                }
+
+                let extra = try buildExtras(
+                    originalMoov: moovData,
+                    tags: tags,
+                    chapters: chapters,
+                    extraMdatFileOffset: written
+                )
+                try output.write(contentsOf: extra.mdat)
+                try output.write(contentsOf: extra.moov)
+                try output.synchronize()
+                try output.close()
+            } catch {
+                try? output.close()
+                throw error
+            }
+            try input.close()
+        } catch {
+            try? input.close()
+            throw error
+        }
+
+        var resultingItemURL: NSURL?
+        try FileManager.default.replaceItem(
+            at: url,
+            withItemAt: staging,
+            backupItemName: nil,
+            options: [],
+            resultingItemURL: &resultingItemURL
         )
-        rebuilt.append(extra.mdat)
-        rebuilt.append(extra.moov)
-        try rebuilt.write(to: url, options: [.atomic])
+        replaced = true
     }
 
     private struct Extras {
@@ -307,8 +358,8 @@ public enum MP4AudiobookTagger {
         }
         items.append(int8Item("stik", 2))
         items.append(int8Item("rtng", 0))
-        if let cover = tags.coverJPEG, !cover.isEmpty {
-            items.append(coverItem(cover))
+        if let jpeg = tags.coverJPEG.flatMap({ CoverJPEG.normalize($0) }), !jpeg.isEmpty {
+            items.append(coverItem(jpeg))
         }
         return MP4Box.box("ilst", items)
     }

@@ -154,14 +154,17 @@ public enum MP4AudiobookTagger {
         extraMdatFileOffset: UInt64
     ) throws -> Extras {
         let mvhd = try readMovieHeader(originalMoov)
-        let nextTrackID = max(mvhd.nextTrackID, maxTrackID(in: originalMoov) + 1)
-        let chapterTrackID = nextTrackID
+        let chapterTrackID = try allocateChapterTrackID(
+            nextTrackID: mvhd.nextTrackID,
+            maxTrackID: maxTrackID(in: originalMoov)
+        )
+        let followingTrackID = try incrementTrackID(chapterTrackID)
 
         let chapterSamples = chapterSampleData(chapters)
         let extraMdat = MP4Box.box("mdat", chapterSamples.payload)
 
         var moovPayload = originalMoov.subdata(in: 8..<originalMoov.count)
-        moovPayload = replaceNextTrackID(in: moovPayload, next: chapterTrackID + 1)
+        moovPayload = replaceNextTrackID(in: moovPayload, next: followingTrackID)
         moovPayload = upsertItunesMetadata(in: moovPayload, tags: tags)
         moovPayload = addNeroChapters(in: moovPayload, chapters: chapters)
 
@@ -181,84 +184,159 @@ public enum MP4AudiobookTagger {
         return Extras(mdat: extraMdat, moov: MP4Box.box("moov", moovPayload))
     }
 
-    private struct MovieHeader {
-        var timescale: UInt32
-        var duration: UInt64
-        var nextTrackID: UInt32
-        var version: UInt8
+    package struct MovieHeader: Equatable, Sendable {
+        package var timescale: UInt32
+        package var duration: UInt64
+        package var nextTrackID: UInt32
+        package var version: UInt8
     }
 
-    private static func readMovieHeader(_ moov: Data) throws -> MovieHeader {
+    private static let mvhdVersion0PayloadBytes = 100
+    private static let mvhdVersion1PayloadBytes = 112
+    private static let tkhdVersion0TrackIDBytes = 16
+    private static let tkhdVersion1TrackIDBytes = 24
+
+    package static func readMovieHeader(_ moov: Data) throws -> MovieHeader {
         guard moov.count >= 8 else { throw BinderError.exportFailed("Missing mvhd") }
         let children = MP4AtomIO.parseHeaders(moov, range: 8..<moov.count)
-        guard let mvhd = children.first(where: { $0.type == "mvhd" }),
-              let start = Int(exactly: mvhd.payloadOffset),
-              start < moov.count
-        else {
+        guard let mvhd = children.first(where: { $0.type == "mvhd" }) else {
             throw BinderError.exportFailed("Missing mvhd")
         }
-        let version = moov[start]
-        if version == 1 {
-            guard moov.count - start >= 112,
-                  let timescale = MP4AtomIO.readU32(moov, start + 20),
-                  let duration = MP4AtomIO.readU64(moov, start + 24),
-                  let next = MP4AtomIO.readU32(moov, start + 108)
+        return try readMovieHeader(from: moov, atom: mvhd)
+    }
+
+    private static func readMovieHeader(from data: Data, atom: MP4AtomHeader) throws -> MovieHeader {
+        guard let start = Int(exactly: atom.payloadOffset),
+              let payloadEnd = Int(exactly: atom.end),
+              start >= 0,
+              payloadEnd <= data.count,
+              start < payloadEnd
+        else {
+            throw BinderError.exportFailed("Truncated mvhd")
+        }
+        let version = data[start]
+        switch version {
+        case 1:
+            guard payloadEnd - start >= mvhdVersion1PayloadBytes,
+                  let timescale = readBoundedU32(data, start + 20, end: payloadEnd),
+                  let duration = readBoundedU64(data, start + 24, end: payloadEnd),
+                  let next = readBoundedU32(data, start + 108, end: payloadEnd)
             else {
                 throw BinderError.exportFailed("Truncated mvhd")
             }
             return MovieHeader(timescale: timescale, duration: duration, nextTrackID: next, version: version)
-        } else {
-            guard moov.count - start >= 100,
-                  let timescale = MP4AtomIO.readU32(moov, start + 12),
-                  let duration32 = MP4AtomIO.readU32(moov, start + 16),
-                  let nextTrack = MP4AtomIO.readU32(moov, start + 96)
+        case 0:
+            guard payloadEnd - start >= mvhdVersion0PayloadBytes,
+                  let timescale = readBoundedU32(data, start + 12, end: payloadEnd),
+                  let duration32 = readBoundedU32(data, start + 16, end: payloadEnd),
+                  let nextTrack = readBoundedU32(data, start + 96, end: payloadEnd)
             else {
                 throw BinderError.exportFailed("Truncated mvhd")
             }
-            return MovieHeader(timescale: timescale, duration: UInt64(duration32), nextTrackID: nextTrack, version: version)
+            return MovieHeader(
+                timescale: timescale,
+                duration: UInt64(duration32),
+                nextTrackID: nextTrack,
+                version: version
+            )
+        default:
+            throw BinderError.exportFailed("Unsupported mvhd version")
         }
     }
 
-    private static func maxTrackID(in moov: Data) -> UInt32 {
+    package static func maxTrackID(in moov: Data) -> UInt32 {
         var maxID: UInt32 = 0
         guard moov.count >= 8 else { return 0 }
         let traks = MP4AtomIO.parseHeaders(moov, range: 8..<moov.count).filter { $0.type == "trak" }
         for trak in traks {
             guard let trakStart = Int(exactly: trak.payloadOffset),
-                  let trakSize = Int(exactly: trak.payloadSize),
+                  let trakEnd = Int(exactly: trak.end),
                   trakStart >= 0,
-                  trakStart <= moov.count,
-                  moov.count - trakStart >= trakSize
+                  trakEnd <= moov.count,
+                  trakStart <= trakEnd
             else { continue }
-            let kids = MP4AtomIO.parseHeaders(moov, range: trakStart..<(trakStart + trakSize))
+            let kids = MP4AtomIO.parseHeaders(moov, range: trakStart..<trakEnd)
             guard let tkhd = kids.first(where: { $0.type == "tkhd" }),
-                  let start = Int(exactly: tkhd.payloadOffset),
-                  start < moov.count
-            else { continue }
-            let version = moov[start]
-            let idDelta = version == 1 ? 20 : 12
-            guard moov.count - start >= idDelta + 4,
-                  let id = MP4AtomIO.readU32(moov, start + idDelta)
+                  let id = readTrackID(from: moov, atom: tkhd)
             else { continue }
             maxID = max(maxID, id)
         }
         return maxID
     }
 
+    /// Chooses a chapter track ID as `max(nextTrackID, maxTrackID + 1)`.
+    /// Throws instead of wrapping or trapping when `maxTrackID + 1`, the chosen ID,
+    /// or `id + 1` (the following `mvhd.next_track_ID`) overflows `UInt32`.
+    /// `UInt32.max` cannot be incremented, so it is unusable as a next-id source.
+    package static func allocateChapterTrackID(nextTrackID: UInt32, maxTrackID: UInt32) throws -> UInt32 {
+        let maxPlusOne = try incrementTrackID(maxTrackID)
+        let chapterTrackID = max(nextTrackID, maxPlusOne)
+        _ = try incrementTrackID(chapterTrackID)
+        return chapterTrackID
+    }
+
+    package static func incrementTrackID(_ value: UInt32) throws -> UInt32 {
+        let (next, overflow) = value.addingReportingOverflow(1)
+        guard !overflow else {
+            throw BinderError.exportFailed("Track ID space exhausted")
+        }
+        return next
+    }
+
+    private static func readTrackID(from data: Data, atom: MP4AtomHeader) -> UInt32? {
+        guard let start = Int(exactly: atom.payloadOffset),
+              let payloadEnd = Int(exactly: atom.end),
+              start >= 0,
+              payloadEnd <= data.count,
+              start < payloadEnd
+        else { return nil }
+        let version = data[start]
+        let idOffset: Int
+        switch version {
+        case 1:
+            guard payloadEnd - start >= tkhdVersion1TrackIDBytes else { return nil }
+            idOffset = start + 20
+        case 0:
+            guard payloadEnd - start >= tkhdVersion0TrackIDBytes else { return nil }
+            idOffset = start + 12
+        default:
+            return nil
+        }
+        return readBoundedU32(data, idOffset, end: payloadEnd)
+    }
+
+    private static func readBoundedU32(_ data: Data, _ offset: Int, end: Int) -> UInt32? {
+        guard offset >= 0, end <= data.count, offset <= end, end - offset >= 4 else { return nil }
+        return MP4AtomIO.readU32(data, offset)
+    }
+
+    private static func readBoundedU64(_ data: Data, _ offset: Int, end: Int) -> UInt64? {
+        guard offset >= 0, end <= data.count, offset <= end, end - offset >= 8 else { return nil }
+        return MP4AtomIO.readU64(data, offset)
+    }
+
     private static func replaceNextTrackID(in moovPayload: Data, next: UInt32) -> Data {
         var data = moovPayload
-        let atoms = MP4AtomIO.parseHeaders(Data(MP4Box.u32(UInt32(data.count + 8)) + MP4Box.fourcc("moov") + data), range: 8..<(data.count + 8))
-        // Work on payload offsets: parse as if payload is a sequence of atoms
         let children = parsePayloadAtoms(data)
         guard let mvhd = children.first(where: { $0.type == "mvhd" }),
               let start = Int(exactly: mvhd.payloadOffset),
-              start < data.count
+              let payloadEnd = Int(exactly: mvhd.end),
+              start >= 0,
+              payloadEnd <= data.count,
+              start < payloadEnd
         else { return data }
         let version = data[start]
-        let idDelta = version == 1 ? 108 : 96
-        guard data.count - start >= idDelta + 4 else { return data }
+        let idDelta: Int
+        switch version {
+        case 1:
+            idDelta = 108
+        case 0:
+            idDelta = 96
+        default:
+            return data
+        }
+        guard payloadEnd - start >= idDelta + 4 else { return data }
         data.replaceSubrange((start + idDelta)..<(start + idDelta + 4), with: MP4Box.u32(next))
-        _ = atoms
         return data
     }
 

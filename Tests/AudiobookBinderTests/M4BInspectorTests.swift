@@ -120,6 +120,97 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(leftovers.map(\.lastPathComponent), ["ok.m4a"])
     }
 
+    func testReadMovieHeaderRejectsShortMvhdEvenWhenSiblingIsLong() {
+        let moov = Self.moovWithShortMvhdAndLongSibling()
+        XCTAssertThrowsError(try MP4AudiobookTagger.readMovieHeader(moov)) { error in
+            guard case BinderError.exportFailed = error else {
+                return XCTFail("\(error)")
+            }
+        }
+    }
+
+    func testMaxTrackIDIgnoresShortTkhdAndDoesNotReadSibling() {
+        let fakeID: UInt32 = 0xFFFF_FFFE
+        let shortOnly = Self.moovWithShortTkhdAndLongSibling(fakeTrackID: fakeID)
+        XCTAssertEqual(MP4AudiobookTagger.maxTrackID(in: shortOnly), 0)
+        XCTAssertNotEqual(MP4AudiobookTagger.maxTrackID(in: shortOnly), fakeID)
+
+        let mixed = Self.moovWithShortTkhdSiblingAndValidTrack(fakeTrackID: fakeID, validTrackID: 3)
+        XCTAssertEqual(MP4AudiobookTagger.maxTrackID(in: mixed), 3)
+        XCTAssertNotEqual(MP4AudiobookTagger.maxTrackID(in: mixed), fakeID)
+    }
+
+    func testAllocateChapterTrackIDThrowsWhenNextTrackIDIsUInt32Max() {
+        XCTAssertThrowsError(
+            try MP4AudiobookTagger.allocateChapterTrackID(nextTrackID: .max, maxTrackID: 1)
+        ) { error in
+            guard case BinderError.exportFailed = error else {
+                return XCTFail("\(error)")
+            }
+        }
+    }
+
+    func testAllocateChapterTrackIDThrowsWhenMaxTrackIDIsUInt32Max() {
+        XCTAssertThrowsError(
+            try MP4AudiobookTagger.allocateChapterTrackID(nextTrackID: 2, maxTrackID: .max)
+        ) { error in
+            guard case BinderError.exportFailed = error else {
+                return XCTFail("\(error)")
+            }
+        }
+    }
+
+    func testReadMovieHeaderParsesValidTinyMvhdV0() throws {
+        let header = try MP4AudiobookTagger.readMovieHeader(Self.validTinyMvhdV0Moov())
+        XCTAssertEqual(header.version, 0)
+        XCTAssertEqual(header.timescale, 1000)
+        XCTAssertEqual(header.duration, 5000)
+        XCTAssertEqual(header.nextTrackID, 2)
+        XCTAssertEqual(
+            try MP4AudiobookTagger.allocateChapterTrackID(
+                nextTrackID: header.nextTrackID,
+                maxTrackID: 1
+            ),
+            2
+        )
+    }
+
+    func testReadMovieHeaderRejectsUnsupportedVersion() {
+        var mvhd = Data(count: 100)
+        mvhd[0] = 2
+        mvhd.replaceSubrange(12..<16, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(16..<20, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(96..<100, with: MP4Box.u32(2))
+        let moov = MP4Box.box("moov", MP4Box.box("mvhd", mvhd))
+        XCTAssertThrowsError(try MP4AudiobookTagger.readMovieHeader(moov)) { error in
+            guard case BinderError.exportFailed = error else {
+                return XCTFail("\(error)")
+            }
+        }
+    }
+
+    func testApplyThrowsAndLeavesOriginalWhenNextTrackIDIsUInt32Max() throws {
+        let dir = try TestSupport.tempDir("tag-nextid-max")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("max-next.m4a")
+        let original = Self.minimalTaggableMP4(nextTrackID: .max)
+        try original.write(to: url)
+        XCTAssertThrowsError(
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "T", author: "A"),
+                chapters: [ChapterMark(start: 0, duration: 1, title: "One")]
+            )
+        ) { error in
+            guard case BinderError.exportFailed = error else {
+                return XCTFail("\(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), ["max-next.m4a"])
+    }
+
     static func truncatedMdatAfterMoov() -> Data {
         let moov = MP4Box.box("moov", MP4Box.box("mvhd", Data(count: 100)))
         var mdat = Data()
@@ -129,7 +220,7 @@ final class M4BInspectorTests: XCTestCase {
         return moov + mdat
     }
 
-    static func minimalTaggableMP4() -> Data {
+    static func minimalTaggableMP4(nextTrackID: UInt32 = 2) -> Data {
         var mvhd = Data(count: 100)
         mvhd.replaceSubrange(12..<16, with: MP4Box.u32(1000))
         mvhd.replaceSubrange(16..<20, with: MP4Box.u32(1000))
@@ -138,12 +229,52 @@ final class M4BInspectorTests: XCTestCase {
         mvhd.replaceSubrange(36..<40, with: MP4Box.u32(0x00010000))
         mvhd.replaceSubrange(52..<56, with: MP4Box.u32(0x00010000))
         mvhd.replaceSubrange(68..<72, with: MP4Box.u32(0x40000000))
-        mvhd.replaceSubrange(96..<100, with: MP4Box.u32(2))
+        mvhd.replaceSubrange(96..<100, with: MP4Box.u32(nextTrackID))
         let ftyp = MP4Box.box(
             "ftyp",
             MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ") + MP4Box.fourcc("mp42")
         )
         return ftyp + MP4Box.box("moov", MP4Box.box("mvhd", mvhd)) + MP4Box.box("mdat", Data(count: 8))
+    }
+
+    /// 4-byte `mvhd` payload plus a long sibling planted with distinctive field values
+    /// at the unbounded v0 offsets (`timescale` / `duration` / `next_track_ID`).
+    static func moovWithShortMvhdAndLongSibling() -> Data {
+        let shortMvhd = MP4Box.box("mvhd", Data([0, 0, 0, 0]))
+        var siblingPayload = Data(count: 96)
+        siblingPayload.replaceSubrange(0..<4, with: MP4Box.u32(0xDEAD_BEEF))
+        siblingPayload.replaceSubrange(4..<8, with: MP4Box.u32(0xCAFE_BABE))
+        siblingPayload.replaceSubrange(84..<88, with: MP4Box.u32(0x0BAD_F00D))
+        return MP4Box.box("moov", shortMvhd + MP4Box.box("free", siblingPayload))
+    }
+
+    static func moovWithShortTkhdAndLongSibling(fakeTrackID: UInt32) -> Data {
+        MP4Box.box("moov", shortTkhdTrak(fakeTrackID: fakeTrackID))
+    }
+
+    static func moovWithShortTkhdSiblingAndValidTrack(fakeTrackID: UInt32, validTrackID: UInt32) -> Data {
+        MP4Box.box("moov", shortTkhdTrak(fakeTrackID: fakeTrackID) + validTkhdTrak(trackID: validTrackID))
+    }
+
+    static func validTinyMvhdV0Moov() -> Data {
+        var mvhd = Data(count: 100)
+        mvhd.replaceSubrange(12..<16, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(16..<20, with: MP4Box.u32(5000))
+        mvhd.replaceSubrange(96..<100, with: MP4Box.u32(2))
+        return MP4Box.box("moov", MP4Box.box("mvhd", mvhd))
+    }
+
+    private static func shortTkhdTrak(fakeTrackID: UInt32) -> Data {
+        let shortTkhd = MP4Box.box("tkhd", Data([0, 0, 0, 0]))
+        var siblingPayload = Data(count: 32)
+        siblingPayload.replaceSubrange(0..<4, with: MP4Box.u32(fakeTrackID))
+        return MP4Box.box("trak", shortTkhd + MP4Box.box("free", siblingPayload))
+    }
+
+    private static func validTkhdTrak(trackID: UInt32) -> Data {
+        var tkhd = Data(count: 84)
+        tkhd.replaceSubrange(12..<16, with: MP4Box.u32(trackID))
+        return MP4Box.box("trak", MP4Box.box("tkhd", tkhd))
     }
 
     func testInspectExportedM4B() async throws {

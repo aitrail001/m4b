@@ -52,7 +52,7 @@ struct ContentView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .background(Capsule().fill(BinderTheme.leather))
-                        .help("Version \(AppVersion.display)")
+                        .help("Version \(AppVersion.display). Self-contained: macOS 14+, no ffmpeg or extra installs.")
                 }
                 Text(
                     (appState.selectedFolderURL ?? appState.libraryFolder)?.path
@@ -131,6 +131,11 @@ struct ContentView: View {
                 .foregroundStyle(BinderTheme.ink)
             Text("Select a book folder, or a library folder. Nested wrappers are scanned automatically. MP3 chapters, covers, and ebook metadata are picked up on their own.")
                 .font(.system(size: 13))
+                .foregroundStyle(BinderTheme.inkMuted)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+            Text("Self-contained. No ffmpeg or other extras — encoding uses macOS.")
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(BinderTheme.inkMuted)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)

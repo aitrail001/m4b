@@ -4,7 +4,7 @@
 
 Audiobook Binder is a local macOS 14+ Swift 6 app. It scans a book folder or a library of folders, then binds chapter audio into an Apple Books `.m4b` with title, author, cover, and chapter marks.
 
-`AudiobookBinderCore` is the library (scan, metadata, export). `AudiobookBinder` is the SwiftUI app and CLI. Unit tests are XCTest. `AudiobookBinderSelfTest` is an optional live scan of `~/Documents/books`.
+`AudiobookBinderCore` is the library (scan, metadata, export). `AudiobookBinder` is the SwiftUI app and CLI. Unit tests are XCTest. `AudiobookBinderSelfTest` is an optional live scan of `~/Documents/books`. The shipped app is self-contained: AVFoundation encode/play, no ffmpeg. EPUB metadata may use stock `/usr/bin/unzip`; missing unzip is not an error.
 
 ## Layout
 

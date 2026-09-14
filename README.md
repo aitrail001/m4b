@@ -20,6 +20,8 @@ Metadata is filled in this order: MP3 tags → OPF/EPUB → ebook filename → f
 
 macOS 14+. First launch: if Gatekeeper warns, right-click the app and choose **Open**.
 
+The shipped app is self-contained. Encoding, playback, chapters, and tags use Apple’s AVFoundation / AudioToolbox. There is no ffmpeg, Homebrew, or other extra install. `/usr/bin/unzip` (stock macOS) is used only to read EPUB metadata; if it is missing, titles still fall back to the folder name.
+
 ## Build and run
 
 Requires macOS 14+ and Swift 6.

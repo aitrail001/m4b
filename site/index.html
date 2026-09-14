@@ -44,9 +44,43 @@
     nav .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--gold-soft); }
     nav .brand img { width: 36px; height: 36px; border-radius: 8px; }
     nav .brand span { font-family: "Source Serif 4", Georgia, serif; font-weight: 600; font-size: 1.05rem; }
-    nav .links { display: flex; gap: 22px; align-items: center; font-size: 0.92rem; color: var(--gold-soft); }
+    nav .links { display: flex; gap: 18px; align-items: center; font-size: 0.92rem; color: var(--gold-soft); }
     nav .links a { text-decoration: none; }
     nav .links a:hover { color: white; }
+    .lang {
+      display: inline-flex;
+      border: 1px solid var(--rule);
+      border-radius: 999px;
+      overflow: hidden;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .lang button {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--gold-soft);
+      padding: 0.35rem 0.7rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    .lang button[aria-pressed="true"] {
+      background: var(--gold);
+      color: var(--leather-deep);
+    }
+    html[lang="zh-Hans"] body {
+      font-family: Figtree, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    }
+    html[lang="zh-Hans"] h1,
+    html[lang="zh-Hans"] h2,
+    html[lang="zh-Hans"] h3,
+    html[lang="zh-Hans"] nav .brand span,
+    html[lang="zh-Hans"] ol.guide b {
+      font-family: "Source Serif 4", "Songti SC", "Noto Serif SC", "STSong", serif;
+    }
+    html[lang="zh-Hans"] h1 { letter-spacing: 0; }
+    html[lang="zh-Hans"] .lede { max-width: 28em; }
     .btn {
       display: inline-flex; align-items: center; justify-content: center;
       background: var(--gold); color: var(--leather-deep);
@@ -212,27 +246,31 @@
       <span>Audiobook Binder</span>
     </a>
     <div class="links">
-      <a href="#how">How to</a>
-      <a href="#install">Install</a>
-      <a class="btn" href="downloads/AudiobookBinder.dmg">Download</a>
+      <a href="#how" data-i18n="nav.how">How to</a>
+      <a href="#install" data-i18n="nav.install">Install</a>
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="zh-Hans" aria-pressed="false">中文</button>
+      </div>
+      <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="nav.download">Download</a>
     </div>
   </nav>
 
   <header class="hero">
     <div class="wrap hero-grid">
       <div>
-        <h1>Loose MP3s, one book in Apple Books.</h1>
-        <p class="lede">Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.</p>
+        <h1 data-i18n="hero.title">Loose MP3s, one book in Apple Books.</h1>
+        <p class="lede" data-i18n-html="hero.lede">Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.</p>
         <div class="cta">
-          <a class="btn" href="downloads/AudiobookBinder.dmg">Download for macOS 14+</a>
-          <a class="btn ghost" href="https://github.com/aitrail001/m4b/releases/latest">GitHub release</a>
+          <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="hero.download">Download for macOS 14+</a>
+          <a class="btn ghost" href="https://github.com/aitrail001/m4b/releases/latest" data-i18n="hero.github">GitHub release</a>
         </div>
-        <p class="fine">Free. Runs on your Mac. Version 1.3.0 · about 3&nbsp;MB</p>
+        <p class="fine" data-i18n-html="hero.fine">Free. Runs on your Mac. Version 1.4.2 · about 3&nbsp;MB</p>
       </div>
       <div class="hero-frame">
-        <video autoplay muted loop playsinline poster="media/app-main.png" aria-label="Audiobook Binder window">
+        <video autoplay muted loop playsinline poster="media/app-main.png" data-i18n-aria="hero.video">
           <source src="media/app-tour.mp4" type="video/mp4">
-          <img src="media/app-main.png" alt="Audiobook Binder with a library of books and a selected cover">
+          <img src="media/app-main.png" data-i18n-alt="hero.shot">
         </video>
       </div>
     </div>
@@ -240,20 +278,20 @@
 
   <section class="paper" id="what">
     <div class="wrap">
-      <h2>It binds the library you already have.</h2>
-      <p class="intro">Point it at one book folder, or a parent folder of many books. Nested wrappers (Calibre-style <code>43/Title</code> trees) become a folder list on the left. Already-made <code>.m4b</code> files show as already bound so you do not encode them twice.</p>
+      <h2 data-i18n="what.title">It binds the library you already have.</h2>
+      <p class="intro" data-i18n-html="what.intro">Point it at one book folder, or a parent folder of many books. Nested wrappers (Calibre-style <code>43/Title</code> trees) become a folder list on the left. Already-made <code>.m4b</code> files show as already bound so you do not encode them twice.</p>
       <div class="split">
         <div>
-          <p>Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.</p>
-          <p>The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use Open in Books from the footer.</p>
+          <p data-i18n-html="what.p1">Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.</p>
+          <p data-i18n-html="what.p2">The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use Open in Books from the footer.</p>
         </div>
         <figure class="shot">
-          <img src="media/app-main.png" alt="Library list with covers, checkboxes, and the selected book’s metadata">
+          <img src="media/app-main.png" data-i18n-alt="what.shot">
         </figure>
       </div>
       <div class="gallery">
         <figure class="shot">
-          <img src="media/app-sidebar.png" alt="Book list with covers, durations, and already-bound labels">
+          <img src="media/app-sidebar.png" data-i18n-alt="what.sidebar">
         </figure>
         <figure class="shot">
           <video autoplay muted loop playsinline poster="media/app-editor.png">
@@ -266,34 +304,34 @@
 
   <section class="paper" id="how" style="padding-top:0">
     <div class="wrap">
-      <h2>How to bind a book</h2>
+      <h2 data-i18n="how.title">How to bind a book</h2>
       <ol class="guide">
         <li>
           <b>1</b>
           <div>
-            <h3>Open a folder</h3>
-            <p>Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. The footer names the folder being read.</p>
+            <h3 data-i18n="how.1.title">Open a folder</h3>
+            <p data-i18n="how.1.body">Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. The footer names the folder being read.</p>
           </div>
         </li>
         <li>
           <b>2</b>
           <div>
-            <h3>Pick a level, if you need to</h3>
-            <p>When books sit under extra folders, use the folder tree on the left. Filter by title, author, or narrator. Already-bound files stay unchecked.</p>
+            <h3 data-i18n="how.2.title">Pick a level, if you need to</h3>
+            <p data-i18n="how.2.body">When books sit under extra folders, use the folder tree on the left. Filter by title, author, or narrator. Already-bound files stay unchecked.</p>
           </div>
         </li>
         <li>
           <b>3</b>
           <div>
-            <h3>Edit, skip, listen</h3>
-            <p>Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate defaults to 64 kbps.</p>
+            <h3 data-i18n="how.3.title">Edit, skip, listen</h3>
+            <p data-i18n="how.3.body">Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate defaults to 64 kbps.</p>
           </div>
         </li>
         <li>
           <b>4</b>
           <div>
-            <h3>Build</h3>
-            <p>Save in the book folder, or to Music/Audiobooks. Then Show in Finder or Open in Books. The <code>.m4b</code> carries chapters and cover.</p>
+            <h3 data-i18n="how.4.title">Build</h3>
+            <p data-i18n-html="how.4.body">Save in the book folder, or to Music/Audiobooks. Then Show in Finder or Open in Books. The <code>.m4b</code> carries chapters and cover.</p>
           </div>
         </li>
       </ol>
@@ -303,26 +341,152 @@
   <section class="leather-band" id="install">
     <div class="wrap install">
       <div>
-        <h2>Install from the disk image</h2>
-        <p>Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.</p>
-        <p>This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.</p>
+        <h2 data-i18n="install.title">Install from the disk image</h2>
+        <p data-i18n-html="install.p1">Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.</p>
+        <p data-i18n-html="install.p2">This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.</p>
         <div class="cta">
-          <a class="btn" href="downloads/AudiobookBinder.dmg">Download AudiobookBinder.dmg</a>
+          <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="install.dmg">Download AudiobookBinder.dmg</a>
         </div>
-        <p class="fine">Also on <a href="https://github.com/aitrail001/m4b/releases/latest">GitHub Releases</a>. Source is public.</p>
+        <p class="fine" data-i18n-html="install.fine">Also on <a href="https://github.com/aitrail001/m4b/releases/latest">GitHub Releases</a>. Source is public.</p>
       </div>
       <div>
-        <h2 style="font-size:1.4rem">What it expects</h2>
-        <p>One book: a folder of numbered MP3s, optional <code>cover.jpg</code>, optional <code>ebook/</code>.</p>
-        <p>A library: a parent whose subfolders are books. Helper folders such as <code>不分章节</code> are skipped when numbered chapters exist.</p>
-        <p>Requires macOS 14 or later.</p>
+        <h2 style="font-size:1.4rem" data-i18n="expect.title">What it expects</h2>
+        <p data-i18n-html="expect.p1">One book: a folder of numbered MP3s, optional <code>cover.jpg</code>, optional <code>ebook/</code>.</p>
+        <p data-i18n-html="expect.p2">A library: a parent whose subfolders are books. Helper folders such as <code>不分章节</code> are skipped when numbered chapters exist.</p>
+        <p data-i18n="expect.p3">Requires macOS 14 or later.</p>
       </div>
     </div>
   </section>
 
   <footer class="wrap">
-    <span>Audiobook Binder 1.3.0 · local Mac app, no account</span>
-    <span><a href="https://github.com/aitrail001/m4b">Source</a> · <a href="downloads/AudiobookBinder.dmg">Download</a></span>
+    <span data-i18n="footer.left">Audiobook Binder 1.4.2 · local Mac app, no account</span>
+    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="downloads/AudiobookBinder.dmg" data-i18n="nav.download">Download</a></span>
   </footer>
+  <script>
+    const copy = {
+      en: {
+        "meta.title": "Audiobook Binder — MP3 chapters into Apple Books",
+        "meta.description": "A macOS app that turns a folder of chapter MP3s into one Apple Books audiobook (.m4b) with title, author, cover, and chapter marks.",
+        "nav.how": "How to",
+        "nav.install": "Install",
+        "nav.download": "Download",
+        "hero.title": "Loose MP3s, one book in Apple Books.",
+        "hero.lede": "Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.",
+        "hero.download": "Download for macOS 14+",
+        "hero.github": "GitHub release",
+        "hero.fine": "Free. Runs on your Mac. Version 1.4.2 · about 3&nbsp;MB",
+        "hero.video": "Audiobook Binder window",
+        "hero.shot": "Audiobook Binder with a library of books and a selected cover",
+        "what.title": "It binds the library you already have.",
+        "what.intro": "Point it at one book folder, or a parent folder of many books. Nested wrappers (Calibre-style <code>43/Title</code> trees) become a folder list on the left. Already-made <code>.m4b</code> files show as already bound so you do not encode them twice.",
+        "what.p1": "Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.",
+        "what.p2": "The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use Open in Books from the footer.",
+        "what.shot": "Library list with covers, checkboxes, and the selected book’s metadata",
+        "what.sidebar": "Book list with covers, durations, and already-bound labels",
+        "how.title": "How to bind a book",
+        "how.1.title": "Open a folder",
+        "how.1.body": "Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. The footer names the folder being read. Nothing is scanned until you open a folder.",
+        "how.2.title": "Pick a level, if you need to",
+        "how.2.body": "When books sit under extra folders, use the folder tree on the left. Filter by title, author, or narrator. Already-bound files stay unchecked.",
+        "how.3.title": "Edit, skip, listen",
+        "how.3.body": "Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate defaults to 64 kbps.",
+        "how.4.title": "Build",
+        "how.4.body": "Save in the book folder, or to Music/Audiobooks. Then Show in Finder, Open in Books, or Verify the <code>.m4b</code>. If durations match, you can move the original MP3s to Trash.",
+        "install.title": "Install from the disk image",
+        "install.p1": "Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.",
+        "install.p2": "This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.",
+        "install.dmg": "Download AudiobookBinder.dmg",
+        "install.fine": "Also on <a href=\"https://github.com/aitrail001/m4b/releases/latest\">GitHub Releases</a>. Source is public.",
+        "expect.title": "What it expects",
+        "expect.p1": "One book: a folder of numbered MP3s, optional <code>cover.jpg</code>, optional <code>ebook/</code>.",
+        "expect.p2": "A library: a parent whose subfolders are books. Helper folders such as <code>不分章节</code> are skipped when numbered chapters exist.",
+        "expect.p3": "Requires macOS 14 or later.",
+        "footer.left": "Audiobook Binder 1.4.2 · local Mac app, no account",
+        "footer.source": "Source"
+      },
+      "zh-Hans": {
+        "meta.title": "Audiobook Binder — 把分章 MP3 合成 Apple Books 有声书",
+        "meta.description": "一款 Mac 应用：把文件夹里的分章 MP3 合成为带书名、作者、封面和章节标记的 Apple Books 有声书（.m4b）。",
+        "nav.how": "用法",
+        "nav.install": "安装",
+        "nav.download": "下载",
+        "hero.title": "一堆 MP3，一本 Apple Books 有声书。",
+        "hero.lede": "Audiobook Binder 是一款 Mac 应用，会从文件夹（包括多层书库）收集分章音频，写成带<strong>书名、作者、封面和章节</strong>的 <strong>.m4b</strong>。",
+        "hero.download": "下载（macOS 14+）",
+        "hero.github": "GitHub 发布页",
+        "hero.fine": "免费，在本机运行。版本 1.4.2 · 约 3&nbsp;MB",
+        "hero.video": "Audiobook Binder 窗口",
+        "hero.shot": "Audiobook Binder：书库列表与选中书籍封面",
+        "what.title": "你现有的书库，直接拿来装订。",
+        "what.intro": "指向一本有编号 MP3 的书文件夹，或包含多本书的父文件夹。嵌套包装目录（如 Calibre 的 <code>43/书名</code>）会显示在左侧文件夹树。已经生成的 <code>.m4b</code> 会标成「已是有声书」，不会重复编码。",
+        "what.p1": "元数据按顺序取自：MP3 标签 → OPF/EPUB → 电子书文件名 → 文件夹名。装订前可改书名、作者、演播、封面和每一章。不想要的片尾可取消勾选，也能试听某一章。成品可保存在书文件夹旁，或写入 <code>~/Music/Audiobooks</code>。",
+        "what.p2": "生成的文件会标成 Apple Books 有声书（<code>stik=2</code>），并带章节轨。拖到图书 App，或用窗口底部的「在图书中打开」。",
+        "what.shot": "带封面、勾选框和元数据的书库列表",
+        "what.sidebar": "带封面、时长和「已是有声书」标记的书籍列表",
+        "how.title": "如何装订一本书",
+        "how.1.title": "打开文件夹",
+        "how.1.body": "选择一本编号 MP3 的书，或整个书库文件夹。嵌套目录会自动扫描。在你主动打开文件夹之前，应用不会扫描。扫描时页脚会显示正在读取的目录。",
+        "how.2.title": "需要时选一层目录",
+        "how.2.body": "书在更深层时，用左侧文件夹树选择范围。可按书名、作者、演播筛选。已经是有声书的项目默认不勾选。",
+        "how.3.title": "编辑、跳过、试听",
+        "how.3.body": "改书名和作者，换封面，取消不想要的章节，并从列表试听。默认码率为 64 kbps。",
+        "how.4.title": "生成",
+        "how.4.body": "保存在书文件夹，或保存到「音乐/Audiobooks」。然后在访达中显示、在图书中打开，或校验 <code>.m4b</code>。若时长与源音频一致，可以把原来的 MP3 移到废纸篓。",
+        "install.title": "从磁盘映像安装",
+        "install.p1": "下载 DMG，打开后把 <strong>Audiobook Binder</strong> 拖进「应用程序」。",
+        "install.p2": "当前版本用 Apple Development 证书签名。第一次打开时，macOS 可能提示来自身份不明的开发者。请按住 Control 点按应用，选择<strong>打开</strong>，再确认打开。",
+        "install.dmg": "下载 AudiobookBinder.dmg",
+        "install.fine": "也可在 <a href=\"https://github.com/aitrail001/m4b/releases/latest\">GitHub Releases</a> 下载。源码公开。",
+        "expect.title": "它需要什么样的文件夹",
+        "expect.p1": "一本书：一叠编号 MP3，可选 <code>cover.jpg</code>，可选 <code>ebook/</code>。",
+        "expect.p2": "一个书库：父文件夹下每本书一个子文件夹。已有编号章节时，会跳过 <code>不分章节</code> 这类辅助目录。",
+        "expect.p3": "需要 macOS 14 或更高版本。",
+        "footer.left": "Audiobook Binder 1.4.2 · 本机 Mac 应用，无需账号",
+        "footer.source": "源码"
+      }
+    };
+
+    function apply(lang) {
+      const table = copy[lang] || copy.en;
+      document.documentElement.lang = lang === "zh-Hans" ? "zh-Hans" : "en";
+      document.title = table["meta.title"];
+      const desc = document.querySelector('meta[name="description"]');
+      if (desc) desc.setAttribute("content", table["meta.description"]);
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (table[key] != null) el.textContent = table[key];
+      });
+      document.querySelectorAll("[data-i18n-html]").forEach((el) => {
+        const key = el.getAttribute("data-i18n-html");
+        if (table[key] != null) el.innerHTML = table[key];
+      });
+      document.querySelectorAll("[data-i18n-alt]").forEach((el) => {
+        const key = el.getAttribute("data-i18n-alt");
+        if (table[key] != null) el.setAttribute("alt", table[key]);
+      });
+      document.querySelectorAll("[data-i18n-aria]").forEach((el) => {
+        const key = el.getAttribute("data-i18n-aria");
+        if (table[key] != null) el.setAttribute("aria-label", table[key]);
+      });
+      document.querySelectorAll(".lang button").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === lang ? "true" : "false");
+      });
+      try { localStorage.setItem("ab-lang", lang); } catch (_) {}
+    }
+
+    function initialLang() {
+      try {
+        const saved = localStorage.getItem("ab-lang");
+        if (saved === "zh-Hans" || saved === "en") return saved;
+      } catch (_) {}
+      const nav = (navigator.language || "").toLowerCase();
+      return nav.startsWith("zh") ? "zh-Hans" : "en";
+    }
+
+    document.querySelectorAll(".lang button").forEach((btn) => {
+      btn.addEventListener("click", () => apply(btn.getAttribute("data-lang")));
+    });
+    apply(initialLang());
+  </script>
 </body>
 </html>

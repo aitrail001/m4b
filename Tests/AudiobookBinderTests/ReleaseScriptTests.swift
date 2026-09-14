@@ -2,11 +2,19 @@ import XCTest
 
 final class ReleaseScriptTests: XCTestCase {
     func testSyncPublicReleaseGlobCleanup() throws {
+        try runZshFixture("scripts/test-sync-glob.sh")
+    }
+
+    func testReleasePipelineGates() throws {
+        try runZshFixture("scripts/test-release-gates.sh")
+    }
+
+    private func runZshFixture(_ relativePath: String) throws {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let script = repoRoot.appendingPathComponent("scripts/test-sync-glob.sh")
+        let script = repoRoot.appendingPathComponent(relativePath)
         XCTAssertTrue(
             FileManager.default.isReadableFile(atPath: script.path),
             "missing \(script.path)"

@@ -1,4 +1,4 @@
-.PHONY: all test build app run dmg release clean icon
+.PHONY: all test build app run dmg production-dmg release require-clean-release clean icon
 
 all: app
 
@@ -21,7 +21,12 @@ icon:
 	sips -z 512 512   Resources/AppIcon-1024.png --out Resources/AppIcon.iconset/icon_256x256@2x.png >/dev/null
 	sips -z 512 512   Resources/AppIcon-1024.png --out Resources/AppIcon.iconset/icon_512x512.png >/dev/null
 	sips -z 1024 1024 Resources/AppIcon-1024.png --out Resources/AppIcon.iconset/icon_512x512@2x.png >/dev/null
-	iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns
+	iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns.new
+	@if [ -f Resources/AppIcon.icns ] && cmp -s Resources/AppIcon.icns.new Resources/AppIcon.icns; then \
+		rm -f Resources/AppIcon.icns.new; \
+	else \
+		mv Resources/AppIcon.icns.new Resources/AppIcon.icns; \
+	fi
 
 app: icon build
 	./scripts/package-app.sh
@@ -33,7 +38,15 @@ dmg: app
 	chmod +x scripts/package-dmg.sh
 	./scripts/package-dmg.sh
 
-release: dmg
+production-dmg: app
+	chmod +x scripts/package-dmg.sh
+	PRODUCTION=1 ./scripts/package-dmg.sh
+
+require-clean-release:
+	chmod +x scripts/require-clean-release.sh
+	./scripts/require-clean-release.sh
+
+release: require-clean-release test production-dmg
 	chmod +x scripts/github-release.sh scripts/sync-public-release.sh
 	./scripts/github-release.sh
 	./scripts/sync-public-release.sh

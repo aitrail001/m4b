@@ -261,11 +261,13 @@ enum MP4AtomIO {
         from input: FileHandle,
         offset: UInt64,
         count: UInt64,
-        to output: FileHandle
+        to output: FileHandle,
+        cancellation: EncodeCancellation? = nil
     ) throws {
         try input.seek(toOffset: offset)
         var remaining = count
         while remaining > 0 {
+            try cancellation?.checkCancelled()
             let chunk = Int(min(remaining, UInt64(ioChunkSize)))
             guard let data = try input.read(upToCount: chunk), !data.isEmpty else {
                 throw BinderError.exportFailed("Unexpected end of file while copying MP4 data")

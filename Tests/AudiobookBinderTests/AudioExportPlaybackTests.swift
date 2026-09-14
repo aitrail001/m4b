@@ -521,6 +521,53 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(M4BExporter.wait(group, timeout: 0.2))
     }
 
+    func testWaitReturnsPromptlyWhenCancelled() throws {
+        let token = EncodeCancellation()
+        token.cancel()
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let semStart = Date()
+        do {
+            _ = try M4BExporter.wait(semaphore, timeout: 2, cancellation: token, slice: 0.05)
+            XCTFail("expected cancelled")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(semStart), 0.3)
+
+        let group = DispatchGroup()
+        group.enter()
+        let groupStart = Date()
+        do {
+            _ = try M4BExporter.wait(group, timeout: 2, cancellation: token, slice: 0.05)
+            XCTFail("expected cancelled")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(groupStart), 0.3)
+
+        let live = EncodeCancellation()
+        let liveSem = DispatchSemaphore(value: 0)
+        let liveStart = Date()
+        let liveError = ErrorBox()
+        let done = DispatchGroup()
+        done.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try M4BExporter.wait(liveSem, timeout: 2, cancellation: live, slice: 0.05)
+            } catch {
+                liveError.value = error
+            }
+            done.leave()
+        }
+        live.cancel()
+        XCTAssertEqual(done.wait(timeout: .now() + 1), .success)
+        XCTAssertLessThan(Date().timeIntervalSince(liveStart), 0.3)
+        guard case .cancelled = liveError.value as? BinderError else {
+            return XCTFail("expected cancelled, got \(String(describing: liveError.value))")
+        }
+    }
+
     func testEncodeWaitTimeoutsAreBounded() {
         XCTAssertEqual(M4BExporter.assetLoadTimeout, 30)
         XCTAssertEqual(M4BExporter.finishWritingTimeout, 60)
@@ -654,16 +701,95 @@ final class AudioExportPlaybackTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         task.cancel()
 
+        let results = try await task.value
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].bookID, book.id)
+        XCTAssertEqual(results[0].outcome, .cancelled)
+        XCTAssertFalse(results[0].outcome.isPublished)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+    }
+
+    func testExportAllKeepsCreatedResultsWhenLaterBookCancelled() async throws {
+        let root = try TestSupport.tempDir("export-all-keep-created")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book1Dir = root.appendingPathComponent("Book1", isDirectory: true)
+        let book2Dir = root.appendingPathComponent("Book2", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: book1Dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: book2Dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book1 = try makeSilenceBook(
+            folder: book1Dir,
+            title: "KeepCreated",
+            author: "A",
+            seconds: 1,
+            chapterCount: 1
+        )
+        let book2 = try makeSilenceBook(
+            folder: book2Dir,
+            title: "CancelSecond",
+            author: "A",
+            seconds: 5,
+            chapterCount: 12
+        )
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [book1, book2])
+        let dest1 = plan[book1.id]!
+        let dest2 = plan[book2.id]!
+        let secondEncoding = StartedFlag()
+
+        let task = Task {
+            try await M4BExporter(bitrate: 48_000).exportAll(
+                books: [book1, book2],
+                settings: settings
+            ) { progress in
+                if progress.index == 2 && progress.detail.contains("Encoding") {
+                    secondEncoding.mark()
+                }
+            }
+        }
+        await waitForFlag(secondEncoding, timeout: 30)
+        XCTAssertTrue(secondEncoding.isSet, "book 2 should have started encoding")
+        task.cancel()
+
+        let results = try await task.value
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[0].bookID, book1.id)
+        XCTAssertEqual(results[0].outcome, .created)
+        XCTAssertTrue(results[0].outcome.isPublished)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest1.path))
+        XCTAssertEqual(results[1].bookID, book2.id)
+        XCTAssertEqual(results[1].outcome, .cancelled)
+        XCTAssertFalse(results[1].outcome.isPublished)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest2.path))
+    }
+
+    func testTaggerApplyCancelLeavesOriginalUnchanged() throws {
+        let dir = try TestSupport.tempDir("tag-cancel")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("big.m4a")
+        let original = largeTaggableMP4()
+        XCTAssertGreaterThan(original.count, MP4AtomIO.ioChunkSize)
+        try original.write(to: url)
+
+        let token = EncodeCancellation()
+        token.cancel()
         do {
-            let results = try await task.value
-            XCTFail("expected cancelled, got \(results)")
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "T", author: "A"),
+                chapters: [],
+                cancellation: token
+            )
+            XCTFail("expected cancelled")
         } catch let error as BinderError {
             guard case .cancelled = error else { return XCTFail("\(error)") }
-        } catch {
-            XCTFail("\(error)")
         }
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), ["big.m4a"])
     }
 
     func testChaptersReadyForExport() {
@@ -1006,6 +1132,24 @@ final class AudioExportPlaybackTests: XCTestCase {
         return sample
     }
 
+    private func largeTaggableMP4() -> Data {
+        var mvhd = Data(count: 100)
+        mvhd.replaceSubrange(12..<16, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(16..<20, with: MP4Box.u32(1000))
+        mvhd.replaceSubrange(20..<24, with: MP4Box.u32(0x00010000))
+        mvhd.replaceSubrange(24..<26, with: MP4Box.u16(0x0100))
+        mvhd.replaceSubrange(36..<40, with: MP4Box.u32(0x00010000))
+        mvhd.replaceSubrange(52..<56, with: MP4Box.u32(0x00010000))
+        mvhd.replaceSubrange(68..<72, with: MP4Box.u32(0x40000000))
+        mvhd.replaceSubrange(96..<100, with: MP4Box.u32(2))
+        let ftyp = MP4Box.box(
+            "ftyp",
+            MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ") + MP4Box.fourcc("mp42")
+        )
+        let mdat = MP4Box.box("mdat", Data(count: MP4AtomIO.ioChunkSize + 64))
+        return ftyp + MP4Box.box("moov", MP4Box.box("mvhd", mvhd)) + mdat
+    }
+
     private func makeSilence(in dir: URL, seconds: Double = 1) throws -> URL {
         let wav = dir.appendingPathComponent("silence.wav")
         try TestSupport.writeSilenceWAV(to: wav, seconds: seconds)
@@ -1057,6 +1201,24 @@ final class AudioExportPlaybackTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(50))
         }
         return condition()
+    }
+}
+
+private final class ErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    var value: Error? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+        set {
+            lock.lock()
+            stored = newValue
+            lock.unlock()
+        }
     }
 }
 

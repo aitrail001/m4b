@@ -358,11 +358,12 @@ public enum ExportOutcome: Sendable, Equatable {
     case replaced
     case skippedExisting
     case failed(String)
+    case cancelled
 
     public var isPublished: Bool {
         switch self {
         case .created, .replaced: return true
-        case .skippedExisting, .failed: return false
+        case .skippedExisting, .failed, .cancelled: return false
         }
     }
 }
@@ -481,6 +482,7 @@ public enum BinderCopy {
         var replaced: [String] = []
         var skipped: [String] = []
         var failed: [String] = []
+        var cancelled: [String] = []
 
         for item in items {
             let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -491,6 +493,8 @@ public enum BinderCopy {
                 replaced.append(title)
             case .skippedExisting:
                 skipped.append(title)
+            case .cancelled:
+                cancelled.append(title)
             case .failed(let message):
                 let reason = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 if title.isEmpty {
@@ -503,7 +507,7 @@ public enum BinderCopy {
             }
         }
 
-        if replaced.isEmpty && skipped.isEmpty && failed.isEmpty {
+        if replaced.isEmpty && skipped.isEmpty && failed.isEmpty && cancelled.isEmpty {
             return createdAudiobooks(titles: created)
         }
 
@@ -519,6 +523,9 @@ public enum BinderCopy {
         }
         if !failed.isEmpty {
             parts.append(countPhrase("Failed", count: failed.count, singular: "audiobook", plural: "audiobooks", names: failed))
+        }
+        if !cancelled.isEmpty {
+            parts.append(countPhrase("Cancelled", count: cancelled.count, singular: "audiobook", plural: "audiobooks", names: cancelled))
         }
         if parts.isEmpty {
             return createdAudiobooks(titles: [])

@@ -244,6 +244,14 @@ final class NamingAndModelsTests: XCTestCase {
             ]),
             "Created 1 audiobook — A. Replaced 1 audiobook — B. Skipped 1 existing audiobook — C. Failed 1 audiobook — D (disk full). Verify the .m4b files in the editor."
         )
+        XCTAssertFalse(ExportOutcome.cancelled.isPublished)
+        XCTAssertEqual(
+            BinderCopy.exportSummary([
+                ("KeepCreated", .created),
+                ("CancelSecond", .cancelled)
+            ]),
+            "Created 1 audiobook — KeepCreated. Cancelled 1 audiobook — CancelSecond. Verify the .m4b in the editor."
+        )
     }
 
     func testPlannedOutputsDisambiguatesSameTitleAuthorAndSanitizedNames() {

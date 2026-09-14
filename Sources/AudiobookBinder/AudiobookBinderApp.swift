@@ -140,6 +140,8 @@ enum CLI {
                         print("replaced\t\(result.url.path)")
                     case .skippedExisting:
                         print("skipped\t\(result.url.path)")
+                    case .cancelled:
+                        print("cancelled\t\(result.url.path)")
                     case .failed(let message):
                         anyFailed = true
                         print("failed\t\(result.url.path)\t\(message)")

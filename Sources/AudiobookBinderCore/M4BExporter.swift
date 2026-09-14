@@ -52,34 +52,44 @@ public struct M4BExporter: Sendable {
         progress?(0.01, "Preparing \(book.title)")
 
         let chapters = try Self.chaptersForExport(book.chapters, folder: book.folder)
-        let marks = try await encode(chapters: chapters, to: tempURL, progress: progress)
+        let cancellation = EncodeCancellation()
+        try await withTaskCancellationHandler {
+            let marks = try await encode(
+                chapters: chapters,
+                to: tempURL,
+                progress: progress,
+                cancellation: cancellation
+            )
+            try cancellation.checkCancelled()
 
-        progress?(0.92, "Writing audiobook tags and chapters")
-        try MP4AudiobookTagger.apply(
-            to: tempURL,
-            tags: AudiobookTags(
-                title: book.title,
-                author: book.author,
-                album: book.title,
-                narrator: book.narrator,
-                genre: book.genre.isEmpty ? "Audiobook" : book.genre,
-                comment: book.bookDescription,
-                coverJPEG: book.coverJPEG
-            ),
-            chapters: marks
-        )
+            progress?(0.92, "Writing audiobook tags and chapters")
+            try MP4AudiobookTagger.apply(
+                to: tempURL,
+                tags: AudiobookTags(
+                    title: book.title,
+                    author: book.author,
+                    album: book.title,
+                    narrator: book.narrator,
+                    genre: book.genre.isEmpty ? "Audiobook" : book.genre,
+                    comment: book.bookDescription,
+                    coverJPEG: book.coverJPEG
+                ),
+                chapters: marks,
+                cancellation: cancellation
+            )
 
-        guard FileManager.default.fileExists(atPath: tempURL.path) else {
-            throw BinderError.exportFailed("Encode produced no output")
+            guard FileManager.default.fileExists(atPath: tempURL.path) else {
+                throw BinderError.exportFailed("Encode produced no output")
+            }
+
+            try cancellation.checkCancelled()
+            try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
+            OutputAssociation.record(outputURL, inBookFolder: book.folder)
+            SourceAssociation.record(chapters.map(\.url), dest: outputURL, inBookFolder: book.folder)
+            progress?(1.0, "Finished \(book.title)")
+        } onCancel: {
+            cancellation.cancel()
         }
-
-        if Task.isCancelled {
-            throw BinderError.cancelled
-        }
-        try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
-        OutputAssociation.record(outputURL, inBookFolder: book.folder)
-        SourceAssociation.record(chapters.map(\.url), dest: outputURL, inBookFolder: book.folder)
-        progress?(1.0, "Finished \(book.title)")
     }
 
     public static func plan(books: [Audiobook], settings: ExportSettings) -> [UUID: URL] {
@@ -95,10 +105,16 @@ public struct M4BExporter: Sendable {
         let destinations = settings.plannedOutputs(for: selected)
         var results: [BookExportResult] = []
         for (idx, book) in selected.enumerated() {
-            if Task.isCancelled {
-                throw BinderError.cancelled
-            }
             let dest = destinations[book.id] ?? settings.outputURL(for: book)
+            if Task.isCancelled {
+                Self.appendCancelled(
+                    selected[idx...],
+                    destinations: destinations,
+                    settings: settings,
+                    into: &results
+                )
+                return results
+            }
             let existed = Self.existingRegularFile(dest)
             if existed && !settings.owns(dest, for: book) {
                 results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
@@ -128,9 +144,21 @@ public struct M4BExporter: Sendable {
                     )
                 )
             } catch is CancellationError {
-                throw BinderError.cancelled
+                Self.appendCancelled(
+                    selected[idx...],
+                    destinations: destinations,
+                    settings: settings,
+                    into: &results
+                )
+                return results
             } catch BinderError.cancelled {
-                throw BinderError.cancelled
+                Self.appendCancelled(
+                    selected[idx...],
+                    destinations: destinations,
+                    settings: settings,
+                    into: &results
+                )
+                return results
             } catch let error as BinderError {
                 if case .outputExists = error {
                     results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
@@ -159,9 +187,9 @@ public struct M4BExporter: Sendable {
     private func encode(
         chapters: [Chapter],
         to url: URL,
-        progress: (@Sendable (Double, String) -> Void)?
+        progress: (@Sendable (Double, String) -> Void)?,
+        cancellation: EncodeCancellation
     ) async throws -> [ChapterMark] {
-        let cancellation = EncodeCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -297,7 +325,7 @@ public struct M4BExporter: Sendable {
             finishError = writer.error
             finishGroup.leave()
         }
-        guard Self.wait(finishGroup, timeout: Self.finishWritingTimeout) else {
+        guard try Self.wait(finishGroup, timeout: Self.finishWritingTimeout, cancellation: cancellation) else {
             Self.cancelIfWriting(writer)
             throw BinderError.exportFailed("Timed out waiting for encode to finish")
         }
@@ -320,7 +348,7 @@ public struct M4BExporter: Sendable {
         asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
             loaded.signal()
         }
-        guard Self.wait(loaded, timeout: Self.assetLoadTimeout) else {
+        guard try Self.wait(loaded, timeout: Self.assetLoadTimeout, cancellation: cancellation) else {
             throw BinderError.exportFailed("Timed out loading \(asset.url.lastPathComponent)")
         }
         var tracksError: NSError?
@@ -451,14 +479,75 @@ extension M4BExporter {
     package static let finishWritingTimeout: TimeInterval = 60
     package static let writerReadyTimeout: TimeInterval = 30
 
+    /// Default poll slice so cancel unblocks without waiting out the full timeout.
+    package static let waitSlice: TimeInterval = 0.05
+
     /// Bounded wait so encode cannot block forever on a semaphore that never signals.
     package static func wait(_ semaphore: DispatchSemaphore, timeout: TimeInterval) -> Bool {
-        semaphore.wait(timeout: .now() + timeout) == .success
+        (try? wait(semaphore, timeout: timeout, cancellation: nil)) ?? false
     }
 
     /// Bounded wait so encode cannot block forever on a group that never leaves.
     package static func wait(_ group: DispatchGroup, timeout: TimeInterval) -> Bool {
-        group.wait(timeout: .now() + timeout) == .success
+        (try? wait(group, timeout: timeout, cancellation: nil)) ?? false
+    }
+
+    package static func wait(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval,
+        cancellation: EncodeCancellation?,
+        slice: TimeInterval = waitSlice
+    ) throws -> Bool {
+        try wait(timeout: timeout, cancellation: cancellation, slice: slice) { remaining in
+            semaphore.wait(timeout: .now() + remaining)
+        }
+    }
+
+    package static func wait(
+        _ group: DispatchGroup,
+        timeout: TimeInterval,
+        cancellation: EncodeCancellation?,
+        slice: TimeInterval = waitSlice
+    ) throws -> Bool {
+        try wait(timeout: timeout, cancellation: cancellation, slice: slice) { remaining in
+            group.wait(timeout: .now() + remaining)
+        }
+    }
+
+    private static func wait(
+        timeout: TimeInterval,
+        cancellation: EncodeCancellation?,
+        slice: TimeInterval,
+        step: (TimeInterval) -> DispatchTimeoutResult
+    ) throws -> Bool {
+        try cancellation?.checkCancelled()
+        if cancellation == nil {
+            return step(timeout) == .success
+        }
+        let deadline = Date().addingTimeInterval(max(timeout, 0))
+        let slice = max(slice, 0.001)
+        while true {
+            try cancellation?.checkCancelled()
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 {
+                return false
+            }
+            if step(min(slice, remaining)) == .success {
+                return true
+            }
+        }
+    }
+
+    private static func appendCancelled(
+        _ books: Array<Audiobook>.SubSequence,
+        destinations: [UUID: URL],
+        settings: ExportSettings,
+        into results: inout [BookExportResult]
+    ) {
+        for book in books {
+            let dest = destinations[book.id] ?? settings.outputURL(for: book)
+            results.append(BookExportResult(bookID: book.id, url: dest, outcome: .cancelled))
+        }
     }
 
     static func preflightDestination(_ dest: URL, book: Audiobook, overwrite: Bool) throws {

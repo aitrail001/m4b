@@ -48,7 +48,17 @@ public enum MP4AudiobookTagger {
         tags: AudiobookTags,
         chapters: [ChapterMark]
     ) throws {
+        try apply(to: url, tags: tags, chapters: chapters, cancellation: nil)
+    }
+
+    package static func apply(
+        to url: URL,
+        tags: AudiobookTags,
+        chapters: [ChapterMark],
+        cancellation: EncodeCancellation?
+    ) throws {
         try validateChapters(chapters)
+        try cancellation?.checkCancelled()
 
         let input = try FileHandle(forReadingFrom: url)
         let top: [MP4AtomHeader]
@@ -93,7 +103,8 @@ public enum MP4AudiobookTagger {
                             from: input,
                             offset: atom.offset,
                             count: atom.size,
-                            to: output
+                            to: output,
+                            cancellation: cancellation
                         )
                     }
                     written += atom.size
@@ -119,6 +130,7 @@ public enum MP4AudiobookTagger {
             throw error
         }
 
+        try cancellation?.checkCancelled()
         var resultingItemURL: NSURL?
         try FileManager.default.replaceItem(
             at: url,

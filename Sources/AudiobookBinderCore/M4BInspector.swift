@@ -6,12 +6,45 @@ public struct M4BInspection: Sendable, Equatable {
     public var duration: TimeInterval
     public var chapters: [ChapterMark]
     public var fileSize: Int64
+    public var modificationDate: Date?
+    public var fileResourceIdentifier: Data?
+    public var bookID: UUID?
 
-    public init(url: URL, duration: TimeInterval, chapters: [ChapterMark], fileSize: Int64) {
+    public init(
+        url: URL,
+        duration: TimeInterval,
+        chapters: [ChapterMark],
+        fileSize: Int64,
+        modificationDate: Date? = nil,
+        fileResourceIdentifier: Data? = nil,
+        bookID: UUID? = nil
+    ) {
         self.url = url
         self.duration = duration
         self.chapters = chapters
         self.fileSize = fileSize
+        self.modificationDate = modificationDate
+        self.fileResourceIdentifier = fileResourceIdentifier
+        self.bookID = bookID
+    }
+
+    /// Snapshot dest identity at inspect time so cleanup can detect replace/delete.
+    public static func capturingIdentity(
+        url: URL,
+        duration: TimeInterval,
+        chapters: [ChapterMark],
+        bookID: UUID? = nil
+    ) -> M4BInspection {
+        let identity = FileIdentity.read(from: url)
+        return M4BInspection(
+            url: url,
+            duration: duration,
+            chapters: chapters,
+            fileSize: identity?.fileSize ?? 0,
+            modificationDate: identity?.modificationDate,
+            fileResourceIdentifier: identity?.fileResourceIdentifier,
+            bookID: bookID
+        )
     }
 }
 
@@ -61,9 +94,8 @@ public enum M4BInspector {
         }
     }
 
-    public static func inspect(_ url: URL) async -> M4BInspection {
+    public static func inspect(_ url: URL, bookID: UUID? = nil) async -> M4BInspection {
         let info = AudioMetadata.fileInfo(of: url)
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
         var chapters = await avChapters(url)
         if chapters.isEmpty {
             chapters = neroChapters(in: url, duration: info.duration)
@@ -71,7 +103,12 @@ public enum M4BInspector {
         if chapters.isEmpty, info.duration > 0 {
             chapters = [ChapterMark(start: 0, duration: info.duration, title: "Audiobook")]
         }
-        return M4BInspection(url: url, duration: info.duration, chapters: chapters, fileSize: size)
+        return M4BInspection.capturingIdentity(
+            url: url,
+            duration: info.duration,
+            chapters: chapters,
+            bookID: bookID
+        )
     }
 
     private static func avChapters(_ url: URL) async -> [ChapterMark] {

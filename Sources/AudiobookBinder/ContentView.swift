@@ -532,6 +532,13 @@ struct ChaptersCompareSection: View {
     @State private var cleanupError: String?
 
     private var m4bURL: URL? { appState.boundURL(for: book) }
+    private var inspectTaskID: String {
+        guard let url = m4bURL else { return book.id.uuidString }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(book.id.uuidString)|\(url.path)|\(size)|\(mtime)"
+    }
     private var showOriginal: Bool { !book.chapters.isEmpty }
     private var showBound: Bool { m4bURL != nil }
     private var rows: [ChapterCompareRow] {
@@ -578,7 +585,7 @@ struct ChaptersCompareSection: View {
                 cleanupControls(inspection: inspection)
             }
         }
-        .task(id: m4bURL) {
+        .task(id: inspectTaskID) {
             guard m4bURL != nil else {
                 inspection = nil
                 boundChapters = []
@@ -829,14 +836,13 @@ struct ChaptersCompareSection: View {
 
     @ViewBuilder
     private func cleanupControls(inspection: M4BInspection) -> some View {
-        let files = M4BInspector.sourceFilesToRemove(from: book)
-        let summary = ChapterCompare.summary(
-            original: book.chapters,
-            bound: boundChapters,
-            boundDuration: inspection.duration
+        let auth = SourceCleanup.authorization(
+            book: book,
+            inspection: inspection,
+            isBuilding: appState.isBuilding
         )
-        if !files.isEmpty, summary.allMatch {
-            Button("Move \(files.count) original audio files to Trash") {
+        if auth.allowed {
+            Button("Move \(auth.sources.count) original audio files to Trash") {
                 confirmCleanup = true
             }
             .buttonStyle(.plain)
@@ -852,10 +858,19 @@ struct ChaptersCompareSection: View {
     }
 
     private func inspect() async {
-        guard let m4bURL else { return }
+        guard let requested = m4bURL else { return }
+        let bookID = book.id
         inspecting = true
         cleanupError = nil
-        let result = await M4BInspector.inspect(m4bURL)
+        let result = await M4BInspector.inspect(requested, bookID: bookID)
+        defer { inspecting = false }
+        guard !Task.isCancelled else { return }
+        guard SourceCleanup.shouldCommitInspection(
+            result,
+            bookID: book.id,
+            requestedURL: requested,
+            currentURL: appState.boundURL(for: book)
+        ) else { return }
         inspection = result
         boundChapters = M4BInspector.playableChapters(from: result)
         fileChapter = Chapter(
@@ -865,21 +880,25 @@ struct ChaptersCompareSection: View {
             duration: result.duration,
             fileSize: result.fileSize
         )
-        inspecting = false
     }
 
     private func performCleanup() {
         guard let inspection else { return }
-        let files = M4BInspector.sourceFilesToRemove(from: book)
-        do {
-            for url in files {
-                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-            }
+        let result = SourceCleanup.perform(
+            book: book,
+            inspection: inspection,
+            isBuilding: appState.isBuilding
+        )
+        if result.didFinish {
             appState.applyCleanup(to: book.id, inspection: inspection)
             cleanupError = nil
-        } catch {
-            cleanupError = error.localizedDescription
+            return
         }
+        if !result.moved.isEmpty {
+            let leftover = SourceCleanup.reconcile(chapters: book.chapters, moved: result.moved)
+            appState.applyPartialCleanup(to: book.id, inspection: inspection, remainingChapters: leftover)
+        }
+        cleanupError = result.error
     }
 }
 

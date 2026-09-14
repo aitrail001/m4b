@@ -240,12 +240,22 @@ final class AppState {
     }
 
     func applyCleanup(to bookID: Audiobook.ID, inspection: M4BInspection) {
+        applyPartialCleanup(to: bookID, inspection: inspection, remainingChapters: [])
+    }
+
+    func applyPartialCleanup(
+        to bookID: Audiobook.ID,
+        inspection: M4BInspection,
+        remainingChapters: [Chapter]
+    ) {
         guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
         playback.stop()
-        books[index].chapters = []
+        books[index].chapters = remainingChapters
         books[index].existingM4BURL = inspection.url
         books[index].boundDuration = inspection.duration
-        books[index].selected = false
+        if remainingChapters.isEmpty {
+            books[index].selected = false
+        }
     }
 
     private static func loadSettings() -> ExportSettings {

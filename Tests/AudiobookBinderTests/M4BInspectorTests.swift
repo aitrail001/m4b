@@ -80,4 +80,245 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertTrue(inspection.chapters.contains(where: { $0.title == "Silence" }))
         XCTAssertTrue(M4BInspector.durationsMatch(source: info.duration, bound: inspection.duration))
     }
+
+    func testCleanupAuthorizationFailsWhenDestDeletedAfterInspection() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try FileManager.default.removeItem(at: fixture.dest)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.dest.path))
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.didFinish)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testCleanupAuthorizationFailsWhenDestReplacedAfterInspection() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        try Data(count: 256).write(to: fixture.dest)
+        let liveSize = (try FileManager.default.attributesOfItem(atPath: fixture.dest.path)[.size] as? NSNumber)?.int64Value
+        XCTAssertEqual(liveSize, 256)
+        XCTAssertNotEqual(liveSize, fixture.inspection.fileSize)
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.didFinish)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testCleanupAuthorizationFailsWhenInspectionURLDoesNotMatchBook() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let otherDest = fixture.dir.appendingPathComponent("other.m4b")
+        try Data(count: 32).write(to: otherDest)
+        var mismatched = fixture.book
+        mismatched.existingM4BURL = otherDest
+
+        let auth = SourceCleanup.authorization(
+            book: mismatched,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed, "Same durations must not authorize a different bound file")
+        XCTAssertTrue(
+            ChapterCompare.summary(
+                original: mismatched.chapters,
+                bound: M4BInspector.playableChapters(from: fixture.inspection),
+                boundDuration: fixture.inspection.duration
+            ).allMatch
+        )
+    }
+
+    func testCleanupAuthorizationFailsWhileBuilding() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: true
+        )
+        XCTAssertFalse(auth.allowed)
+    }
+
+    func testCleanupAuthorizationSucceedsWhenIdentityAndDurationsMatch() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(auth.allowed)
+        XCTAssertEqual(Set(auth.sources.map(\.lastPathComponent)), ["01.mp3", "02.mp3"])
+    }
+
+    func testShouldCommitInspectionRejectsStaleIdentityAndMismatchedBook() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        XCTAssertTrue(
+            SourceCleanup.shouldCommitInspection(
+                fixture.inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: fixture.book.existingM4BURL
+            )
+        )
+
+        try Data(count: 256).write(to: fixture.dest)
+        XCTAssertFalse(
+            SourceCleanup.shouldCommitInspection(
+                fixture.inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: fixture.dest
+            ),
+            "Must not commit an inspection after the dest bytes change"
+        )
+
+        try FileManager.default.removeItem(at: fixture.dest)
+        XCTAssertFalse(
+            SourceCleanup.shouldCommitInspection(
+                fixture.inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: fixture.dest
+            )
+        )
+    }
+
+    func testShouldCommitInspectionRejectsURLAndBookMismatch() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let other = fixture.dir.appendingPathComponent("other.m4b")
+        try Data(count: 32).write(to: other)
+        XCTAssertFalse(
+            SourceCleanup.shouldCommitInspection(
+                fixture.inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: other
+            )
+        )
+        XCTAssertFalse(
+            SourceCleanup.shouldCommitInspection(
+                fixture.inspection,
+                bookID: UUID(),
+                requestedURL: fixture.dest,
+                currentURL: fixture.dest
+            )
+        )
+        XCTAssertFalse(
+            SourceCleanup.shouldCommitInspection(
+                fixture.inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: nil
+            )
+        )
+    }
+
+    func testCleanupReconcileKeepsRemainingChaptersAfterPartialTrash() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let leftover = SourceCleanup.reconcile(chapters: fixture.book.chapters, moved: [fixture.sourceA])
+        XCTAssertEqual(leftover.map(\.url.lastPathComponent), ["02.mp3"])
+
+        let partial = SourceCleanupResult(
+            moved: [fixture.sourceA],
+            remaining: [fixture.sourceB],
+            error: "could not trash"
+        )
+        XCTAssertFalse(partial.didFinish)
+        XCTAssertEqual(partial.remaining.map(\.lastPathComponent), ["02.mp3"])
+
+        let finished = SourceCleanupResult(
+            moved: [fixture.sourceA, fixture.sourceB],
+            remaining: [],
+            error: nil
+        )
+        XCTAssertTrue(finished.didFinish)
+    }
+}
+
+private struct CleanupFixture {
+    var dir: URL
+    var dest: URL
+    var sourceA: URL
+    var sourceB: URL
+    var book: Audiobook
+    var inspection: M4BInspection
+
+    static func make() throws -> CleanupFixture {
+        let dir = try TestSupport.tempDir("cleanup-auth")
+        let dest = dir.appendingPathComponent("book.m4b")
+        let sourceA = dir.appendingPathComponent("01.mp3")
+        let sourceB = dir.appendingPathComponent("02.mp3")
+        try Data(count: 32).write(to: dest)
+        try Data(count: 8).write(to: sourceA)
+        try Data(count: 8).write(to: sourceB)
+
+        var book = TestSupport.dummyBook(
+            folder: dir.path,
+            chapters: [
+                TestSupport.dummyChapter(index: 1, url: sourceA, duration: 10),
+                TestSupport.dummyChapter(index: 2, url: sourceB, duration: 20)
+            ]
+        )
+        book.existingM4BURL = dest
+
+        let inspection = M4BInspection.capturingIdentity(
+            url: dest,
+            duration: 30,
+            chapters: [
+                ChapterMark(start: 0, duration: 10, title: "One"),
+                ChapterMark(start: 10, duration: 20, title: "Two")
+            ],
+            bookID: book.id
+        )
+        return CleanupFixture(
+            dir: dir,
+            dest: dest,
+            sourceA: sourceA,
+            sourceB: sourceB,
+            book: book,
+            inspection: inspection
+        )
+    }
+
+    func tearDown() {
+        try? FileManager.default.removeItem(at: dir)
+    }
 }

@@ -411,7 +411,7 @@ extension M4BExporter {
         return (exists, exists && isDirectory.boolValue)
     }
 
-    private static func isSameFileURL(_ a: URL, _ b: URL) -> Bool {
+    static func isSameFileURL(_ a: URL, _ b: URL) -> Bool {
         if let aID = try? a.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
            let bID = try? b.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
            aID.isEqual(bID) {

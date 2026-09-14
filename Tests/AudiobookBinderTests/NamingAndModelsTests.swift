@@ -2,15 +2,17 @@ import XCTest
 @testable import AudiobookBinderCore
 
 final class NamingAndModelsTests: XCTestCase {
-    func testNaturalSortCompareAndSorted() {
-        XCTAssertEqual(NaturalSort.compare("a2", "a10"), .orderedAscending)
-        XCTAssertEqual(NaturalSort.compare("Track 10", "Track 2"), .orderedDescending)
-        let sorted = NaturalSort.sorted(["ch10", "ch2", "ch1"], key: { $0 })
-        XCTAssertEqual(sorted, ["ch1", "ch2", "ch10"])
+    func testNaturalSortIndexes() {
         XCTAssertNil(NaturalSort.leadingIndex("Preface.mp3"))
         XCTAssertNil(NaturalSort.trailingIndex("Preface.mp3"))
         XCTAssertEqual(NaturalSort.leadingIndex("12 Intro.mp3"), 12)
         XCTAssertEqual(NaturalSort.trailingIndex("Intro 7.mp3"), 7)
+        XCTAssertEqual(
+            ["ch10", "ch2", "ch1"].sorted {
+                $0.compare($1, options: NaturalSort.options) == .orderedAscending
+            },
+            ["ch1", "ch2", "ch10"]
+        )
     }
 
     func testTitleCleanupHelpers() {
@@ -35,6 +37,17 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertEqual(
             TitleCleanup.preferredTitle(candidates: ["ab"], folderTitle: "Folder"),
             "Folder"
+        )
+        XCTAssertTrue(TitleCleanup.looksLikeCatalogTitle("OnWritingWellAudioCollection_ep6_A2TTVL6TAAJVUN"))
+        XCTAssertTrue(TitleCleanup.looksLikeCatalogTitle("OnWritingWellAudioCollection"))
+        XCTAssertTrue(TitleCleanup.looksLikeCatalogTitle("B000F77HD8"))
+        XCTAssertFalse(TitleCleanup.looksLikeCatalogTitle("On Writing Well"))
+        XCTAssertEqual(
+            TitleCleanup.preferredTitle(
+                candidates: ["OnWritingWellAudioCollection_ep6_A2TTVL6TAAJVUN"],
+                folderTitle: "On Writing Well"
+            ),
+            "On Writing Well"
         )
     }
 
@@ -154,16 +167,10 @@ final class NamingAndModelsTests: XCTestCase {
     func testAudioInfoExactKilohertzAndScanProgressZeroCount() {
         let info = AudioInfo(bitrate: 64_000, sampleRate: 48_000, channelCount: 2, formatName: "AAC")
         XCTAssertEqual(info.summary, "64 kbps · 48 kHz · stereo · AAC")
-        let reading = ScanProgress.reading(URL(fileURLWithPath: "/tmp/X"), index: 1, count: 0)
+        let reading = JobProgress.reading(URL(fileURLWithPath: "/tmp/X"), index: 1, count: 0)
         XCTAssertEqual(reading.fraction, 0)
-        let progress = BuildProgress(
-            bookTitle: "T",
-            bookIndex: 1,
-            bookCount: 2,
-            fraction: 0.5,
-            detail: "go"
-        )
-        XCTAssertEqual(progress.bookTitle, "T")
+        let progress = JobProgress(label: "T", index: 1, count: 2, fraction: 0.5, detail: "go")
+        XCTAssertEqual(progress.label, "T")
         XCTAssertEqual(progress.detail, "go")
     }
 
@@ -173,5 +180,77 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertTrue(ebookExtensions.contains("epub"))
         XCTAssertTrue(skippedDirectoryNames.contains("不分章节"))
         XCTAssertTrue(skippedDirectoryNames.contains("ebook"))
+    }
+
+    func testCreatedAudiobooksStatusIncludesTitles() {
+        XCTAssertEqual(
+            BinderCopy.createdAudiobooks(titles: ["The Personal MBA"]),
+            "Created 1 audiobook — The Personal MBA. Verify the .m4b in the editor."
+        )
+        XCTAssertEqual(
+            BinderCopy.createdAudiobooks(titles: ["Antifragile", "Rework"]),
+            "Created 2 audiobooks — Antifragile, Rework. Verify the .m4b files in the editor."
+        )
+        XCTAssertEqual(
+            BinderCopy.createdAudiobooks(titles: ["  ", ""]),
+            "Created 0 audiobooks."
+        )
+    }
+
+    func testChapterCompareRowsPairOriginalAndBound() {
+        let orig = [
+            TestSupport.dummyChapter(index: 1),
+            TestSupport.dummyChapter(index: 2)
+        ]
+        let bound = [TestSupport.dummyChapter(index: 1)]
+        let rows = ChapterCompare.rows(original: orig, bound: bound)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].index, 1)
+        XCTAssertEqual(rows[0].original?.index, 1)
+        XCTAssertEqual(rows[0].bound?.index, 1)
+        XCTAssertEqual(rows[1].index, 2)
+        XCTAssertNotNil(rows[1].original)
+        XCTAssertNil(rows[1].bound)
+        XCTAssertTrue(ChapterCompare.rows(original: [], bound: []).isEmpty)
+    }
+
+    func testChapterCompareSummaryCountsAndPerChapterDuration() {
+        let orig = [
+            TestSupport.dummyChapter(index: 1, duration: 10),
+            TestSupport.dummyChapter(index: 2, duration: 20)
+        ]
+        let matching = [
+            TestSupport.dummyChapter(index: 1, duration: 10.2),
+            TestSupport.dummyChapter(index: 2, duration: 20)
+        ]
+        let match = ChapterCompare.summary(original: orig, bound: matching)
+        XCTAssertTrue(match.countsMatch)
+        XCTAssertTrue(match.totalsMatch)
+        XCTAssertTrue(match.mismatchedIndexes.isEmpty)
+        XCTAssertTrue(match.allMatch)
+        XCTAssertTrue(match.detail.contains("2 chapters"))
+        XCTAssertTrue(match.detail.contains("match"))
+
+        let shortBound = [TestSupport.dummyChapter(index: 1, duration: 10)]
+        let counts = ChapterCompare.summary(original: orig, bound: shortBound)
+        XCTAssertFalse(counts.countsMatch)
+        XCTAssertEqual(counts.originalCount, 2)
+        XCTAssertEqual(counts.boundCount, 1)
+        XCTAssertTrue(counts.mismatchedIndexes.isEmpty)
+        XCTAssertFalse(counts.allMatch)
+        XCTAssertTrue(counts.detail.contains("Chapter count differs"))
+
+        let skewed = [
+            TestSupport.dummyChapter(index: 1, duration: 10),
+            TestSupport.dummyChapter(index: 2, duration: 40)
+        ]
+        let durations = ChapterCompare.summary(original: orig, bound: skewed)
+        XCTAssertTrue(durations.countsMatch)
+        XCTAssertEqual(durations.mismatchedIndexes, [2])
+        XCTAssertFalse(durations.allMatch)
+        XCTAssertTrue(durations.detail.contains("chapter 2"))
+
+        let empty = ChapterCompare.summary(original: [], bound: matching, boundDuration: 30)
+        XCTAssertEqual(empty.detail, "No original audio left to compare.")
     }
 }

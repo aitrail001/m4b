@@ -32,10 +32,10 @@ make run
 That compiles a release build, packages `dist/AudiobookBinder.app`, and opens it.
 
 ```bash
-make test     # XCTest + AudiobookBinderSelfTest
+make test     # XCTest + live library smoke
 make app      # dist/AudiobookBinder.app
-make dmg      # signed .app + dist/AudiobookBinder-VERSION.dmg
-make release  # GitHub release with the DMG
+make dmg      # signed .app + dist/AudiobookBinder-VERSION.dmg (local only)
+make release  # GitHub tag + copy that DMG to the website (only when shipping)
 ```
 
 ## Use

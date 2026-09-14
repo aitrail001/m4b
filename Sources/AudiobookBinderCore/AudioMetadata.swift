@@ -53,10 +53,6 @@ public enum AudioMetadata {
         return asbd
     }
 
-    public static func duration(of url: URL) -> TimeInterval {
-        fileInfo(of: url).duration
-    }
-
     public static func fileInfo(of url: URL) -> (duration: TimeInterval, audioInfo: AudioInfo) {
         var file: AudioFileID?
         let status = AudioFileOpenURL(url as CFURL, .readPermission, 0, &file)
@@ -139,7 +135,7 @@ public enum AudioMetadata {
     }
 
     public static func loadTags(from url: URL, includeArtwork: Bool = true) async -> TrackTags {
-        var tags = TrackTags(duration: duration(of: url))
+        var tags = TrackTags(duration: fileInfo(of: url).duration)
         let asset = AVURLAsset(url: url)
         do {
             let metadata = try await asset.load(.metadata)

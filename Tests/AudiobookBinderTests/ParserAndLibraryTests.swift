@@ -77,28 +77,25 @@ final class ParserAndLibraryTests: XCTestCase {
         XCTAssertEqual(meta?.author, "EPUB Author")
     }
 
-    func testLibraryBookmarkAndOutlineHelpers() throws {
-        XCTAssertNil(LibraryBookmark.resolvedDirectory(path: nil))
+    func testLibraryOutlineHelpers() throws {
         let dir = try TestSupport.tempDir("bookmark")
         defer { try? FileManager.default.removeItem(at: dir) }
-        XCTAssertEqual(LibraryBookmark.resolvedDirectory(path: dir.path)?.path, dir.path)
-
         let withSlash = LibraryOutline.folderURL(URL(fileURLWithPath: dir.path + "/", isDirectory: true))
         XCTAssertTrue(LibraryOutline.sameFolder(withSlash, dir))
         XCTAssertFalse(LibraryOutline.sameFolder(dir, dir.appendingPathComponent("child")))
 
         let root = URL(fileURLWithPath: "/tmp/lib", isDirectory: true)
-        let tree = LibraryOutline.build(
+        let nested = LibraryOutline.build(
             root: root,
             books: [TestSupport.dummyBook(folder: "/tmp/lib/43/BookA")]
         )
-        XCTAssertNotNil(tree.nestedFolders)
-        XCTAssertEqual(tree.id.path, LibraryOutline.folderURL(root).path)
-        XCTAssertNil(
+        XCTAssertTrue(nested.hasNestedFolders)
+        XCTAssertEqual(nested.id.path, LibraryOutline.folderURL(root).path)
+        XCTAssertFalse(
             LibraryOutline.build(
                 root: root,
                 books: [TestSupport.dummyBook(folder: "/tmp/lib/BookA")]
-            ).nestedFolders
+            ).hasNestedFolders
         )
     }
 

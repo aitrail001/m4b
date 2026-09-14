@@ -3,29 +3,11 @@ import XCTest
 
 final class M4BInspectorTests: XCTestCase {
     func testCompareDurationsMatchAndMismatch() {
-        let match = M4BInspector.compareDurations(source: 100, bound: 100.4)
-        XCTAssertTrue(match.durationsMatch)
-        if case .match(let source, let bound) = match {
-            XCTAssertEqual(source, 100)
-            XCTAssertEqual(bound, 100.4)
-        } else {
-            XCTFail("expected match")
-        }
-
-        let close = M4BInspector.compareDurations(source: 10_000, bound: 10_050)
-        XCTAssertTrue(close.durationsMatch, "1% slack on long books")
-
-        let mismatch = M4BInspector.compareDurations(source: 100, bound: 130)
-        XCTAssertFalse(mismatch.durationsMatch)
-        if case .mismatch(let source, let bound) = mismatch {
-            XCTAssertEqual(source, 100)
-            XCTAssertEqual(bound, 130)
-        } else {
-            XCTFail("expected mismatch")
-        }
-
-        XCTAssertEqual(M4BInspector.compareDurations(source: 0, bound: 10), .noSource)
-        XCTAssertEqual(M4BInspector.compareDurations(source: 10, bound: 0), .noBoundFile)
+        XCTAssertTrue(M4BInspector.durationsMatch(source: 100, bound: 100.4))
+        XCTAssertTrue(M4BInspector.durationsMatch(source: 10_000, bound: 10_050), "1% slack on long books")
+        XCTAssertFalse(M4BInspector.durationsMatch(source: 100, bound: 130))
+        XCTAssertFalse(M4BInspector.durationsMatch(source: 0, bound: 10))
+        XCTAssertFalse(M4BInspector.durationsMatch(source: 10, bound: 0))
     }
 
     func testSourceFilesToRemoveSkipsM4BAndMissing() throws {
@@ -96,7 +78,6 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertGreaterThan(inspection.duration, 0.2)
         XCTAssertFalse(inspection.chapters.isEmpty)
         XCTAssertTrue(inspection.chapters.contains(where: { $0.title == "Silence" }))
-        let comparison = M4BInspector.compareDurations(source: info.duration, bound: inspection.duration)
-        XCTAssertTrue(comparison.durationsMatch)
+        XCTAssertTrue(M4BInspector.durationsMatch(source: info.duration, bound: inspection.duration))
     }
 }

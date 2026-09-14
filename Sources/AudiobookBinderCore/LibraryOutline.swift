@@ -15,11 +15,6 @@ public struct LibraryNode: Identifiable, Hashable, Sendable {
         self.children = children
     }
 
-    /// `nil` when this folder has no nested grouping folders, so OutlineGroup treats it as a leaf.
-    public var nestedFolders: [LibraryNode]? {
-        children.isEmpty ? nil : children
-    }
-
     public var hasNestedFolders: Bool { !children.isEmpty }
 }
 
@@ -109,7 +104,9 @@ private final class NodeBuilder {
             url: url,
             name: name,
             bookCount: bookCount,
-            children: NaturalSort.sorted(frozen, key: { $0.name })
+            children: frozen.sorted {
+                $0.name.compare($1.name, options: NaturalSort.options) == .orderedAscending
+            }
         )
     }
 }

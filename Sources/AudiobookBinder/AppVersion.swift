@@ -3,14 +3,8 @@ import Foundation
 enum AppVersion {
     static var short: String { value("CFBundleShortVersionString") ?? "—" }
     static var build: String { value("CFBundleVersion") ?? "" }
-
-    static var display: String {
-        build.isEmpty ? short : "\(short) (\(build))"
-    }
-
-    static var badge: String {
-        short == "—" ? "dev" : "v\(short)"
-    }
+    static var display: String { build.isEmpty ? short : "\(short) (\(build))" }
+    static var badge: String { short == "—" ? "dev" : "v\(short)" }
 
     private static func value(_ key: String) -> String? {
         for url in candidatePlists where FileManager.default.fileExists(atPath: url.path) {
@@ -26,18 +20,12 @@ enum AppVersion {
     }
 
     private static var candidatePlists: [URL] {
-        var urls: [URL] = []
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        // AudiobookBinder.app/Contents/MacOS/AudiobookBinder → Contents/Info.plist
         let contents = exe.deletingLastPathComponent().deletingLastPathComponent()
-        urls.append(contents.appendingPathComponent("Info.plist"))
-        urls.append(Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist"))
-        urls.append(Bundle.main.bundleURL.appendingPathComponent("Info.plist"))
-        var dir = exe.deletingLastPathComponent()
-        for _ in 0..<10 {
-            urls.append(dir.appendingPathComponent("Info.plist"))
-            dir.deleteLastPathComponent()
-        }
-        return urls
+        return [
+            contents.appendingPathComponent("Info.plist"),
+            Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist"),
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Info.plist")
+        ]
     }
 }

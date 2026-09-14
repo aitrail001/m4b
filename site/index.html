@@ -265,7 +265,7 @@
           <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="hero.download">Download for macOS 14+</a>
           <a class="btn ghost" href="https://github.com/aitrail001/m4b/releases/latest" data-i18n="hero.github">GitHub release</a>
         </div>
-        <p class="fine" data-i18n-html="hero.fine">Free. Runs on your Mac. Version 1.4.2 · about 3&nbsp;MB</p>
+        <p class="fine" data-i18n-html="hero.fine">Free. Runs on your Mac. Version 1.3.0 · about 3&nbsp;MB</p>
       </div>
       <div class="hero-frame">
         <video autoplay muted loop playsinline poster="media/app-main.png" data-i18n-aria="hero.video">
@@ -283,7 +283,7 @@
       <div class="split">
         <div>
           <p data-i18n-html="what.p1">Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.</p>
-          <p data-i18n-html="what.p2">The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use Open in Books from the footer.</p>
+          <p data-i18n-html="what.p2">The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use <strong>Open in Books</strong> at the bottom of the window.</p>
         </div>
         <figure class="shot">
           <img src="media/app-main.png" data-i18n-alt="what.shot">
@@ -310,7 +310,7 @@
           <b>1</b>
           <div>
             <h3 data-i18n="how.1.title">Open a folder</h3>
-            <p data-i18n="how.1.body">Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. The footer names the folder being read.</p>
+            <p data-i18n="how.1.body">Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. Nothing is scanned until you open a folder. The status bar names the folder being read.</p>
           </div>
         </li>
         <li>
@@ -324,14 +324,14 @@
           <b>3</b>
           <div>
             <h3 data-i18n="how.3.title">Edit, skip, listen</h3>
-            <p data-i18n="how.3.body">Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate defaults to 64 kbps.</p>
+            <p data-i18n="how.3.body">Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate and save location sit under Open Folder. After a build, compare original audio with the .m4b chapter by chapter.</p>
           </div>
         </li>
         <li>
           <b>4</b>
           <div>
             <h3 data-i18n="how.4.title">Build</h3>
-            <p data-i18n-html="how.4.body">Save in the book folder, or to Music/Audiobooks. Then Show in Finder or Open in Books. The <code>.m4b</code> carries chapters and cover.</p>
+            <p data-i18n-html="how.4.body">Save in the book folder, or to Music/Audiobooks. Then <strong>Show in Finder</strong>, <strong>Open in Books</strong>, or <strong>Verify</strong> at the bottom of the window. If chapter counts and durations match, you can move the original audio files to Trash.</p>
           </div>
         </li>
       </ol>
@@ -359,51 +359,14 @@
   </section>
 
   <footer class="wrap">
-    <span data-i18n="footer.left">Audiobook Binder 1.4.2 · local Mac app, no account</span>
+    <span data-i18n="footer.left">Audiobook Binder 1.3.0 · local Mac app, no account</span>
     <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="downloads/AudiobookBinder.dmg" data-i18n="nav.download">Download</a></span>
   </footer>
   <script>
+    // Public download version. Keep in lockstep with GitHub Releases and
+    // site/downloads/AudiobookBinder.dmg. Change only on an explicit release.
+    const PUBLIC_VERSION = "1.3.0";
     const copy = {
-      en: {
-        "meta.title": "Audiobook Binder — MP3 chapters into Apple Books",
-        "meta.description": "A macOS app that turns a folder of chapter MP3s into one Apple Books audiobook (.m4b) with title, author, cover, and chapter marks.",
-        "nav.how": "How to",
-        "nav.install": "Install",
-        "nav.download": "Download",
-        "hero.title": "Loose MP3s, one book in Apple Books.",
-        "hero.lede": "Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.",
-        "hero.download": "Download for macOS 14+",
-        "hero.github": "GitHub release",
-        "hero.fine": "Free. Runs on your Mac. Version 1.4.2 · about 3&nbsp;MB",
-        "hero.video": "Audiobook Binder window",
-        "hero.shot": "Audiobook Binder with a library of books and a selected cover",
-        "what.title": "It binds the library you already have.",
-        "what.intro": "Point it at one book folder, or a parent folder of many books. Nested wrappers (Calibre-style <code>43/Title</code> trees) become a folder list on the left. Already-made <code>.m4b</code> files show as already bound so you do not encode them twice.",
-        "what.p1": "Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.",
-        "what.p2": "The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use Open in Books from the footer.",
-        "what.shot": "Library list with covers, checkboxes, and the selected book’s metadata",
-        "what.sidebar": "Book list with covers, durations, and already-bound labels",
-        "how.title": "How to bind a book",
-        "how.1.title": "Open a folder",
-        "how.1.body": "Choose a single book of numbered MP3s, or a library folder. Nested wrappers are scanned automatically. The footer names the folder being read. Nothing is scanned until you open a folder.",
-        "how.2.title": "Pick a level, if you need to",
-        "how.2.body": "When books sit under extra folders, use the folder tree on the left. Filter by title, author, or narrator. Already-bound files stay unchecked.",
-        "how.3.title": "Edit, skip, listen",
-        "how.3.body": "Fix title and author. Change the cover. Uncheck chapters you do not want. Play any chapter from the list. Bitrate defaults to 64 kbps.",
-        "how.4.title": "Build",
-        "how.4.body": "Save in the book folder, or to Music/Audiobooks. Then Show in Finder, Open in Books, or Verify the <code>.m4b</code>. If durations match, you can move the original MP3s to Trash.",
-        "install.title": "Install from the disk image",
-        "install.p1": "Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.",
-        "install.p2": "This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.",
-        "install.dmg": "Download AudiobookBinder.dmg",
-        "install.fine": "Also on <a href=\"https://github.com/aitrail001/m4b/releases/latest\">GitHub Releases</a>. Source is public.",
-        "expect.title": "What it expects",
-        "expect.p1": "One book: a folder of numbered MP3s, optional <code>cover.jpg</code>, optional <code>ebook/</code>.",
-        "expect.p2": "A library: a parent whose subfolders are books. Helper folders such as <code>不分章节</code> are skipped when numbered chapters exist.",
-        "expect.p3": "Requires macOS 14 or later.",
-        "footer.left": "Audiobook Binder 1.4.2 · local Mac app, no account",
-        "footer.source": "Source"
-      },
       "zh-Hans": {
         "meta.title": "Audiobook Binder — 把分章 MP3 合成 Apple Books 有声书",
         "meta.description": "一款 Mac 应用：把文件夹里的分章 MP3 合成为带书名、作者、封面和章节标记的 Apple Books 有声书（.m4b）。",
@@ -414,7 +377,7 @@
         "hero.lede": "Audiobook Binder 是一款 Mac 应用，会从文件夹（包括多层书库）收集分章音频，写成带<strong>书名、作者、封面和章节</strong>的 <strong>.m4b</strong>。",
         "hero.download": "下载（macOS 14+）",
         "hero.github": "GitHub 发布页",
-        "hero.fine": "免费，在本机运行。版本 1.4.2 · 约 3&nbsp;MB",
+        "hero.fine": "免费，在本机运行。版本 {v} · 约 3&nbsp;MB",
         "hero.video": "Audiobook Binder 窗口",
         "hero.shot": "Audiobook Binder：书库列表与选中书籍封面",
         "what.title": "你现有的书库，直接拿来装订。",
@@ -425,13 +388,13 @@
         "what.sidebar": "带封面、时长和「已是有声书」标记的书籍列表",
         "how.title": "如何装订一本书",
         "how.1.title": "打开文件夹",
-        "how.1.body": "选择一本编号 MP3 的书，或整个书库文件夹。嵌套目录会自动扫描。在你主动打开文件夹之前，应用不会扫描。扫描时页脚会显示正在读取的目录。",
+        "how.1.body": "选择一本编号 MP3 的书，或整个书库文件夹。嵌套目录会自动扫描。在你主动打开文件夹之前，应用不会扫描。扫描时状态栏会显示正在读取的目录。",
         "how.2.title": "需要时选一层目录",
         "how.2.body": "书在更深层时，用左侧文件夹树选择范围。可按书名、作者、演播筛选。已经是有声书的项目默认不勾选。",
         "how.3.title": "编辑、跳过、试听",
-        "how.3.body": "改书名和作者，换封面，取消不想要的章节，并从列表试听。默认码率为 64 kbps。",
+        "how.3.body": "改书名和作者，换封面，取消不想要的章节，并从列表试听。码率和保存位置在「打开文件夹」下方。生成后可逐章对照原始音频和 .m4b。",
         "how.4.title": "生成",
-        "how.4.body": "保存在书文件夹，或保存到「音乐/Audiobooks」。然后在访达中显示、在图书中打开，或校验 <code>.m4b</code>。若时长与源音频一致，可以把原来的 MP3 移到废纸篓。",
+        "how.4.body": "保存在书文件夹，或保存到「音乐/Audiobooks」。然后用窗口底部的<strong>在访达中显示</strong>、<strong>在图书中打开</strong>或<strong>校验</strong>。若章节数和时长都一致，可以把原来的音频移到废纸篓。",
         "install.title": "从磁盘映像安装",
         "install.p1": "下载 DMG，打开后把 <strong>Audiobook Binder</strong> 拖进「应用程序」。",
         "install.p2": "当前版本用 Apple Development 证书签名。第一次打开时，macOS 可能提示来自身份不明的开发者。请按住 Control 点按应用，选择<strong>打开</strong>，再确认打开。",
@@ -441,32 +404,57 @@
         "expect.p1": "一本书：一叠编号 MP3，可选 <code>cover.jpg</code>，可选 <code>ebook/</code>。",
         "expect.p2": "一个书库：父文件夹下每本书一个子文件夹。已有编号章节时，会跳过 <code>不分章节</code> 这类辅助目录。",
         "expect.p3": "需要 macOS 14 或更高版本。",
-        "footer.left": "Audiobook Binder 1.4.2 · 本机 Mac 应用，无需账号",
+        "footer.left": "Audiobook Binder {v} · 本机 Mac 应用，无需账号",
         "footer.source": "源码"
       }
     };
 
+    function englishFromDom() {
+      const t = {
+        "meta.title": document.title,
+        "meta.description": document.querySelector('meta[name="description"]')?.getAttribute("content") || ""
+      };
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        t[el.getAttribute("data-i18n")] = el.textContent;
+      });
+      document.querySelectorAll("[data-i18n-html]").forEach((el) => {
+        t[el.getAttribute("data-i18n-html")] = el.innerHTML;
+      });
+      document.querySelectorAll("[data-i18n-alt]").forEach((el) => {
+        t[el.getAttribute("data-i18n-alt")] = el.getAttribute("alt") || "";
+      });
+      document.querySelectorAll("[data-i18n-aria]").forEach((el) => {
+        t[el.getAttribute("data-i18n-aria")] = el.getAttribute("aria-label") || "";
+      });
+      return t;
+    }
+    copy.en = englishFromDom();
+
+    function withVersion(s) {
+      return String(s).replaceAll("{v}", PUBLIC_VERSION);
+    }
+
     function apply(lang) {
       const table = copy[lang] || copy.en;
       document.documentElement.lang = lang === "zh-Hans" ? "zh-Hans" : "en";
-      document.title = table["meta.title"];
+      document.title = withVersion(table["meta.title"]);
       const desc = document.querySelector('meta[name="description"]');
-      if (desc) desc.setAttribute("content", table["meta.description"]);
+      if (desc) desc.setAttribute("content", withVersion(table["meta.description"]));
       document.querySelectorAll("[data-i18n]").forEach((el) => {
         const key = el.getAttribute("data-i18n");
-        if (table[key] != null) el.textContent = table[key];
+        if (table[key] != null) el.textContent = withVersion(table[key]);
       });
       document.querySelectorAll("[data-i18n-html]").forEach((el) => {
         const key = el.getAttribute("data-i18n-html");
-        if (table[key] != null) el.innerHTML = table[key];
+        if (table[key] != null) el.innerHTML = withVersion(table[key]);
       });
       document.querySelectorAll("[data-i18n-alt]").forEach((el) => {
         const key = el.getAttribute("data-i18n-alt");
-        if (table[key] != null) el.setAttribute("alt", table[key]);
+        if (table[key] != null) el.setAttribute("alt", withVersion(table[key]));
       });
       document.querySelectorAll("[data-i18n-aria]").forEach((el) => {
         const key = el.getAttribute("data-i18n-aria");
-        if (table[key] != null) el.setAttribute("aria-label", table[key]);
+        if (table[key] != null) el.setAttribute("aria-label", withVersion(table[key]));
       });
       document.querySelectorAll(".lang button").forEach((btn) => {
         btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === lang ? "true" : "false");

@@ -163,8 +163,6 @@ public struct Audiobook: Identifiable, Hashable, Sendable {
 
     public var isAlreadyBound: Bool { existingM4BURL != nil && chapters.isEmpty }
 
-    public var hasBoundFile: Bool { existingM4BURL != nil }
-
     public var canCleanupSources: Bool { existingM4BURL != nil && !includedChapters.isEmpty }
 
     public var totalDuration: TimeInterval {
@@ -232,67 +230,38 @@ public struct ExportSettings: Sendable, Equatable {
     }
 }
 
-public struct BuildProgress: Sendable, Equatable {
-    public var bookTitle: String
-    public var bookIndex: Int
-    public var bookCount: Int
+public struct JobProgress: Sendable, Equatable {
+    public var label: String
+    public var index: Int
+    public var count: Int
     public var fraction: Double
     public var detail: String
 
-    public init(bookTitle: String, bookIndex: Int, bookCount: Int, fraction: Double, detail: String) {
-        self.bookTitle = bookTitle
-        self.bookIndex = bookIndex
-        self.bookCount = bookCount
-        self.fraction = fraction
-        self.detail = detail
-    }
-}
-
-public struct ScanProgress: Sendable, Equatable {
-    public var folderName: String
-    public var bookIndex: Int
-    public var bookCount: Int
-    public var fraction: Double
-    public var detail: String
-
-    public init(folderName: String, bookIndex: Int, bookCount: Int, fraction: Double, detail: String) {
-        self.folderName = folderName
-        self.bookIndex = bookIndex
-        self.bookCount = bookCount
+    public init(label: String, index: Int, count: Int, fraction: Double, detail: String) {
+        self.label = label
+        self.index = index
+        self.count = count
         self.fraction = fraction
         self.detail = detail
     }
 
-    public static func looking(in folder: URL) -> ScanProgress {
+    public static func looking(in folder: URL) -> JobProgress {
         let name = folder.lastPathComponent
-        return ScanProgress(
-            folderName: name,
-            bookIndex: 0,
-            bookCount: 0,
-            fraction: 0,
-            detail: "Looking in \(name)…"
-        )
+        return JobProgress(label: name, index: 0, count: 0, fraction: 0, detail: "Looking in \(name)…")
     }
 
-    public static func checking(_ folder: URL) -> ScanProgress {
+    public static func checking(_ folder: URL) -> JobProgress {
         let name = folder.lastPathComponent
-        return ScanProgress(
-            folderName: name,
-            bookIndex: 0,
-            bookCount: 0,
-            fraction: 0,
-            detail: "Checking \(name)…"
-        )
+        return JobProgress(label: name, index: 0, count: 0, fraction: 0, detail: "Checking \(name)…")
     }
 
-    public static func reading(_ folder: URL, index: Int, count: Int) -> ScanProgress {
+    public static func reading(_ folder: URL, index: Int, count: Int) -> JobProgress {
         let name = folder.lastPathComponent
-        let fraction = count > 0 ? Double(index - 1) / Double(count) : 0
-        return ScanProgress(
-            folderName: name,
-            bookIndex: index,
-            bookCount: count,
-            fraction: fraction,
+        return JobProgress(
+            label: name,
+            index: index,
+            count: count,
+            fraction: count > 0 ? Double(index - 1) / Double(count) : 0,
             detail: "Reading \(name) (\(index) of \(count))…"
         )
     }
@@ -322,6 +291,7 @@ public enum BinderError: Error, LocalizedError, Sendable {
 }
 
 public enum DurationFormat {
+    // DateComponentsFormatter emits 0:01:05 for 65s; we want 1:05.
     public static func string(_ interval: TimeInterval) -> String {
         guard interval.isFinite, interval > 0 else { return "—" }
         let total = Int(interval.rounded())
@@ -332,5 +302,21 @@ public enum DurationFormat {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+public enum BinderCopy {
+    public static func createdAudiobooks(titles: [String]) -> String {
+        let names = titles
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        switch names.count {
+        case 0:
+            return "Created 0 audiobooks."
+        case 1:
+            return "Created 1 audiobook — \(names[0]). Verify the .m4b in the editor."
+        default:
+            return "Created \(names.count) audiobooks — \(names.joined(separator: ", ")). Verify the .m4b files in the editor."
+        }
     }
 }

@@ -72,7 +72,7 @@ public struct M4BExporter: Sendable {
     public func exportAll(
         books: [Audiobook],
         settings: ExportSettings,
-        progress: (@Sendable (BuildProgress) -> Void)? = nil
+        progress: (@Sendable (JobProgress) -> Void)? = nil
     ) async throws -> [URL] {
         let selected = books.filter(\.selected)
         var written: [URL] = []
@@ -82,10 +82,10 @@ public struct M4BExporter: Sendable {
             do {
                 try await export(book: book, to: dest, overwrite: settings.overwrite) { fraction, detail in
                     progress?(
-                        BuildProgress(
-                            bookTitle: book.title,
-                            bookIndex: idx + 1,
-                            bookCount: selected.count,
+                        JobProgress(
+                            label: book.title,
+                            index: idx + 1,
+                            count: selected.count,
                             fraction: (Double(idx) + fraction) / Double(selected.count),
                             detail: detail
                         )

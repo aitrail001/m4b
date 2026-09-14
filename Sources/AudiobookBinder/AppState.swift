@@ -35,17 +35,20 @@ final class AppState {
     var isBuilding = false
     var status: String = "Choose a books folder to begin."
     var lastError: String?
-    var scanProgress: ScanProgress?
-    var build: BuildProgress?
+    var scanProgress: JobProgress?
+    var build: JobProgress?
     var finishedURLs: [URL] = []
 
     private var buildTask: Task<Void, Never>?
 
     init() {
         settings = Self.loadSettings()
-        lastOpenedFolder = LibraryBookmark.resolvedDirectory(
-            path: UserDefaults.standard.string(forKey: "audiobookBinder.libraryFolder")
-        )
+        if let path = UserDefaults.standard.string(forKey: "audiobookBinder.libraryFolder"), !path.isEmpty {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                lastOpenedFolder = URL(fileURLWithPath: path, isDirectory: true)
+            }
+        }
     }
 
     var selectedBook: Audiobook? {
@@ -112,7 +115,7 @@ final class AppState {
         UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
         isScanning = true
         lastError = nil
-        scanProgress = ScanProgress.looking(in: folder)
+        scanProgress = JobProgress.looking(in: folder)
         status = scanProgress?.detail ?? "Scanning \(folder.lastPathComponent)…"
         Task {
             do {
@@ -197,7 +200,7 @@ final class AppState {
                         books[index].boundDuration = AudioMetadata.fileInfo(of: url).duration
                     }
                 }
-                status = "Created \(urls.count) audiobook\(urls.count == 1 ? "" : "s"). Verify the .m4b in the editor."
+                status = BinderCopy.createdAudiobooks(titles: queue.map(\.title))
             } catch is CancellationError {
                 status = "Cancelled."
             } catch {

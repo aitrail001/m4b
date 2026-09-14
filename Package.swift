@@ -7,8 +7,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "AudiobookBinder", targets: ["AudiobookBinder"]),
-        .library(name: "AudiobookBinderCore", targets: ["AudiobookBinderCore"])
+        .executable(name: "AudiobookBinder", targets: ["AudiobookBinder"])
     ],
     targets: [
         .target(

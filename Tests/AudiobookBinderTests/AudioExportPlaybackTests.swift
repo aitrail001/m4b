@@ -11,7 +11,7 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(Int(asbd?.mChannelsPerFrame ?? 0), 0)
         let info = AudioMetadata.fileInfo(of: TestSupport.tink)
         XCTAssertGreaterThan(info.duration, 0)
-        XCTAssertEqual(AudioMetadata.duration(of: TestSupport.tink), info.duration)
+        XCTAssertEqual(AudioMetadata.fileInfo(of: TestSupport.tink).duration, info.duration)
         let tags = await AudioMetadata.loadTags(from: TestSupport.tink, includeArtwork: false)
         XCTAssertGreaterThan(tags.duration, 0)
         XCTAssertGreaterThan(tags.sampleRate, 0)

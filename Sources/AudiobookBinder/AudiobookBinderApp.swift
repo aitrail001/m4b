@@ -121,7 +121,7 @@ enum CLI {
                 )
                 let urls = try await M4BExporter(bitrate: bitrate).exportAll(books: books, settings: settings) { progress in
                     fputs(
-                        String(format: "[%d/%d] %.0f%% %@\n", progress.bookIndex, progress.bookCount, progress.fraction * 100, progress.detail),
+                        String(format: "[%d/%d] %.0f%% %@\n", progress.index, progress.count, progress.fraction * 100, progress.detail),
                         stderr
                     )
                 }

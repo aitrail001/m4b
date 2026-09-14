@@ -15,31 +15,15 @@ public struct M4BInspection: Sendable, Equatable {
     }
 }
 
-public enum DurationComparison: Sendable, Equatable {
-    case match(source: TimeInterval, bound: TimeInterval)
-    case mismatch(source: TimeInterval, bound: TimeInterval)
-    case noBoundFile
-    case noSource
-
-    public var durationsMatch: Bool {
-        if case .match = self { return true }
-        return false
-    }
-}
-
 public enum M4BInspector {
-    public static func compareDurations(
+    public static func durationsMatch(
         source: TimeInterval,
         bound: TimeInterval,
         tolerance: TimeInterval? = nil
-    ) -> DurationComparison {
-        guard source > 0 else { return .noSource }
-        guard bound > 0 else { return .noBoundFile }
+    ) -> Bool {
+        guard source > 0, bound > 0 else { return false }
         let slack = tolerance ?? max(1.5, max(source, bound) * 0.01)
-        if abs(source - bound) <= slack {
-            return .match(source: source, bound: bound)
-        }
-        return .mismatch(source: source, bound: bound)
+        return abs(source - bound) <= slack
     }
 
     public static func sourceFilesToRemove(from book: Audiobook) -> [URL] {
@@ -56,12 +40,6 @@ public enum M4BInspector {
             }
         }
         return urls
-    }
-
-    public static func trash(_ urls: [URL]) throws {
-        for url in urls {
-            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-        }
     }
 
     public static func playableChapters(from inspection: M4BInspection) -> [Chapter] {
@@ -163,5 +141,93 @@ public enum M4BInspector {
             i += 1
         }
         return nil
+    }
+}
+
+public struct ChapterCompareRow: Equatable, Sendable {
+    public var index: Int
+    public var original: Chapter?
+    public var bound: Chapter?
+
+    public var durationsMatch: Bool? {
+        guard let original, let bound else { return nil }
+        return M4BInspector.durationsMatch(source: original.duration, bound: bound.duration)
+    }
+}
+
+public struct ChapterCompareSummary: Equatable, Sendable {
+    public var originalCount: Int
+    public var boundCount: Int
+    public var originalDuration: TimeInterval
+    public var boundDuration: TimeInterval
+    public var countsMatch: Bool
+    public var totalsMatch: Bool
+    public var mismatchedIndexes: [Int]
+
+    public var allMatch: Bool {
+        countsMatch && totalsMatch && mismatchedIndexes.isEmpty
+    }
+
+    public var detail: String {
+        if originalCount == 0 {
+            return "No original audio left to compare."
+        }
+        if boundCount == 0 {
+            return "Could not read chapters from the .m4b."
+        }
+        if allMatch {
+            let noun = originalCount == 1 ? "chapter" : "chapters"
+            return "\(originalCount) \(noun) and duration match (\(DurationFormat.string(originalDuration)) vs \(DurationFormat.string(boundDuration)))."
+        }
+        var parts: [String] = []
+        if !countsMatch {
+            parts.append("Chapter count differs: \(originalCount) original vs \(boundCount) in the .m4b")
+        }
+        if mismatchedIndexes.count == 1 {
+            parts.append("Duration differs on chapter \(mismatchedIndexes[0])")
+        } else if mismatchedIndexes.count > 1 {
+            parts.append("Duration differs on chapters \(mismatchedIndexes.map(String.init).joined(separator: ", "))")
+        } else if !totalsMatch {
+            parts.append(
+                "Total duration differs: original \(DurationFormat.string(originalDuration)), .m4b \(DurationFormat.string(boundDuration))"
+            )
+        }
+        return parts.joined(separator: ". ") + "."
+    }
+}
+
+public enum ChapterCompare {
+    public static func rows(original: [Chapter], bound: [Chapter]) -> [ChapterCompareRow] {
+        let count = max(original.count, bound.count)
+        guard count > 0 else { return [] }
+        return (0..<count).map { i in
+            let orig = i < original.count ? original[i] : nil
+            let boundChapter = i < bound.count ? bound[i] : nil
+            return ChapterCompareRow(
+                index: orig?.index ?? boundChapter?.index ?? (i + 1),
+                original: orig,
+                bound: boundChapter
+            )
+        }
+    }
+
+    public static func summary(
+        original: [Chapter],
+        bound: [Chapter],
+        boundDuration: TimeInterval? = nil
+    ) -> ChapterCompareSummary {
+        let originalDuration = original.reduce(0) { $0 + $1.duration }
+        let resolvedBound = boundDuration ?? bound.reduce(0) { $0 + $1.duration }
+        return ChapterCompareSummary(
+            originalCount: original.count,
+            boundCount: bound.count,
+            originalDuration: originalDuration,
+            boundDuration: resolvedBound,
+            countsMatch: original.count == bound.count,
+            totalsMatch: M4BInspector.durationsMatch(source: originalDuration, bound: resolvedBound),
+            mismatchedIndexes: rows(original: original, bound: bound).compactMap { row in
+                row.durationsMatch == false ? row.index : nil
+            }
+        )
     }
 }

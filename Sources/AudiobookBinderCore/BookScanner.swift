@@ -11,7 +11,7 @@ public struct BookScanner: Sendable {
 
     public func scan(
         root: URL,
-        progress: (@Sendable (ScanProgress) -> Void)? = nil
+        progress: (@Sendable (JobProgress) -> Void)? = nil
     ) async throws -> [Audiobook] {
         let root = root.resolvingSymlinksInPath()
         var isDir: ObjCBool = false
@@ -49,7 +49,7 @@ public struct BookScanner: Sendable {
 
     func discoverBookFolders(
         _ folder: URL,
-        progress: (@Sendable (ScanProgress) -> Void)? = nil
+        progress: (@Sendable (JobProgress) -> Void)? = nil
     ) async -> [URL] {
         await emit(progress, .looking(in: folder))
         if hasDirectAudio(folder) {
@@ -89,8 +89,8 @@ public struct BookScanner: Sendable {
     }
 
     private func emit(
-        _ progress: (@Sendable (ScanProgress) -> Void)?,
-        _ value: ScanProgress
+        _ progress: (@Sendable (JobProgress) -> Void)?,
+        _ value: JobProgress
     ) async {
         progress?(value)
         await Task.yield()
@@ -127,7 +127,7 @@ public struct BookScanner: Sendable {
 
     func bookSubfolders(
         _ folder: URL,
-        progress: (@Sendable (ScanProgress) -> Void)? = nil
+        progress: (@Sendable (JobProgress) -> Void)? = nil
     ) async -> [URL] {
         var kept: [URL] = []
         for dir in candidateSubdirectories(folder) {
@@ -154,7 +154,9 @@ public struct BookScanner: Sendable {
         let dirs = items.filter {
             isDirectory($0) && !skippedDirectoryNames.contains($0.lastPathComponent.lowercased())
         }
-        return NaturalSort.sorted(dirs, key: { $0.lastPathComponent })
+        return dirs.sorted {
+            $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
+        }
     }
 
     public func loadBook(at folder: URL) async throws -> Audiobook {
@@ -242,7 +244,9 @@ public struct BookScanner: Sendable {
             }
         }
 
-        let leftoverM4B = NaturalSort.sorted(collectM4B(in: folder), key: { $0.lastPathComponent }).first
+        let leftoverM4B = collectM4B(in: folder).sorted {
+            $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
+        }.first
         let leftoverDuration = leftoverM4B.map { AudioMetadata.fileInfo(of: $0).duration } ?? 0
         return Audiobook(
             folder: folder,
@@ -259,7 +263,9 @@ public struct BookScanner: Sendable {
     }
 
     func loadAlreadyBoundBook(at folder: URL) async throws -> Audiobook {
-        let m4bs = NaturalSort.sorted(collectM4B(in: folder), key: { $0.lastPathComponent })
+        let m4bs = collectM4B(in: folder).sorted {
+            $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
+        }
         guard let m4b = m4bs.first else { throw BinderError.noAudioFiles(folder) }
 
         let firstTags = await AudioMetadata.loadTags(from: m4b, includeArtwork: true)
@@ -334,7 +340,7 @@ public struct BookScanner: Sendable {
             if let ia, let ib, ia != ib { return ia < ib }
             if ia != nil, ib == nil { return true }
             if ia == nil, ib != nil { return false }
-            return NaturalSort.compare(a.lastPathComponent, b.lastPathComponent) == .orderedAscending
+            return a.lastPathComponent.compare(b.lastPathComponent, options: NaturalSort.options) == .orderedAscending
         }
     }
 

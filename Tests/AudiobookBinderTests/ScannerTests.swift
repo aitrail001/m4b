@@ -147,4 +147,15 @@ final class ScannerTests: XCTestCase {
         try Data().write(to: dir.appendingPathComponent("01.mp3"))
         XCTAssertTrue(scanner.hasDirectAudio(dir))
     }
+
+    func testScanFallsBackToFolderTitle() async throws {
+        let dir = try TestSupport.tempDir("catalog")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let bookDir = dir.appendingPathComponent("On Writing Well", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try Data().write(to: bookDir.appendingPathComponent("01.mp3"))
+        let books = try await BookScanner().scan(root: dir)
+        XCTAssertEqual(books.count, 1)
+        XCTAssertEqual(books.first?.title, "On Writing Well")
+    }
 }

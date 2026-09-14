@@ -34,8 +34,9 @@ dmg: app
 	./scripts/package-dmg.sh
 
 release: dmg
-	chmod +x scripts/github-release.sh
+	chmod +x scripts/github-release.sh scripts/sync-public-release.sh
 	./scripts/github-release.sh
+	./scripts/sync-public-release.sh
 
 clean:
 	rm -rf .build dist Resources/AppIcon.icns Resources/AppIcon.iconset

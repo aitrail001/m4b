@@ -77,6 +77,76 @@ final class ParserAndLibraryTests: XCTestCase {
         XCTAssertEqual(meta?.author, "EPUB Author")
     }
 
+    func testOPFLoadFromEPUBWithHugeDescriptionDoesNotHang() throws {
+        let dir = try TestSupport.tempDir("epub-huge")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let description = String(repeating: "x", count: 262_144)
+        let epub = try makeEPUB(
+            in: dir,
+            opfXML: """
+            <package>
+              <metadata>
+                <dc:title>Huge EPUB</dc:title>
+                <dc:creator>Huge Author</dc:creator>
+                <dc:description>\(description)</dc:description>
+              </metadata>
+            </package>
+            """
+        )
+        let deadline = Date().addingTimeInterval(5)
+        let meta = OPFParser.loadFromEPUB(epub)
+        XCTAssertLessThan(Date(), deadline, "loadFromEPUB must return before the 5s deadline")
+        XCTAssertNil(meta, "OPF over the unzip byte budget must fail closed")
+    }
+
+    func testOPFLoadFromEPUBRejectsUnsafeOPFPath() throws {
+        let dir = try TestSupport.tempDir("epub-zipslip")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let epub = try makeEPUB(
+            in: dir,
+            containerFullPath: "../OPS/content.opf",
+            opfXML: """
+            <package>
+              <metadata>
+                <dc:title>Should Not Load</dc:title>
+                <dc:creator>Author</dc:creator>
+              </metadata>
+            </package>
+            """
+        )
+        XCTAssertNil(OPFParser.loadFromEPUB(epub))
+        XCTAssertFalse(OPFParser.isSafeArchiveMember("../OPS/content.opf"))
+        XCTAssertFalse(OPFParser.isSafeArchiveMember("/etc/passwd"))
+        XCTAssertFalse(OPFParser.isSafeArchiveMember("OPS/../../../etc/passwd"))
+        XCTAssertFalse(OPFParser.isSafeArchiveMember(""))
+        XCTAssertTrue(OPFParser.isSafeArchiveMember("META-INF/container.xml"))
+        XCTAssertTrue(OPFParser.isSafeArchiveMember("OPS/content.opf"))
+    }
+
+    func testUnzipRunDrainsSmallStdout() {
+        let output = OPFParser.run("/bin/echo", ["ok"])
+        XCTAssertEqual(output, "ok\n")
+    }
+
+    func testUnzipRunLargeStdoutDoesNotHang() throws {
+        let dir = try TestSupport.tempDir("unzip-run-huge")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("big.txt")
+        try Data(repeating: UInt8(ascii: "a"), count: OPFParser.subprocessOutputBudget + 40_000)
+            .write(to: file)
+        let deadline = Date().addingTimeInterval(5)
+        let output = OPFParser.run("/bin/cat", [file.path])
+        XCTAssertLessThan(Date(), deadline, "run must return before the 5s deadline")
+        XCTAssertNil(output)
+    }
+
+    func testUnzipRunHonorsDeadline() {
+        let deadline = Date().addingTimeInterval(5)
+        let output = OPFParser.run("/bin/sleep", ["20"])
+        XCTAssertLessThan(Date(), deadline, "run must terminate the child at the deadline")
+        XCTAssertNil(output)
+    }
+
     func testLibraryOutlineHelpers() throws {
         let dir = try TestSupport.tempDir("bookmark")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -121,6 +191,38 @@ final class ParserAndLibraryTests: XCTestCase {
         let image = source.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
         XCTAssertNotNil(image)
         XCTAssertLessThanOrEqual(max(image?.width ?? 0, image?.height ?? 0), 200)
+    }
+
+    private func makeEPUB(
+        in dir: URL,
+        containerFullPath: String = "OPS/content.opf",
+        opfXML: String
+    ) throws -> URL {
+        let metaInf = dir.appendingPathComponent("META-INF", isDirectory: true)
+        let ops = dir.appendingPathComponent("OPS", isDirectory: true)
+        try FileManager.default.createDirectory(at: metaInf, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: ops, withIntermediateDirectories: true)
+        try """
+        <?xml version="1.0"?>
+        <container>
+          <rootfiles>
+            <rootfile full-path="\(containerFullPath)" media-type="application/oebps-package+xml"/>
+          </rootfiles>
+        </container>
+        """.write(to: metaInf.appendingPathComponent("container.xml"), atomically: true, encoding: .utf8)
+        try opfXML.write(to: ops.appendingPathComponent("content.opf"), atomically: true, encoding: .utf8)
+        try "application/epub+zip".write(to: dir.appendingPathComponent("mimetype"), atomically: true, encoding: .utf8)
+        let epub = dir.appendingPathComponent("book.epub")
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.arguments = ["-q", "-r", epub.path, "mimetype", "META-INF", "OPS"]
+        zip.currentDirectoryURL = dir
+        zip.standardOutput = Pipe()
+        zip.standardError = Pipe()
+        try zip.run()
+        zip.waitUntilExit()
+        XCTAssertEqual(zip.terminationStatus, 0)
+        return epub
     }
 
     private func makeJPEG(width: Int, height: Int) -> Data? {

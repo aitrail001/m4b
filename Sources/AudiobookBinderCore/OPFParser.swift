@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct OPFMetadata: Sendable, Equatable {
@@ -15,6 +16,11 @@ public struct OPFMetadata: Sendable, Equatable {
 }
 
 public enum OPFParser {
+    /// Captured unzip stdout/stderr is capped at 256 KiB. Larger container.xml / OPF is rejected.
+    static let subprocessOutputBudget = 256 * 1024
+    /// One unzip -p must finish within 3 seconds or the child is terminated.
+    static let subprocessDeadline: TimeInterval = 3
+
     public static func parse(_ xml: String) -> OPFMetadata {
         var meta = OPFMetadata()
         meta.title = firstTag(xml, names: ["dc:title", "title"])
@@ -36,11 +42,30 @@ public enum OPFParser {
     public static func loadFromEPUB(_ epub: URL) -> OPFMetadata? {
         let unzip = "/usr/bin/unzip"
         guard FileManager.default.isExecutableFile(atPath: unzip) else { return nil }
-        guard let container = run(unzip, ["-p", epub.path, "META-INF/container.xml"]) else { return nil }
+        let containerMember = "META-INF/container.xml"
+        guard isSafeArchiveMember(containerMember) else { return nil }
+        guard let container = run(unzip, ["-p", epub.path, containerMember]) else { return nil }
         let opfPath = attribute(container, tagHint: "rootfile", attribute: "full-path")
             ?? firstMatch(container, pattern: #"full-path="([^"]+)""#)
-        guard let opfPath, let opf = run(unzip, ["-p", epub.path, opfPath]) else { return nil }
+        guard let opfPath, isSafeArchiveMember(opfPath) else { return nil }
+        guard let opf = run(unzip, ["-p", epub.path, opfPath]) else { return nil }
         return parse(opf)
+    }
+
+    /// Relative zip member only: no absolute path, drive letter, or `..` segment.
+    static func isSafeArchiveMember(_ path: String) -> Bool {
+        let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, !path.utf8.contains(0) else { return false }
+        if path.hasPrefix("/") || path.hasPrefix("\\") { return false }
+        if path.count >= 2 {
+            let second = path[path.index(after: path.startIndex)]
+            if path[path.startIndex].isLetter && second == ":" { return false }
+        }
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        for part in normalized.split(separator: "/", omittingEmptySubsequences: false) {
+            if part.isEmpty || part == ".." { return false }
+        }
+        return true
     }
 
     private static func firstTag(_ xml: String, names: [String]) -> String? {
@@ -86,21 +111,132 @@ public enum OPFParser {
             .replacingOccurrences(of: "&apos;", with: "'")
     }
 
-    private static func run(_ launchPath: String, _ arguments: [String]) -> String? {
+    /// Drain stdout and stderr while the child runs. Over-budget or overtime returns nil.
+    static func run(_ launchPath: String, _ arguments: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
-        let out = Pipe()
-        process.standardOutput = out
-        process.standardError = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        process.standardInput = FileHandle.nullDevice
+
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return nil
         }
-        guard process.terminationStatus == 0 else { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)
+        // Close the parent write ends so readers see EOF when the child exits.
+        try? stdoutPipe.fileHandleForWriting.close()
+        try? stderrPipe.fileHandleForWriting.close()
+
+        let state = PipeDrainState(budget: subprocessOutputBudget)
+        let group = DispatchGroup()
+        let stdoutFD = stdoutPipe.fileHandleForReading.fileDescriptor
+        let stderrFD = stderrPipe.fileHandleForReading.fileDescriptor
+
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            drain(fd: stdoutFD, into: state, stream: .stdout)
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            drain(fd: stderrFD, into: state, stream: .stderr)
+            group.leave()
+        }
+
+        let deadline = Date().addingTimeInterval(subprocessDeadline)
+        while process.isRunning && Date() < deadline && !state.exceededBudget {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        let timedOut = process.isRunning && !state.exceededBudget
+
+        reap(process)
+        if group.wait(timeout: .now() + 1) == .timedOut {
+            try? stdoutPipe.fileHandleForReading.close()
+            try? stderrPipe.fileHandleForReading.close()
+            _ = group.wait(timeout: .now() + 0.5)
+        }
+
+        guard !state.exceededBudget, !timedOut, process.terminationStatus == 0 else { return nil }
+        return String(data: state.stdoutSnapshot(), encoding: .utf8)
+    }
+
+    private static func drain(fd: Int32, into state: PipeDrainState, stream: PipeStream) {
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while !state.exceededBudget {
+            let n = buffer.withUnsafeMutableBytes { ptr -> Int in
+                guard let base = ptr.baseAddress else { return -1 }
+                return Darwin.read(fd, base, ptr.count)
+            }
+            if n <= 0 { break }
+            state.append(Data(buffer[0..<n]), stream: stream)
+        }
+    }
+
+    private static func reap(_ process: Process) {
+        if process.isRunning {
+            process.terminate()
+        }
+        let giveUp = Date().addingTimeInterval(0.5)
+        while process.isRunning && Date() < giveUp {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+        }
+        process.waitUntilExit()
+    }
+}
+
+private enum PipeStream {
+    case stdout
+    case stderr
+}
+
+/// Shared counters for concurrent stdout/stderr reads.
+private final class PipeDrainState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let budget: Int
+    private var stdout = Data()
+    private var stderrCount = 0
+    private var exceeded = false
+
+    init(budget: Int) {
+        self.budget = budget
+    }
+
+    var exceededBudget: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return exceeded
+    }
+
+    func append(_ chunk: Data, stream: PipeStream) {
+        lock.lock()
+        defer { lock.unlock() }
+        if exceeded { return }
+        switch stream {
+        case .stdout:
+            if stdout.count + chunk.count > budget {
+                exceeded = true
+                return
+            }
+            stdout.append(chunk)
+        case .stderr:
+            if stderrCount + chunk.count > budget {
+                exceeded = true
+                return
+            }
+            stderrCount += chunk.count
+        }
+    }
+
+    func stdoutSnapshot() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return stdout
     }
 }

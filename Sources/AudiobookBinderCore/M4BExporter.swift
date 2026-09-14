@@ -294,14 +294,14 @@ public struct M4BExporter: Sendable {
                 continue
             }
             guard let sample = output.copyNextSampleBuffer() else { break }
-            let frames = max(1, CMSampleBufferGetNumSamples(sample))
-            let duration = CMTime(value: Int64(frames), timescale: timescale)
-            let timed = retimed(sample, pts: cursor, duration: duration) ?? sample
+            let frames = CMSampleBufferGetNumSamples(sample)
+            let timing = Self.pcmTiming(frames: frames, timescale: timescale)
+            let timed = try Self.retimed(sample, pts: cursor, sampleDuration: timing.sampleDuration)
             if !input.append(timed) {
                 let detail = writer.error?.localizedDescription ?? reader.error?.localizedDescription ?? "Failed to append audio"
                 throw BinderError.exportFailed(detail)
             }
-            cursor = CMTimeAdd(cursor, duration)
+            cursor = CMTimeAdd(cursor, timing.bufferAdvance)
         }
 
         if reader.status == .failed {
@@ -310,10 +310,28 @@ public struct M4BExporter: Sendable {
         return cursor
     }
 
-    private func retimed(_ sample: CMSampleBuffer, pts: CMTime, duration: CMTime) -> CMSampleBuffer? {
+    /// Per-sample duration is one frame at `timescale`. Cursor advance is N frames.
+    package static func pcmTiming(
+        frames: Int,
+        timescale: Int32
+    ) -> (sampleDuration: CMTime, bufferAdvance: CMTime) {
+        let count = Int64(max(frames, 1))
+        return (
+            sampleDuration: CMTime(value: 1, timescale: timescale),
+            bufferAdvance: CMTime(value: count, timescale: timescale)
+        )
+    }
+
+    /// Copies `sample` onto a continuous encode timeline. Throws if retiming fails
+    /// so the original buffer timestamps cannot reset PTS at a chapter boundary.
+    package static func retimed(
+        _ sample: CMSampleBuffer,
+        pts: CMTime,
+        sampleDuration: CMTime
+    ) throws -> CMSampleBuffer {
         var copy: CMSampleBuffer?
         var info = CMSampleTimingInfo(
-            duration: duration,
+            duration: sampleDuration,
             presentationTimeStamp: pts,
             decodeTimeStamp: .invalid
         )
@@ -324,7 +342,14 @@ public struct M4BExporter: Sendable {
             sampleTimingArray: &info,
             sampleBufferOut: &copy
         )
-        return status == noErr ? copy : nil
+        return try requireRetimedCopy(status: status, copy: copy)
+    }
+
+    package static func requireRetimedCopy(status: OSStatus, copy: CMSampleBuffer?) throws -> CMSampleBuffer {
+        guard status == noErr, let copy else {
+            throw BinderError.exportFailed("Failed to retime audio samples")
+        }
+        return copy
     }
 
     private func avMetadata(for chapters: [Chapter]) -> [AVMetadataItem] {

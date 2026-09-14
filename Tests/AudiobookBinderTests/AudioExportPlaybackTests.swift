@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMedia
 import XCTest
 @testable import AudiobookBinderCore
 
@@ -496,6 +497,66 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testPCMRetimingSampleDurationIsOneFrameAndAdvanceIsNFrames() {
+        let timescale: Int32 = 44_100
+        let frames = 1_024
+        let timing = M4BExporter.pcmTiming(frames: frames, timescale: timescale)
+
+        XCTAssertEqual(timing.sampleDuration.value, 1)
+        XCTAssertEqual(timing.sampleDuration.timescale, timescale)
+        XCTAssertEqual(timing.bufferAdvance.value, Int64(frames))
+        XCTAssertEqual(timing.bufferAdvance.timescale, timescale)
+        XCTAssertEqual(
+            CMTimeCompare(CMTimeMultiply(timing.sampleDuration, multiplier: Int32(frames)), timing.bufferAdvance),
+            0
+        )
+
+        let one = M4BExporter.pcmTiming(frames: 1, timescale: 48_000)
+        XCTAssertEqual(one.sampleDuration.value, 1)
+        XCTAssertEqual(one.bufferAdvance.value, 1)
+        XCTAssertEqual(one.sampleDuration.timescale, 48_000)
+        XCTAssertEqual(CMTimeCompare(one.sampleDuration, one.bufferAdvance), 0)
+    }
+
+    func testPCMRetimingCopyAppliesPerSampleDuration() throws {
+        let frames = 8
+        let timescale: Int32 = 44_100
+        let pts = CMTime(value: 100, timescale: timescale)
+        let original = try makePCMSampleBuffer(frames: frames, sampleRate: timescale)
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(original), .zero)
+
+        let timing = M4BExporter.pcmTiming(frames: frames, timescale: timescale)
+        let copied = try M4BExporter.retimed(original, pts: pts, sampleDuration: timing.sampleDuration)
+
+        XCTAssertEqual(CMSampleBufferGetNumSamples(copied), frames)
+        XCTAssertEqual(CMSampleBufferGetDuration(copied).value, Int64(frames))
+        XCTAssertEqual(CMSampleBufferGetDuration(copied).timescale, timescale)
+        XCTAssertEqual(CMSampleBufferGetPresentationTimeStamp(copied), pts)
+
+        var first = CMSampleTimingInfo()
+        XCTAssertEqual(CMSampleBufferGetSampleTimingInfo(copied, at: 0, timingInfoOut: &first), noErr)
+        XCTAssertEqual(first.duration.value, 1)
+        XCTAssertEqual(first.duration.timescale, timescale)
+        XCTAssertEqual(first.presentationTimeStamp, pts)
+
+        var last = CMSampleTimingInfo()
+        XCTAssertEqual(CMSampleBufferGetSampleTimingInfo(copied, at: frames - 1, timingInfoOut: &last), noErr)
+        XCTAssertEqual(last.duration.value, 1)
+        XCTAssertEqual(last.presentationTimeStamp.value, pts.value + Int64(frames - 1))
+        XCTAssertEqual(last.presentationTimeStamp.timescale, timescale)
+    }
+
+    func testPCMRetimingCopyThrowsWhenTimingCopyFails() {
+        do {
+            _ = try M4BExporter.requireRetimedCopy(status: -12712, copy: nil)
+            XCTFail("expected exportFailed")
+        } catch let error as BinderError {
+            guard case .exportFailed = error else { return XCTFail("\(error)") }
+        } catch {
+            XCTFail("\(error)")
+        }
+    }
+
     @MainActor
     func testChapterPlaybackStartPauseStopMissing() async throws {
         try XCTSkipUnless(FileManager.default.fileExists(atPath: TestSupport.tink.path), "Tink.aiff missing")
@@ -529,6 +590,83 @@ final class AudioExportPlaybackTests: XCTestCase {
         playback.toggle(missing)
         XCTAssertNil(playback.playingID)
         XCTAssertFalse(playback.isPlaying)
+    }
+
+    private func makePCMSampleBuffer(frames: Int, sampleRate: Int32) throws -> CMSampleBuffer {
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: Float64(sampleRate),
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        var format: CMAudioFormatDescription?
+        let formatStatus = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &format
+        )
+        guard formatStatus == noErr, let format else {
+            throw BinderError.exportFailed("Could not create PCM format")
+        }
+
+        let byteCount = frames * Int(asbd.mBytesPerFrame)
+        var block: CMBlockBuffer?
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: byteCount,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: byteCount,
+            flags: 0,
+            blockBufferOut: &block
+        )
+        guard blockStatus == kCMBlockBufferNoErr, let block else {
+            throw BinderError.exportFailed("Could not create PCM block")
+        }
+        let fillStatus = CMBlockBufferFillDataBytes(
+            with: 0,
+            blockBuffer: block,
+            offsetIntoDestination: 0,
+            dataLength: byteCount
+        )
+        guard fillStatus == kCMBlockBufferNoErr else {
+            throw BinderError.exportFailed("Could not fill PCM block")
+        }
+
+        var originalTiming = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: sampleRate),
+            presentationTimeStamp: .zero,
+            decodeTimeStamp: .invalid
+        )
+        var sampleSize = Int(asbd.mBytesPerFrame)
+        var sample: CMSampleBuffer?
+        let status = CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: block,
+            formatDescription: format,
+            sampleCount: frames,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &originalTiming,
+            sampleSizeEntryCount: 1,
+            sampleSizeArray: &sampleSize,
+            sampleBufferOut: &sample
+        )
+        guard status == noErr, let sample else {
+            throw BinderError.exportFailed("Could not create PCM sample buffer (\(status))")
+        }
+        return sample
     }
 
     private func makeSilence(in dir: URL) throws -> URL {

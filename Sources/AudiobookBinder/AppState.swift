@@ -109,8 +109,8 @@ final class AppState {
     }
 
     func scan(_ url: URL) {
-        if isBuilding {
-            status = "Cannot scan while a build is running."
+        guard JobGate.canStartScan(isBuilding: isBuilding, isScanning: isScanning) else {
+            status = JobGate.cannotScanWhileBuilding
             return
         }
         playback.stop()
@@ -191,7 +191,12 @@ final class AppState {
     }
 
     func buildSelected() {
-        guard !isBuilding else { return }
+        guard JobGate.canStartBuild(isScanning: isScanning, isBuilding: isBuilding) else {
+            if isScanning {
+                status = JobGate.cannotBuildWhileScanning
+            }
+            return
+        }
         let selectedBooks = books.filter { $0.selected && !$0.isAlreadyBound }
         let queue = selectedBooks.filter { !$0.includedChapters.isEmpty }
         guard !queue.isEmpty else {

@@ -71,7 +71,13 @@ struct ContentView: View {
                 appState.buildSelected()
             }
             .buttonStyle(BinderButtonStyle(prominent: true))
-            .disabled(appState.selectedCount == 0 || appState.isBuilding || appState.isScanning)
+            .disabled(
+                appState.selectedCount == 0
+                    || !JobGate.canStartBuild(
+                        isScanning: appState.isScanning,
+                        isBuilding: appState.isBuilding
+                    )
+            )
         }
         .padding(.horizontal, 22)
         .padding(.top, 16)

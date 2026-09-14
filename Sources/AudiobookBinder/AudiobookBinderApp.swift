@@ -53,7 +53,13 @@ struct BinderApp: App {
                 Divider()
                 Button("Build Selected Audiobooks") { appState.buildSelected() }
                     .keyboardShortcut("b", modifiers: .command)
-                    .disabled(appState.books.isEmpty || appState.isBuilding)
+                    .disabled(
+                        appState.books.isEmpty
+                            || !JobGate.canStartBuild(
+                                isScanning: appState.isScanning,
+                                isBuilding: appState.isBuilding
+                            )
+                    )
             }
         }
     }

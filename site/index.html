@@ -252,7 +252,7 @@
         <button type="button" data-lang="en" aria-pressed="true">EN</button>
         <button type="button" data-lang="zh-Hans" aria-pressed="false">中文</button>
       </div>
-      <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="nav.download">Download</a>
+      <a class="btn" href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="nav.download">Download</a>
     </div>
   </nav>
 
@@ -262,7 +262,7 @@
         <h1 data-i18n="hero.title">Loose MP3s, one book in Apple Books.</h1>
         <p class="lede" data-i18n-html="hero.lede">Audiobook Binder is a Mac app that gathers chapter files from a folder — even a nested library — and writes a proper <strong>.m4b</strong> with title, author, cover, and chapter marks.</p>
         <div class="cta">
-          <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="hero.download">Download for macOS 14+</a>
+          <a class="btn" href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="hero.download">Download for macOS 14+</a>
           <a class="btn ghost" href="https://github.com/aitrail001/m4b/releases/latest" data-i18n="hero.github">GitHub release</a>
         </div>
         <p class="fine" data-i18n-html="hero.fine">Free. Runs on your Mac. Version 1.4.6 · about 3&nbsp;MB</p>
@@ -345,7 +345,7 @@
         <p data-i18n-html="install.p1">Download the DMG, open it, and drag <strong>Audiobook Binder</strong> into Applications.</p>
         <p data-i18n-html="install.p2">This build is signed with an Apple Development certificate. The first time you open it, macOS may warn that it is from an unidentified developer. Right-click the app, choose <strong>Open</strong>, then Open again.</p>
         <div class="cta">
-          <a class="btn" href="downloads/AudiobookBinder.dmg" data-i18n="install.dmg">Download AudiobookBinder.dmg</a>
+          <a class="btn" href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="install.dmg">Download AudiobookBinder-1.4.6.dmg</a>
         </div>
         <p class="fine" data-i18n-html="install.fine">Also on <a href="https://github.com/aitrail001/m4b/releases/latest">GitHub Releases</a>. Source is public.</p>
       </div>
@@ -360,11 +360,11 @@
 
   <footer class="wrap">
     <span data-i18n="footer.left">Audiobook Binder 1.4.6 · local Mac app, no account</span>
-    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="downloads/AudiobookBinder.dmg" data-i18n="nav.download">Download</a></span>
+    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="downloads/AudiobookBinder-1.4.6.dmg" data-i18n="nav.download">Download</a></span>
   </footer>
   <script>
     // Public download version. Keep in lockstep with GitHub Releases and
-    // site/downloads/AudiobookBinder.dmg. Change only on an explicit release.
+    // site/downloads/AudiobookBinder-x.y.z.dmg. Change only on an explicit release.
     const PUBLIC_VERSION = "1.4.6";
     const copy = {
       "zh-Hans": {
@@ -398,7 +398,7 @@
         "install.title": "从磁盘映像安装",
         "install.p1": "下载 DMG，打开后把 <strong>Audiobook Binder</strong> 拖进「应用程序」。",
         "install.p2": "当前版本用 Apple Development 证书签名。第一次打开时，macOS 可能提示来自身份不明的开发者。请按住 Control 点按应用，选择<strong>打开</strong>，再确认打开。",
-        "install.dmg": "下载 AudiobookBinder.dmg",
+        "install.dmg": "下载 AudiobookBinder-{v}.dmg",
         "install.fine": "也可在 <a href=\"https://github.com/aitrail001/m4b/releases/latest\">GitHub Releases</a> 下载。源码公开。",
         "expect.title": "它需要什么样的文件夹",
         "expect.p1": "一本书：一叠编号 MP3，可选 <code>cover.jpg</code>，可选 <code>ebook/</code>。",
@@ -460,6 +460,10 @@
         btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === lang ? "true" : "false");
       });
       try { localStorage.setItem("ab-lang", lang); } catch (_) {}
+      const dmg = "downloads/AudiobookBinder-" + PUBLIC_VERSION + ".dmg";
+      document.querySelectorAll('a[href*="downloads/AudiobookBinder"]').forEach((a) => {
+        a.setAttribute("href", dmg);
+      });
     }
 
     function initialLang() {

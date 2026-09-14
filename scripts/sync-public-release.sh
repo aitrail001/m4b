@@ -7,8 +7,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Info.plist")"
 TAG="v${VERSION}"
 DMG="$ROOT/dist/AudiobookBinder-${VERSION}.dmg"
-SITE_DMG="$ROOT/site/downloads/AudiobookBinder.dmg"
+SITE_DIR="$ROOT/site/downloads"
+SITE_DMG="$SITE_DIR/AudiobookBinder-${VERSION}.dmg"
 HTML="$ROOT/site/index.html"
+REDIRECTS="$ROOT/site/_redirects"
 
 if [[ ! -f "$DMG" ]]; then
   echo "Missing $DMG. Run: make dmg" >&2
@@ -20,8 +22,10 @@ if ! gh release view "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$ROOT/site/downloads"
+mkdir -p "$SITE_DIR"
+rm -f "$SITE_DIR"/AudiobookBinder.dmg "$SITE_DIR"/AudiobookBinder-*.dmg
 cp "$DMG" "$SITE_DMG"
+print -r -- "/downloads/AudiobookBinder.dmg /downloads/AudiobookBinder-${VERSION}.dmg 302" > "$REDIRECTS"
 
 python3 - "$HTML" "$VERSION" <<'PY'
 import pathlib, re, sys
@@ -37,6 +41,11 @@ new, n = re.subn(
 )
 if n != 1:
     sys.exit("PUBLIC_VERSION constant missing or duplicated in site/index.html")
+new = re.sub(
+    r"downloads/AudiobookBinder(?:-\d+\.\d+\.\d+)?\.dmg",
+    f"downloads/AudiobookBinder-{version}.dmg",
+    new,
+)
 # No-JS fallbacks in the HTML body (hero.fine, footer).
 new = re.sub(r"(Version )(\d+\.\d+\.\d+)", rf"\g<1>{version}", new)
 new = re.sub(r"(版本 )(\d+\.\d+\.\d+)", rf"\g<1>{version}", new)

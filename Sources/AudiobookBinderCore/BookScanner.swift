@@ -108,16 +108,21 @@ public struct BookScanner: Sendable {
     }
 
     func discIndex(inRelativePath path: String) -> Int {
+        discIndexes(inRelativePath: path).first ?? 0
+    }
+
+    func discIndexes(inRelativePath path: String) -> [Int] {
         let components = path.split(separator: "/").map(String.init)
-        guard components.count > 1 else { return 0 }
+        guard components.count > 1 else { return [] }
+        var indexes: [Int] = []
         for component in components.dropLast() {
             guard isDiscOrPartName(component) else { continue }
             if let match = component.range(of: #"\d+$"#, options: .regularExpression),
                let number = Int(component[match]) {
-                return number
+                indexes.append(number)
             }
         }
-        return 0
+        return indexes
     }
 
     func hasDirectAudio(_ folder: URL) -> Bool {
@@ -388,13 +393,15 @@ public struct BookScanner: Sendable {
         ) != nil
     }
 
-    func sortAudio(_ files: [URL], relativeTo root: URL) -> [URL] {
+    public func sortAudio(_ files: [URL], relativeTo root: URL) -> [URL] {
         files.sorted { a, b in
             let relA = relativePath(of: a, to: root)
             let relB = relativePath(of: b, to: root)
-            let discA = discIndex(inRelativePath: relA)
-            let discB = discIndex(inRelativePath: relB)
-            if discA != discB { return discA < discB }
+            let layoutA = discIndexes(inRelativePath: relA)
+            let layoutB = discIndexes(inRelativePath: relB)
+            if layoutA != layoutB {
+                return layoutA.lexicographicallyPrecedes(layoutB)
+            }
 
             let ia = NaturalSort.leadingIndex(a.lastPathComponent) ?? NaturalSort.trailingIndex(a.lastPathComponent)
             let ib = NaturalSort.leadingIndex(b.lastPathComponent) ?? NaturalSort.trailingIndex(b.lastPathComponent)

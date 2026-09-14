@@ -270,6 +270,50 @@ final class ScannerTests: XCTestCase {
         )
     }
 
+    func testOrdersNestedPartThenDiscThenTrack() async throws {
+        let root = try TestSupport.tempDir("nested-part-disc")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("NestedBook", isDirectory: true)
+        let expected = [
+            "00-intro.mp3",
+            "audio/01.mp3",
+            "Part1/CD1/01.mp3",
+            "Part1/CD1/02.mp3",
+            "Part1/CD2/01.mp3",
+            "Part1/CD2/02.mp3",
+            "Part1/CD10/01.mp3",
+            "Part2/CD1/01.mp3",
+            "Part2/CD1/02.mp3",
+        ]
+        let shuffled = [
+            "Part2/CD1/02.mp3",
+            "Part1/CD2/01.mp3",
+            "00-intro.mp3",
+            "Part1/CD1/02.mp3",
+            "Part1/CD10/01.mp3",
+            "audio/01.mp3",
+            "Part2/CD1/01.mp3",
+            "Part1/CD2/02.mp3",
+            "Part1/CD1/01.mp3",
+        ]
+        for relative in shuffled {
+            try writeRelativeMP3(in: book, relative)
+        }
+
+        let scanner = BookScanner()
+        let shuffledURLs = shuffled.map { nestedURL(book, $0) }
+        XCTAssertEqual(
+            relativePaths(scanner.sortAudio(shuffledURLs, relativeTo: book), to: book),
+            expected
+        )
+
+        let loaded = try await scanner.loadBook(at: book)
+        XCTAssertEqual(
+            relativePaths(loaded.chapters.map(\.url), to: book),
+            expected
+        )
+    }
+
     func testOrdersDiscAndPartFolderNamesByDiscThenTrack() async throws {
         let root = try TestSupport.tempDir("disc-part-names")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -455,5 +499,21 @@ final class ScannerTests: XCTestCase {
             }
             return url.lastPathComponent
         }
+    }
+
+    private func nestedURL(_ root: URL, _ relative: String) -> URL {
+        relative.split(separator: "/").reduce(root) { partial, part in
+            partial.appendingPathComponent(String(part))
+        }
+    }
+
+    private func writeRelativeMP3(in root: URL, _ relative: String) throws {
+        let parts = relative.split(separator: "/").map(String.init)
+        var dir = root
+        for folder in parts.dropLast() {
+            dir = dir.appendingPathComponent(folder, isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data().write(to: dir.appendingPathComponent(parts.last!))
     }
 }

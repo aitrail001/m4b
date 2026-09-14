@@ -68,20 +68,30 @@ enum MP4AtomIO {
     ]
     static let maxHeadersPerParse = 10_000
     static let ioChunkSize = 1_048_576
+    /// Largest atom `readAtom` will allocate (moov / metadata). Larger headers throw.
+    static let maxMetadataAtomBytes = 8 * 1024 * 1024
+    /// Largest Nero `chpl` atom the inspector will load.
+    static let maxChapterAtomBytes = 1 * 1024 * 1024
+    /// Max nested container depth when walking a file for a specific atom.
+    static let maxAtomTraversalDepth = 32
 
     static func readHeaders(of file: URL) throws -> [MP4AtomHeader] {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         let fileSize = try handle.seekToEnd()
         try handle.seek(toOffset: 0)
-        return parseHeaders(from: handle, fileSize: fileSize)
+        return parseHeaders(from: handle, start: 0, end: fileSize)
     }
 
     static func parseHeaders(from handle: FileHandle, fileSize: UInt64) -> [MP4AtomHeader] {
+        parseHeaders(from: handle, start: 0, end: fileSize)
+    }
+
+    static func parseHeaders(from handle: FileHandle, start: UInt64, end: UInt64) -> [MP4AtomHeader] {
         var atoms: [MP4AtomHeader] = []
-        var offset: UInt64 = 0
+        var offset: UInt64 = start
         while atoms.count < maxHeadersPerParse {
-            guard fileSize > offset, fileSize - offset >= 8 else { break }
+            guard end > offset, end - offset >= 8 else { break }
             let headerBytes: Data
             do {
                 try handle.seek(toOffset: offset)
@@ -102,14 +112,14 @@ enum MP4AtomIO {
                 size = extended
             } else if size32 == 0 {
                 headerSize = 8
-                size = fileSize - offset
+                size = end - offset
             } else {
                 headerSize = 8
                 size = UInt64(size32)
             }
 
             guard size >= headerSize else { break }
-            let remaining = fileSize - offset
+            let remaining = end - offset
             guard size <= remaining else { break }
             guard offset <= UInt64.max - size else { break }
 
@@ -195,8 +205,15 @@ enum MP4AtomIO {
         return atoms
     }
 
-    static func readAtom(_ header: MP4AtomHeader, from handle: FileHandle) throws -> Data {
-        guard let count = Int(exactly: header.size), count >= 8 else {
+    static func readAtom(
+        _ header: MP4AtomHeader,
+        from handle: FileHandle,
+        maxBytes: Int = maxMetadataAtomBytes
+    ) throws -> Data {
+        guard header.size <= UInt64(clamping: maxBytes),
+              let count = Int(exactly: header.size),
+              count >= 8
+        else {
             throw BinderError.exportFailed("Atom is too large to load")
         }
         try handle.seek(toOffset: header.offset)
@@ -204,6 +221,40 @@ enum MP4AtomIO {
             throw BinderError.exportFailed("Could not read MP4 atom")
         }
         return data
+    }
+
+    static func findAtom(
+        type: String,
+        in handle: FileHandle,
+        fileSize: UInt64,
+        maxDepth: Int = maxAtomTraversalDepth
+    ) -> MP4AtomHeader? {
+        var queue: [(header: MP4AtomHeader, depth: Int)] = parseHeaders(
+            from: handle,
+            start: 0,
+            end: fileSize
+        ).map { ($0, 0) }
+        var i = 0
+        var visited = 0
+        while i < queue.count, visited < maxHeadersPerParse {
+            let item = queue[i]
+            i += 1
+            visited += 1
+            if item.header.type == type { return item.header }
+            guard containers.contains(item.header.type),
+                  item.depth < maxDepth,
+                  item.header.payloadSize > 0
+            else { continue }
+            let children = parseHeaders(
+                from: handle,
+                start: item.header.payloadOffset,
+                end: item.header.end
+            )
+            for child in children {
+                queue.append((child, item.depth + 1))
+            }
+        }
+        return nil
     }
 
     static func copyBytes(

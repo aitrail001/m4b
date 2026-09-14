@@ -172,6 +172,31 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertTrue(nero.contains(where: { $0.title == "Silence" }))
     }
 
+    func testNeroChaptersFindsSmallChplInSparseLargeFile() throws {
+        let dir = try TestSupport.tempDir("nero-sparse")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("sparse.m4b")
+        try writeSparseM4B(
+            at: url,
+            advertisedFileSize: 64 * 1024 * 1024,
+            chapterTitle: "Sparse Chapter"
+        )
+        let marks = M4BInspector.neroChapters(in: url, duration: 10)
+        XCTAssertEqual(marks.map(\.title), ["Sparse Chapter"])
+        XCTAssertEqual(marks.first?.start, 0)
+    }
+
+    func testNeroChaptersReturnsEmptyWhenChplExceedsBudget() throws {
+        let dir = try TestSupport.tempDir("nero-chpl-oversize")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("huge-chpl.m4b")
+        try writeSparseFileWithOversizedChpl(
+            at: url,
+            chplSize: UInt64(MP4AtomIO.maxChapterAtomBytes) + 1
+        )
+        XCTAssertEqual(M4BInspector.neroChapters(in: url, duration: 10), [])
+    }
+
     func testMakeChplWritesReservedAndUInt8Count() {
         let box = MP4AudiobookTagger.makeChpl([
             ChapterMark(start: 0, duration: 1, title: "One"),
@@ -995,4 +1020,53 @@ private func parseQuickTimeTextSample(_ payload: Data) -> (length: Int, text: Da
     let length = Int(UInt16(payload[0]) << 8 | UInt16(payload[1]))
     precondition(payload.count >= 2 + length)
     return (length, payload.subdata(in: 2..<(2 + length)))
+}
+
+private func writeSparseM4B(at url: URL, advertisedFileSize: UInt64, chapterTitle: String) throws {
+    let ftyp = MP4Box.box(
+        "ftyp",
+        MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ")
+    )
+    let chpl = MP4AudiobookTagger.makeChpl([
+        ChapterMark(start: 0, duration: 1, title: chapterTitle)
+    ])
+    let moov = MP4Box.box("moov", MP4Box.box("udta", chpl))
+    let prefix = UInt64(ftyp.count)
+    let suffix = UInt64(moov.count)
+    precondition(advertisedFileSize > prefix + suffix + 8)
+    let mdatSize = advertisedFileSize - prefix - suffix
+    guard let mdatSize32 = UInt32(exactly: mdatSize) else {
+        throw BinderError.exportFailed("mdat size does not fit in 32 bits")
+    }
+
+    XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.write(contentsOf: ftyp)
+    try handle.write(contentsOf: MP4Box.u32(mdatSize32) + MP4Box.fourcc("mdat"))
+    try handle.truncate(atOffset: prefix + mdatSize)
+    try handle.seek(toOffset: prefix + mdatSize)
+    try handle.write(contentsOf: moov)
+    try handle.close()
+}
+
+private func writeSparseFileWithOversizedChpl(at url: URL, chplSize: UInt64) throws {
+    let ftyp = MP4Box.box(
+        "ftyp",
+        MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ")
+    )
+    guard let chplSize32 = UInt32(exactly: chplSize),
+          let udtaSize32 = UInt32(exactly: 8 + chplSize),
+          let moovSize32 = UInt32(exactly: 16 + chplSize)
+    else {
+        throw BinderError.exportFailed("oversized chpl fixture does not fit in 32-bit atom sizes")
+    }
+
+    XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.write(contentsOf: ftyp)
+    try handle.write(contentsOf: MP4Box.u32(moovSize32) + MP4Box.fourcc("moov"))
+    try handle.write(contentsOf: MP4Box.u32(udtaSize32) + MP4Box.fourcc("udta"))
+    try handle.write(contentsOf: MP4Box.u32(chplSize32) + MP4Box.fourcc("chpl"))
+    try handle.truncate(atOffset: UInt64(ftyp.count) + UInt64(moovSize32))
+    try handle.close()
 }

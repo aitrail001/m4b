@@ -191,9 +191,22 @@ public enum M4BInspector {
     }
 
     static func neroChapters(in url: URL, duration: TimeInterval) -> [ChapterMark] {
-        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return [] }
-        guard let chpl = findAtom(data, type: "chpl") else { return [] }
-        guard let payloadStart = Int(exactly: chpl.payloadOffset),
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let fileSize: UInt64
+        do {
+            fileSize = try handle.seekToEnd()
+        } catch {
+            return []
+        }
+        guard let chpl = MP4AtomIO.findAtom(type: "chpl", in: handle, fileSize: fileSize),
+              let data = try? MP4AtomIO.readAtom(
+                chpl,
+                from: handle,
+                maxBytes: MP4AtomIO.maxChapterAtomBytes
+              )
+        else { return [] }
+        guard let payloadStart = Int(exactly: chpl.headerSize),
               let payloadSize = Int(exactly: chpl.payloadSize),
               payloadStart >= 0,
               payloadStart <= data.count,
@@ -211,28 +224,6 @@ public enum M4BInspector {
             marks.append(ChapterMark(start: start, duration: max(0, end - start), title: parsed[i].title))
         }
         return marks
-    }
-
-    private static func findAtom(_ data: Data, type: String) -> MP4AtomHeader? {
-        var stack = MP4AtomIO.parseHeaders(data, range: 0..<data.count)
-        var i = 0
-        while i < stack.count {
-            let atom = stack[i]
-            if atom.type == type { return atom }
-            if MP4AtomIO.containers.contains(atom.type) {
-                if let start = Int(exactly: atom.payloadOffset),
-                   let size = Int(exactly: atom.payloadSize),
-                   start >= 0,
-                   start <= data.count,
-                   data.count - start >= size,
-                   size > 0
-                {
-                    stack.append(contentsOf: MP4AtomIO.parseHeaders(data, range: start..<(start + size)))
-                }
-            }
-            i += 1
-        }
-        return nil
     }
 }
 

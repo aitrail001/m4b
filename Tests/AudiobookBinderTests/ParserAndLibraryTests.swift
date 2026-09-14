@@ -38,6 +38,24 @@ final class ParserAndLibraryTests: XCTestCase {
         XCTAssertNil(OPFParser.load(from: dir.appendingPathComponent("missing.opf")))
     }
 
+    func testOPFLoadFromOversizedFileReturnsNil() throws {
+        let dir = try TestSupport.tempDir("opf-oversize")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("huge.opf")
+        let xml = Data("<package><metadata><dc:title>Huge</dc:title></metadata></package>".utf8)
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: xml)
+        try handle.truncate(atOffset: UInt64(OPFParser.maxOPFFileBytes) + 1)
+        try handle.close()
+
+        let size = try XCTUnwrap(
+            (FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue
+        )
+        XCTAssertGreaterThan(size, OPFParser.maxOPFFileBytes)
+        XCTAssertNil(OPFParser.load(from: url))
+    }
+
     func testOPFLoadFromEPUB() throws {
         let dir = try TestSupport.tempDir("epub")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -400,6 +418,49 @@ final class MP4AtomIOTests: XCTestCase {
         XCTAssertEqual(kids.count, 1)
         XCTAssertEqual(kids[0].type, "free")
         XCTAssertEqual(kids[0].size, 8)
+    }
+
+    func testReadAtomLoadsSmallAtom() throws {
+        let free = MP4Box.box("free", Data([1, 2, 3, 4]))
+        let dir = try TestSupport.tempDir("atom-read-small")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("tiny.mp4")
+        try free.write(to: url)
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let headers = try MP4AtomIO.readHeaders(of: url)
+        XCTAssertEqual(headers.count, 1)
+        let loaded = try MP4AtomIO.readAtom(headers[0], from: handle)
+        XCTAssertEqual(loaded, free)
+        XCTAssertEqual(loaded.count, 12)
+    }
+
+    func testReadAtomRejectsThirtyTwoMebibyteMoovWithoutLoading() throws {
+        let advertised: UInt64 = 32 * 1024 * 1024
+        XCTAssertGreaterThan(advertised, UInt64(MP4AtomIO.maxMetadataAtomBytes))
+
+        let dir = try TestSupport.tempDir("atom-32mib")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("moov.mp4")
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let writer = try FileHandle(forWritingTo: url)
+        try writer.write(contentsOf: MP4Box.u32(UInt32(advertised)) + MP4Box.fourcc("moov"))
+        try writer.truncate(atOffset: advertised)
+        try writer.close()
+
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let header = MP4AtomHeader(offset: 0, headerSize: 8, size: advertised, type: "moov")
+        XCTAssertThrowsError(try MP4AtomIO.readAtom(header, from: reader)) { error in
+            guard case BinderError.exportFailed(let message) = error else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertTrue(
+                message.localizedCaseInsensitiveContains("too large"),
+                "expected a size-budget error, got \(message)"
+            )
+        }
     }
 
     func testReadHeadersFromFileMatchesDataParser() throws {

@@ -18,6 +18,8 @@ public struct OPFMetadata: Sendable, Equatable {
 public enum OPFParser {
     /// Captured unzip stdout/stderr is capped at 256 KiB. Larger container.xml / OPF is rejected.
     static let subprocessOutputBudget = 256 * 1024
+    /// Loose `.opf` files use the same size cap as EPUB unzip stdout.
+    static let maxOPFFileBytes = subprocessOutputBudget
     /// One unzip -p must finish within 3 seconds or the child is terminated.
     static let subprocessDeadline: TimeInterval = 3
 
@@ -35,6 +37,12 @@ public enum OPFParser {
     }
 
     public static func load(from url: URL) -> OPFMetadata? {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              let size = values.fileSize,
+              size > 0,
+              size <= maxOPFFileBytes
+        else { return nil }
         guard let xml = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return parse(xml)
     }

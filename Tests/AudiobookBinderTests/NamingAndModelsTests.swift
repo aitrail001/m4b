@@ -1230,6 +1230,73 @@ final class NamingAndModelsTests: XCTestCase {
         }
     }
 
+    func testUnassociatedFoldersDoNotTriggerAuthorityScan() async throws {
+        try await withIsolatedAuthorityStore { _ in
+            let root = try TestSupport.tempDir("c19-no-scan-miss")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let library = root.appendingPathComponent("library", isDirectory: true)
+            let bound = library.appendingPathComponent("Bound Book", isDirectory: true)
+            let emptyA = library.appendingPathComponent("Empty A", isDirectory: true)
+            let emptyB = library.appendingPathComponent("Empty B", isDirectory: true)
+            let nested = library.appendingPathComponent("Wrapper/Empty C", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: bound, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: emptyA, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: emptyB, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let dest = out.appendingPathComponent("Bound Book - Ann.m4b")
+            let payload = Data("OWNED-C19".utf8)
+            try payload.write(to: dest)
+            XCTAssertTrue(OutputAssociation.record(dest, inBookFolder: bound))
+            OutputAssociation.plantSyntheticAuthorityDocuments(count: 64)
+            OutputAssociation.resetAuthorityScanCount()
+
+            XCTAssertNil(OutputAssociation.load(inBookFolder: emptyA))
+            XCTAssertEqual(OutputAssociation.authorityScanCount(), 0)
+            XCTAssertFalse(BookScanner().hasValidOutputAssociation(emptyA))
+            XCTAssertFalse(BookScanner().hasValidOutputAssociation(emptyB))
+            XCTAssertFalse(BookScanner().hasValidOutputAssociation(nested))
+            XCTAssertEqual(OutputAssociation.authorityScanCount(), 0)
+
+            let books = try await BookScanner().scan(root: library)
+            XCTAssertEqual(books.count, 1)
+            XCTAssertEqual(books[0].folder.standardizedFileURL.path, bound.standardizedFileURL.path)
+            XCTAssertEqual(books[0].existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+            XCTAssertEqual(OutputAssociation.authorityScanCount(), 0)
+            XCTAssertEqual(try Data(contentsOf: dest), payload)
+        }
+    }
+
+    func testEmptyPathIndexLoadsViaSidecarAssociationHintWithoutScan() throws {
+        try withIsolatedAuthorityStore { _ in
+            let root = try TestSupport.tempDir("c19-sidecar-hint")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let folder = root.appendingPathComponent("FolderReal", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let dest = out.appendingPathComponent("Same - Ann.m4b")
+            let payload = Data("OWNED-SIDECAR-HINT".utf8)
+            try payload.write(to: dest)
+            XCTAssertTrue(OutputAssociation.record(dest, inBookFolder: folder))
+            OutputAssociation.plantSyntheticAuthorityDocuments(count: 64)
+            OutputAssociation.writePathIndexJSON(Data("{\"paths\":{}}\n".utf8))
+            OutputAssociation.resetAuthorityScanCount()
+
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folder)?.standardizedFileURL.path,
+                dest.standardizedFileURL.path
+            )
+            XCTAssertEqual(OutputAssociation.authorityScanCount(), 0)
+            XCTAssertTrue(BookScanner().hasValidOutputAssociation(folder))
+            XCTAssertEqual(OutputAssociation.authorityScanCount(), 0)
+            XCTAssertEqual(try Data(contentsOf: dest), payload)
+        }
+    }
+
     func testImportedSidecarNotesTxtIsNotOwned() throws {
         let root = try TestSupport.tempDir("imported-notes-txt")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1928,11 +1995,24 @@ final class NamingAndModelsTests: XCTestCase {
         let store = try TestSupport.tempDir("r6-01-authority")
         let previous = OutputAssociation.authorityDirectoryOverride
         OutputAssociation.authorityDirectoryOverride = store
+        OutputAssociation.resetAuthorityScanCount()
         defer {
             OutputAssociation.authorityDirectoryOverride = previous
             try? FileManager.default.removeItem(at: store)
         }
         try body(store)
+    }
+
+    private func withIsolatedAuthorityStore(_ body: (URL) async throws -> Void) async throws {
+        let store = try TestSupport.tempDir("r6-01-authority")
+        let previous = OutputAssociation.authorityDirectoryOverride
+        OutputAssociation.authorityDirectoryOverride = store
+        OutputAssociation.resetAuthorityScanCount()
+        defer {
+            OutputAssociation.authorityDirectoryOverride = previous
+            try? FileManager.default.removeItem(at: store)
+        }
+        try await body(store)
     }
 
     /// `CaseFoldProbe` vs `casefoldprobe` on the same parent: if they are the

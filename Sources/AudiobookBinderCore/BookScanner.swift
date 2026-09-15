@@ -160,7 +160,9 @@ public struct BookScanner: Sendable {
     }
 
     func hasValidOutputAssociation(_ folder: URL) -> Bool {
-        OutputAssociation.load(inBookFolder: folder) != nil
+        let sidecar = folder.appendingPathComponent(OutputAssociation.fileName)
+        guard OutputAssociation.isExistingRegularFile(sidecar) else { return false }
+        return OutputAssociation.load(inBookFolder: folder) != nil
     }
 
     func containsValidOutputAssociation(_ folder: URL) -> Bool {

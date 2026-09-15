@@ -144,6 +144,15 @@ public enum OutputAssociation: Sendable {
         try? FileManager.default.removeItem(at: sidecar)
     }
 
+    /// Times `scanAuthority` ran. Tests reset this around isolated stores.
+    package static func authorityScanCount() -> Int {
+        AuthorityStore.scanCount()
+    }
+
+    package static func resetAuthorityScanCount() {
+        AuthorityStore.resetScanCount()
+    }
+
     /// UUID-named authority JSON files, excluding `path-index.json`.
     package static func authorityDocumentCount() -> Int {
         AuthorityStore.withLock {
@@ -377,6 +386,9 @@ public enum OutputAssociation: Sendable {
                     return id
                 }
             }
+            if let document = sidecarAuthorityDocument(for: folder, liveFolder: folderIdentity) {
+                return document.associationID
+            }
             return scanAuthority(matching: folderIdentity)?.associationID
         }
     }
@@ -387,9 +399,8 @@ public enum OutputAssociation: Sendable {
         }
     }
 
-    /// Path index first when it is loadable. On a miss, scan UUID documents by
-    /// folder identity. Refresh the index only when it is missing or already
-    /// loadable and the new encoding stays within `maxPathIndexBytes`.
+    /// Path index, then sidecar `associationID`. `load` does not list the
+    /// authority store; `record` / invalidate may still `scanAuthority`.
     private static func lookupAuthorityDocument(
         for folder: URL?,
         liveFolder: FileIdentity
@@ -403,24 +414,48 @@ public enum OutputAssociation: Sendable {
                 return document
             }
         }
-        guard let document = scanAuthority(matching: liveFolder) else { return nil }
-        if case .unusable = state {
+        if let folder,
+           let document = sidecarAuthorityDocument(for: folder, liveFolder: liveFolder) {
+            rememberPathIfNeeded(state, folder: folder, document: document)
             return document
         }
-        if let folder, let id = document.associationID {
-            var index: PathIndex
-            switch state {
-            case .missing:
-                index = PathIndex()
-            case .loaded(let loaded):
-                index = loaded
-            case .unusable:
-                return document
-            }
-            index.set(id, for: folderPathKey(folder), replacing: document.bookFolderPath)
-            _ = persistPathIndex(index)
+        return nil
+    }
+
+    /// Sidecar is only a file-name hint. Ownership still comes from the
+    /// authority UUID document plus `matchesRecordedIdentity`.
+    private static func sidecarAuthorityDocument(
+        for folder: URL,
+        liveFolder: FileIdentity
+    ) -> Document? {
+        guard let parsed = readDocument(inBookFolder: folder),
+              let hint = parsed.document,
+              let id = hint.associationID,
+              let document = decodeAuthorityDocument(id: id),
+              documentMatchesLiveFolder(document, liveFolder: liveFolder)
+        else {
+            return nil
         }
         return document
+    }
+
+    private static func rememberPathIfNeeded(
+        _ state: PathIndexState,
+        folder: URL,
+        document: Document
+    ) {
+        guard let id = document.associationID else { return }
+        var index: PathIndex
+        switch state {
+        case .unusable:
+            return
+        case .missing:
+            index = PathIndex()
+        case .loaded(let loaded):
+            index = loaded
+        }
+        index.set(id, for: folderPathKey(folder), replacing: document.bookFolderPath)
+        _ = persistPathIndex(index)
     }
 
     private static func writeAuthority(_ document: Document) -> Bool {
@@ -542,6 +577,7 @@ public enum OutputAssociation: Sendable {
     }
 
     private static func scanAuthority(matching folderIdentity: FileIdentity) -> Document? {
+        AuthorityStore.incrementScanCountLocked()
         let dir = AuthorityDirectory.url()
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: dir,
@@ -656,11 +692,25 @@ public enum OutputAssociation: Sendable {
 
 private enum AuthorityStore {
     private static let lock = NSLock()
+    nonisolated(unsafe) private static var scanCountValue = 0
 
     static func withLock<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
         return body()
+    }
+
+    /// Call only while holding `withLock`.
+    static func incrementScanCountLocked() {
+        scanCountValue += 1
+    }
+
+    static func scanCount() -> Int {
+        withLock { scanCountValue }
+    }
+
+    static func resetScanCount() {
+        withLock { scanCountValue = 0 }
     }
 }
 

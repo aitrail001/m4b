@@ -320,8 +320,142 @@ write_packaged_app_receipt "$PROV" "$HEAD"
 require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
   || fail "matching receipt + app plist + exe hash + HEAD + version must pass"
 
+# Compile-time build origin: bind .build/release/AudiobookBinder bytes to the
+# source commit. Fixture binaries carry a FROM-A / FROM-B sentinel (no swift build).
+install_fixture_release_binary() {
+  local root="$1"
+  local payload="$2"
+  mkdir -p "$root/.build/release"
+  print -r -- "$payload" > "$root/.build/release/AudiobookBinder"
+  chmod +x "$root/.build/release/AudiobookBinder"
+}
+
+release_sentinel() {
+  tr -d $'\n' < "${1:-.}/.build/release/AudiobookBinder"
+}
+
+COMMIT_A='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+COMMIT_B='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+ORIGIN_FILE="$PROV/.build/release/AudiobookBinder.origin.json"
+RELEASE_BIN="$PROV/.build/release/AudiobookBinder"
+
+install_fixture_release_binary "$PROV" 'FROM-A'
+rm -f "$ORIGIN_FILE"
+if require_build_origin "$PROV" "$HEAD"; then
+  fail "missing build origin must fail"
+fi
+[[ "$(release_sentinel "$PROV")" == "FROM-A" ]] \
+  || fail "missing-origin check must not rewrite the leftover binary sentinel"
+
+# Origin for A + FROM-A, required HEAD B. A freshly written packaged receipt
+# for B (hash of binary A) must not make compile-origin OK.
+install_fixture_release_binary "$PROV" 'FROM-A'
+write_build_origin "$PROV" "$COMMIT_A"
+install_fixture_app "$PROV" "$VER" 'FROM-A'
+write_packaged_app_receipt "$PROV" "$COMMIT_B"
+if require_build_origin "$PROV" "$COMMIT_B"; then
+  fail "origin commit A vs required HEAD B must fail even with a packaged receipt for B"
+fi
+if require_packaged_app_origin "$PROV" "$COMMIT_B" "$VER"; then
+  : # receipt alone can look consistent; compile-origin is the authority
+else
+  fail "packaged receipt for B + hash(FROM-A) is internally consistent (V3-05 happy-path shape)"
+fi
+[[ "$(release_sentinel "$PROV")" == "FROM-A" ]] \
+  || fail "commit-mismatch origin check must leave FROM-A in place"
+got="$(provenance_json_field "$ORIGIN_FILE" commit)"
+[[ "$got" == "$COMMIT_A" ]] || fail "origin commit must stay A after a B receipt is written"
+
+# Origin commit matches HEAD but leftover exe bytes no longer match the origin hash.
+install_fixture_release_binary "$PROV" 'FROM-A'
+write_build_origin "$PROV" "$HEAD"
+print -r -- 'MUTATED-FROM-A' > "$RELEASE_BIN"
+chmod +x "$RELEASE_BIN"
+if require_build_origin "$PROV" "$HEAD"; then
+  fail "mutated leftover exe must fail build-origin hash check"
+fi
+[[ "$(release_sentinel "$PROV")" == "MUTATED-FROM-A" ]] \
+  || fail "hash-mismatch check must not restore or relabel the mutated binary"
+
+# Matching origin commit + matching exe hash.
+install_fixture_release_binary "$PROV" 'FROM-B'
+write_build_origin "$PROV" "$HEAD"
+require_build_origin "$PROV" "$HEAD" \
+  || fail "matching origin commit + exe hash must pass"
+[[ "$(release_sentinel "$PROV")" == "FROM-B" ]] \
+  || fail "matching origin must keep the FROM-B sentinel"
+got="$(provenance_json_field "$ORIGIN_FILE" commit)"
+[[ "$got" == "$HEAD" ]] || fail "origin must record the compile commit"
+got="$(provenance_json_field "$ORIGIN_FILE" executable_sha256)"
+live_sha="$(file_sha256 "$RELEASE_BIN")"
+[[ "$got" == "$live_sha" ]] || fail "origin must record the live release-binary hash"
+
+# Stale-binary packaging: leftover FROM-A compiled at A, current HEAD is B.
+# The gate package-app.sh calls must fail; do not relabel the leftover binary.
+install_fixture_release_binary "$PROV" 'FROM-A'
+write_build_origin "$PROV" "$COMMIT_A"
+if require_build_origin "$PROV" "$COMMIT_B"; then
+  fail "stale-binary packaging gate must fail when origin is A and HEAD is B"
+fi
+[[ "$(release_sentinel "$PROV")" == "FROM-A" ]] \
+  || fail "failed packaging gate must leave leftover .build binary as FROM-A"
+got="$(provenance_json_field "$ORIGIN_FILE" commit)"
+[[ "$got" == "$COMMIT_A" ]] || fail "failed packaging gate must not rewrite origin commit to B"
+
+pkg_script="$SCRIPT_DIR/package-app.sh"
+grep -q 'require_build_origin' "$pkg_script" \
+  || fail "package-app.sh must call require_build_origin"
+origin_n="$(grep -n 'require_build_origin' "$pkg_script" | head -1 | cut -d: -f1)"
+bin_cp_n="$(grep -n 'cp "\$BIN"' "$pkg_script" | head -1 | cut -d: -f1)"
+plist_n="$(grep -n 'cp "\$ROOT/Info.plist"' "$pkg_script" | head -1 | cut -d: -f1)"
+receipt_n="$(grep -n 'write_packaged_app_receipt' "$pkg_script" | head -1 | cut -d: -f1)"
+[[ -n "$origin_n" && -n "$bin_cp_n" && -n "$plist_n" && -n "$receipt_n" ]] \
+  || fail "package-app.sh must require build origin and copy Info.plist / write a receipt"
+if (( origin_n >= bin_cp_n || origin_n >= plist_n || origin_n >= receipt_n )); then
+  fail "package-app.sh must require build origin before copying the binary, Info.plist, or writing a receipt"
+fi
+
+# Clean matching compile-origin + packaged-app origin still passes.
+install_fixture_release_binary "$PROV" 'FROM-B'
+write_build_origin "$PROV" "$HEAD"
+require_build_origin "$PROV" "$HEAD" \
+  || fail "clean compile-origin path must pass"
+install_fixture_app "$PROV" "$VER" 'FROM-B'
+write_packaged_app_receipt "$PROV" "$HEAD"
+require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
+  || fail "matching compile-origin + packaged-app origin must pass"
+[[ "$(release_sentinel "$PROV")" == "FROM-B" ]] \
+  || fail "clean compile+package path must keep the FROM-B sentinel"
+
 # make release is sequential: clean, then tests, then production DMG (dry-run only).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_PLAN="$(make -C "$REPO_ROOT" -n build)"
+print -r -- "$BUILD_PLAN" | grep -q 'swift build -c release' \
+  || fail "make -n build must run swift build -c release"
+print -r -- "$BUILD_PLAN" | grep -q 'write-build-origin\|write_build_origin' \
+  || fail "make -n build must write compile origin after swift build"
+swift_n="$(print -r -- "$BUILD_PLAN" | grep -n 'swift build -c release' | head -1 | cut -d: -f1)"
+origin_write_n="$(print -r -- "$BUILD_PLAN" | grep -n 'write-build-origin\|write_build_origin' | head -1 | cut -d: -f1)"
+[[ -n "$swift_n" && -n "$origin_write_n" ]] \
+  || fail "make -n build must list swift build and the origin writer"
+if (( swift_n >= origin_write_n )); then
+  fail "make -n build must write compile origin after swift build"
+fi
+
+APP_PLAN="$(make -C "$REPO_ROOT" -n app)"
+print -r -- "$APP_PLAN" | grep -q 'swift build -c release' \
+  || fail "make -n app must build before packaging"
+print -r -- "$APP_PLAN" | grep -q 'write-build-origin\|write_build_origin' \
+  || fail "make -n app must write compile origin after swift build"
+print -r -- "$APP_PLAN" | grep -q 'package-app.sh' \
+  || fail "make -n app must invoke package-app.sh"
+app_swift_n="$(print -r -- "$APP_PLAN" | grep -n 'swift build -c release' | head -1 | cut -d: -f1)"
+app_origin_n="$(print -r -- "$APP_PLAN" | grep -n 'write-build-origin\|write_build_origin' | head -1 | cut -d: -f1)"
+app_pkg_n="$(print -r -- "$APP_PLAN" | grep -n 'package-app.sh' | head -1 | cut -d: -f1)"
+if (( app_swift_n >= app_origin_n || app_origin_n >= app_pkg_n )); then
+  fail "make -n app must run swift build, then write origin, then package-app.sh"
+fi
+
 PLAN="$(make -C "$REPO_ROOT" -n release)"
 print -r -- "$PLAN" | grep -q 'require-clean-release' \
   || fail "make -n release must fail-fast with require-clean-release"

@@ -14,10 +14,9 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 APP_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 
-if [[ ! -x "$BIN" ]]; then
-  echo "Missing release binary. Run: swift build -c release" >&2
-  exit 1
-fi
+# Refuse a leftover .build binary from another commit. Compile origin is
+# written after `swift build -c release`; a packaged-app receipt is not enough.
+require_build_origin "$ROOT" "$APP_COMMIT"
 
 rm -rf "$APP"
 rm -f "$RECEIPT"

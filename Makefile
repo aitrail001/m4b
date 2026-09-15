@@ -10,6 +10,7 @@ test:
 
 build:
 	swift build -c release
+	./scripts/write-build-origin.sh
 
 icon:
 	@mkdir -p Resources/AppIcon.iconset

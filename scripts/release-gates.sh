@@ -201,6 +201,98 @@ packaged_app_receipt_path() {
   print -r -- "${1:-.}/dist/AudiobookBinder.app.receipt.json"
 }
 
+release_binary_path() {
+  print -r -- "${1:-.}/.build/release/AudiobookBinder"
+}
+
+# Written after a successful `swift build -c release`. Binds the live
+# .build/release/AudiobookBinder bytes to the source commit at compile time.
+build_origin_path() {
+  print -r -- "${1:-.}/.build/release/AudiobookBinder.origin.json"
+}
+
+write_build_origin() {
+  local root="${1:-.}"
+  local commit="${2-}"
+  if [[ -z "$commit" ]]; then
+    commit="$(git -C "$root" rev-parse HEAD)" || {
+      print -r -- "Cannot write build origin: missing commit." >&2
+      return 1
+    }
+  fi
+  local exe dest sha dirty="false"
+  exe="$(release_binary_path "$root")"
+  if [[ ! -x "$exe" ]]; then
+    print -r -- "Cannot write build origin: missing release binary $exe. Rebuild with: make build" >&2
+    return 1
+  fi
+  sha="$(file_sha256 "$exe")" || return 1
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
+      dirty="true"
+    fi
+  fi
+  dest="$(build_origin_path "$root")"
+  mkdir -p "${dest:h}"
+  python3 - "$dest" "$commit" "$sha" "$dirty" <<'PY'
+import json, sys
+path, commit, sha, dirty = sys.argv[1:5]
+with open(path, "w") as fh:
+    json.dump(
+        {
+            "commit": commit,
+            "executable_sha256": sha,
+            "dirty": dirty == "true",
+        },
+        fh,
+        indent=2,
+    )
+    fh.write("\n")
+PY
+}
+
+# Packaging must refuse a leftover .build binary that was compiled at another
+# commit (or mutated after the origin was written). A packaged-app receipt is
+# not a substitute for this compile-time record.
+require_build_origin() {
+  local root="${1:-.}"
+  local intended_commit="${2-}"
+  if [[ -z "$intended_commit" ]]; then
+    intended_commit="$(git -C "$root" rev-parse HEAD)" || {
+      print -r -- "Cannot verify build origin: missing intended commit. Rebuild with: make build" >&2
+      return 1
+    }
+  fi
+
+  local exe origin
+  exe="$(release_binary_path "$root")"
+  origin="$(build_origin_path "$root")"
+
+  if [[ ! -x "$exe" ]]; then
+    print -r -- "Missing release binary $exe. Rebuild with: make build" >&2
+    return 1
+  fi
+  if [[ ! -f "$origin" ]]; then
+    print -r -- "Missing build origin $origin. Rebuild with: make build" >&2
+    return 1
+  fi
+
+  local o_commit o_sha live_sha
+  o_commit="$(provenance_json_field "$origin" commit)" || return 1
+  o_sha="$(provenance_json_field "$origin" executable_sha256)" || return 1
+
+  if [[ -z "$o_commit" || "$o_commit" != "$intended_commit" ]]; then
+    print -r -- "Build origin commit ${o_commit:-empty} does not match $intended_commit. Rebuild with: make build" >&2
+    return 1
+  fi
+  live_sha="$(file_sha256 "$exe")" || return 1
+  if [[ -z "$o_sha" || "$o_sha" != "$live_sha" ]]; then
+    print -r -- "Build origin executable SHA-256 does not match $exe. Rebuild with: make build" >&2
+    return 1
+  fi
+  return 0
+}
+
 app_plist_version() {
   local app="${1-}"
   local plist="$app/Contents/Info.plist"

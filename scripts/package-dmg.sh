@@ -52,6 +52,10 @@ else
   /usr/bin/codesign --force --deep --options runtime --sign "$IDENTITY" "$APP"
 fi
 /usr/bin/codesign --verify --verbose=2 "$APP"
+if [[ "$PRODUCTION" == "1" ]]; then
+  # Re-sign changed the executable; refresh receipt hash (keep PACKAGED_COMMIT).
+  write_packaged_app_receipt "$ROOT" "$PACKAGED_COMMIT"
+fi
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE"

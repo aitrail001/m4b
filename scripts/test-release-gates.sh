@@ -631,6 +631,49 @@ if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg
   fail "provenance without dirty field must fail production"
 fi
 
+# C11: production re-sign changes packaged exe bytes after package-app wrote
+# the receipt. Simulate resign (no codesign); refresh with the same captured
+# commit so provenance hashes the live post-sign executable.
+install_fixture_release_binary "$PROV" 'FROM-C11-ADHOC'
+rm -f "$ORIGIN_FILE" "$(build_intent_path "$PROV")"
+write_build_intent "$PROV" "$HEAD"
+write_build_origin "$PROV" "$HEAD"
+install_fixture_app "$PROV" "$VER" 'FROM-C11-ADHOC'
+write_packaged_app_receipt "$PROV" "$HEAD"
+STALE_APP_SHA="$(provenance_json_field "$(packaged_app_receipt_path "$PROV")" executable_sha256)"
+[[ -n "$STALE_APP_SHA" ]] || fail "C11 ad-hoc receipt must record executable_sha256"
+write_release_tests_ok_stamp "$PROV" "$HEAD"
+print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+print -r -- 'FROM-C11-DEVID' > "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder"
+LIVE_APP_SHA="$(file_sha256 "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder")" \
+  || fail "C11 resign fixture exe must be hashable"
+[[ "$STALE_APP_SHA" != "$LIVE_APP_SHA" ]] \
+  || fail "C11 resign simulation must change the packaged exe hash"
+
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$STALE_APP_SHA" "false"
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "stale receipt hash copied into provenance must fail after resign"
+fi
+if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
+  fail "stale receipt must fail origin after resign"
+fi
+
+write_packaged_app_receipt "$PROV" "$HEAD"
+got="$(provenance_json_field "$(packaged_app_receipt_path "$PROV")" commit)"
+[[ "$got" == "$HEAD" ]] || fail "receipt refresh must keep the captured commit, not re-read HEAD"
+REFRESHED_APP_SHA="$(provenance_json_field "$(packaged_app_receipt_path "$PROV")" executable_sha256)"
+[[ "$REFRESHED_APP_SHA" == "$LIVE_APP_SHA" ]] \
+  || fail "refreshed receipt executable_sha256 must match the live post-sign exe"
+require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
+  || fail "require_packaged_app_origin after receipt refresh must match commit/version/live hash"
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$REFRESHED_APP_SHA" "false"
+got="$(provenance_json_field "$PROV_FILE" app_sha256)"
+[[ "$got" == "$LIVE_APP_SHA" ]] || fail "provenance must record the refreshed live exe hash"
+require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
+  || fail "require_release_provenance must pass after receipt refresh"
+
 # make release is sequential: clean, then tests, then production DMG (dry-run only).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEST_PLAN="$(make -C "$REPO_ROOT" -n test)"
@@ -697,6 +740,22 @@ dmg_sign_n="$(grep -n 'Signing \$APP' "$dmg_script" | head -1 | cut -d: -f1)"
   || fail "package-dmg.sh must gate origin/receipt before signing"
 if (( dmg_origin_n >= dmg_sign_n || dmg_clean_n >= dmg_sign_n )); then
   fail "package-dmg.sh PRODUCTION must refuse dirty origin/receipt before signing"
+fi
+# C11: refresh the packaged-app receipt after the production app codesign
+# (and --verify of the app), before write_release_provenance copies the hash.
+grep -q 'write_packaged_app_receipt "\$ROOT" "\$PACKAGED_COMMIT"' "$dmg_script" \
+  || fail "package-dmg.sh must refresh the receipt with PACKAGED_COMMIT (not a fresh HEAD)"
+dmg_app_codesign_n="$(grep -n 'codesign --force --deep --options runtime --timestamp' "$dmg_script" | head -1 | cut -d: -f1)"
+dmg_app_verify_n="$(grep -n 'codesign --verify --verbose=2 "\$APP"' "$dmg_script" | head -1 | cut -d: -f1)"
+dmg_refresh_n="$(grep -n 'write_packaged_app_receipt' "$dmg_script" | head -1 | cut -d: -f1)"
+dmg_prov_n="$(grep -n 'write_release_provenance' "$dmg_script" | head -1 | cut -d: -f1)"
+[[ -n "$dmg_app_codesign_n" && -n "$dmg_app_verify_n" && -n "$dmg_refresh_n" && -n "$dmg_prov_n" ]] \
+  || fail "package-dmg.sh must codesign/verify the app, refresh the receipt, and write provenance"
+if (( dmg_refresh_n <= dmg_app_codesign_n || dmg_refresh_n <= dmg_app_verify_n )); then
+  fail "package-dmg.sh must refresh the receipt after production app codesign --verify"
+fi
+if (( dmg_refresh_n >= dmg_prov_n )); then
+  fail "package-dmg.sh must refresh the receipt before write_release_provenance"
 fi
 awk '/^require_packaged_app_origin\(\)/,/^}/' "$SCRIPT_DIR/release-gates.sh" \
   | grep -q dirty \

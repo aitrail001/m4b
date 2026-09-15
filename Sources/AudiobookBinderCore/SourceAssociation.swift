@@ -359,11 +359,35 @@ public enum SourceAssociation: Sendable {
 
     static func sha256Hex(of url: URL, cancellation: EncodeCancellation?) throws -> String? {
         let resolved = url.resolvingSymlinksInPath()
-        let onMainThread = Thread.isMainThread
         do {
             try cancellation?.checkCancelled()
             let handle = try FileHandle(forReadingFrom: resolved)
             defer { try? handle.close() }
+            return try sha256Hex(of: handle, recordedAs: url, cancellation: cancellation)
+        } catch let error as BinderError {
+            if case .cancelled = error { throw error }
+            return nil
+        } catch is CancellationError {
+            throw BinderError.cancelled
+        } catch {
+            return nil
+        }
+    }
+
+    /// SHA-256 of an already-open handle. Seeks to 0 before hashing and again after.
+    static func sha256Hex(of handle: FileHandle) -> String? {
+        try? sha256Hex(of: handle, recordedAs: nil, cancellation: nil)
+    }
+
+    static func sha256Hex(
+        of handle: FileHandle,
+        recordedAs url: URL? = nil,
+        cancellation: EncodeCancellation? = nil
+    ) throws -> String? {
+        let onMainThread = Thread.isMainThread
+        do {
+            try cancellation?.checkCancelled()
+            try handle.seek(toOffset: 0)
             var hasher = SHA256()
             var bytes = 0
             while true {
@@ -375,7 +399,10 @@ public enum SourceAssociation: Sendable {
                 bytes += chunk.count
                 hasher.update(data: chunk)
             }
-            DigestProbe.record(url: url, bytes: bytes, onMainThread: onMainThread)
+            try? handle.seek(toOffset: 0)
+            if let url {
+                DigestProbe.record(url: url, bytes: bytes, onMainThread: onMainThread)
+            }
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
         } catch let error as BinderError {
             if case .cancelled = error { throw error }

@@ -42,16 +42,17 @@ public enum SourceCleanup {
     /// revalidation and trash. Production callers never set this.
     nonisolated(unsafe) package static var testingBeforeEachDeletion: (() -> Void)?
 
-    /// Test seam: after the source has been renamed onto the private hold,
-    /// before the held file is verified. Production callers never set this.
+    /// Test seam: after the source has been renamed onto the private hold and
+    /// that inode has been opened, before verify through the fd. Production
+    /// callers never set this.
     nonisolated(unsafe) package static var testingAfterHold: ((_ original: URL, _ held: URL) -> Void)?
 
-    /// Test seam: after the held file has been verified, before it is trashed.
-    /// Production callers never set this.
+    /// Test seam: after the held file has been verified through the open fd,
+    /// before dest recheck. Production callers never set this.
     nonisolated(unsafe) package static var testingBeforeTrashHeld: ((_ original: URL, _ held: URL) -> Void)?
 
-    /// Test seam: after dest recheck succeeds, before the open hold is
-    /// re-`fstat`ed and trashed via its current path. Production callers never set this.
+    /// Test seam: after dest recheck succeeds, before exclusive copy/trash.
+    /// Production callers never set this.
     nonisolated(unsafe) package static var testingAfterDestRecheck: ((_ original: URL, _ held: URL) -> Void)?
 
     /// View-body helper: cached/pending/cheap guards only. Does not hash.
@@ -151,9 +152,10 @@ public enum SourceCleanup {
     }
 
     /// One bulk verification, then dest revalidation before each hold.
-    /// The source is renamed onto a same-directory hold, that held object is
-    /// verified and opened, dest is rechecked, the same fd is re-`fstat`ed,
-    /// and only then is that inode trashed via its current path.
+    /// Rename onto a same-directory hold, open that inode immediately, verify
+    /// through the fd, dest-recheck, copy verified bytes into an exclusive
+    /// file, trash that file, then unlink the hold entry only if it still
+    /// names the open inode.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -198,25 +200,9 @@ public enum SourceCleanup {
                     error: error.localizedDescription
                 )
             }
-            testingAfterHold?(next, hold)
-            if let reason = verifySingleRecordedSource(
-                original: next,
-                held: hold,
-                dest: dest,
-                bookFolder: book.folder,
-                document: document
-            ) {
-                return abortAfterHoldRestore(
-                    hold: hold,
-                    original: next,
-                    moved: moved,
-                    remaining: remaining,
-                    reason: reason
-                )
-            }
             let handle: FileHandle
             do {
-                handle = try FileHandle(forReadingFrom: hold)
+                handle = try openHoldForVerify(hold)
             } catch {
                 return abortAfterHoldRestore(
                     hold: hold,
@@ -227,9 +213,25 @@ public enum SourceCleanup {
                 )
             }
             defer { try? handle.close() }
+            testingAfterHold?(next, hold)
+            if let reason = verifySingleRecordedSource(
+                original: next,
+                handle: handle,
+                dest: dest,
+                bookFolder: book.folder,
+                document: document
+            ) {
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: reason
+                )
+            }
             guard let verifiedHold = inodeSnapshot(of: handle) else {
-                return abortAfterHoldRestore(
-                    hold: hold,
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
                     original: next,
                     moved: moved,
                     remaining: remaining,
@@ -244,8 +246,9 @@ public enum SourceCleanup {
                 isBuilding: isBuilding,
                 document: document
             ) {
-                return abortAfterHoldRestore(
-                    hold: hold,
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
                     original: next,
                     moved: moved,
                     remaining: remaining,
@@ -260,31 +263,41 @@ public enum SourceCleanup {
                     remaining: remaining
                 )
             }
-            guard let trashURL = currentURL(of: handle),
-                  let pathSnap = inodeSnapshot(at: trashURL),
-                  pathSnap.device == verifiedHold.device,
-                  pathSnap.inode == verifiedHold.inode
-            else {
-                return abortMismatchedHold(
-                    original: next,
-                    moved: moved,
-                    remaining: remaining,
-                    reason: holdUnreachableForTrashReason
-                )
-            }
+            let exclusive: URL
             do {
-                try FileManager.default.trashItem(at: trashURL, resultingItemURL: nil)
-                moved.append(next)
-                remaining.removeAll { refersToSameFile($0, next) }
+                exclusive = try materializeExclusiveCopy(
+                    from: handle,
+                    inDirectory: next.deletingLastPathComponent()
+                )
             } catch {
-                return abortAfterHoldRestore(
-                    hold: trashURL,
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
                     original: next,
                     moved: moved,
                     remaining: remaining,
                     reason: error.localizedDescription
                 )
             }
+            do {
+                try FileManager.default.trashItem(at: exclusive, resultingItemURL: nil)
+            } catch {
+                try? FileManager.default.removeItem(at: exclusive)
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: error.localizedDescription
+                )
+            }
+            if let current = currentURL(of: handle),
+               pathNamesHeldInode(current, expected: verifiedHold, handle: handle) {
+                unlinkPath(current)
+            }
+            moved.append(next)
+            remaining.removeAll { refersToSameFile($0, next) }
         }
         return SourceCleanupResult(moved: moved, remaining: remaining, error: nil)
     }
@@ -354,8 +367,6 @@ public enum SourceCleanup {
     private static let sourceChangedReason = "Source files changed since they were bound."
     private static let holdChangedAfterDestRecheckReason =
         "Held source is no longer the verified file."
-    private static let holdUnreachableForTrashReason =
-        "Held source is no longer reachable for trash."
     private static let cancelledReason = BinderError.cancelled.errorDescription ?? "Cancelled"
 
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
@@ -509,6 +520,125 @@ public enum SourceCleanup {
         }
     }
 
+    /// Restore only the inode held open, via F_GETPATH when that path still
+    /// names the fd. Never move a replacement at a stale hold pathname.
+    private static func abortAfterOpenHandleRestore(
+        handle: FileHandle,
+        expected: HeldInodeSnapshot? = nil,
+        original: URL,
+        moved: [URL],
+        remaining: [URL],
+        reason: String
+    ) -> SourceCleanupResult {
+        let snapshot = expected ?? inodeSnapshot(of: handle)
+        guard let snapshot,
+              let current = currentURL(of: handle),
+              pathNamesHeldInode(current, expected: snapshot, handle: handle)
+        else {
+            return abortMismatchedHold(
+                original: original,
+                moved: moved,
+                remaining: remaining,
+                reason: reason
+            )
+        }
+        return abortAfterHoldRestore(
+            hold: current,
+            original: original,
+            moved: moved,
+            remaining: remaining,
+            reason: reason
+        )
+    }
+
+    private static func pathNamesHeldInode(
+        _ url: URL,
+        expected: HeldInodeSnapshot,
+        handle: FileHandle
+    ) -> Bool {
+        guard let pathSnap = inodeSnapshot(at: url),
+              let fdSnap = inodeSnapshot(of: handle)
+        else {
+            return false
+        }
+        return pathSnap.device == expected.device
+            && pathSnap.inode == expected.inode
+            && fdSnap.device == expected.device
+            && fdSnap.inode == expected.inode
+    }
+
+    private static func unlinkPath(_ url: URL) {
+        url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { return }
+            _ = unlink(cPath)
+        }
+    }
+
+    private static func openHoldForVerify(_ hold: URL) throws -> FileHandle {
+        try hold.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else {
+                throw POSIXError(.ENOENT)
+            }
+            let fd = open(cPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        }
+    }
+
+    /// Bytes of the open handle into a file this process exclusively created.
+    private static func materializeExclusiveCopy(
+        from handle: FileHandle,
+        inDirectory directory: URL
+    ) throws -> URL {
+        var lastError: Error = POSIXError(.EIO)
+        for _ in 0..<4 {
+            let dest = directory.appendingPathComponent(".\(UUID().uuidString)")
+            do {
+                try writeExclusiveCopy(from: handle, to: dest)
+                return dest
+            } catch let error as POSIXError where error.code == .EEXIST {
+                lastError = error
+                continue
+            }
+        }
+        throw lastError
+    }
+
+    private static func writeExclusiveCopy(from handle: FileHandle, to dest: URL) throws {
+        try dest.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { throw POSIXError(.EFAULT) }
+            let fd = open(cPath, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, S_IRUSR | S_IWUSR)
+            if fd < 0 {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            defer { close(fd) }
+            do {
+                try handle.seek(toOffset: 0)
+                while true {
+                    let chunk = try handle.read(upToCount: 65_536)
+                    guard let chunk, !chunk.isEmpty else { break }
+                    var written = 0
+                    while written < chunk.count {
+                        let n = chunk.withUnsafeBytes { ptr -> Int in
+                            guard let base = ptr.baseAddress else { return -1 }
+                            return write(fd, base.advanced(by: written), chunk.count - written)
+                        }
+                        if n < 0 {
+                            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                        }
+                        written += n
+                    }
+                }
+                try? handle.seek(toOffset: 0)
+            } catch {
+                unlink(cPath)
+                throw error
+            }
+        }
+    }
+
     /// Hold path no longer names the verified object. Do not trash it and do
     /// not move a replacement onto the original path.
     private static func abortMismatchedHold(
@@ -585,10 +715,12 @@ public enum SourceCleanup {
         return "\(trimmed) \(restoreNote)"
     }
 
-    /// Match the sidecar entry by the original path, then identity-check the hold.
+    /// Match the sidecar entry by the original path, then identity-check the
+    /// already-open hold inode (fstat size/mtime, resource-id only if
+    /// F_GETPATH still names that inode, digest through the same handle).
     private static func verifySingleRecordedSource(
         original: URL,
-        held: URL,
+        handle: FileHandle,
         dest: URL,
         bookFolder: URL,
         document: SourceAssociation.Document
@@ -601,7 +733,63 @@ public enum SourceCleanup {
         }) else {
             return "Cannot verify sources: missing export provenance."
         }
-        return verifyLiveSource(url: held, entry: entry)
+        return verifyLiveSource(handle: handle, entry: entry, recordedAs: original)
+    }
+
+    private static func verifyLiveSource(
+        handle: FileHandle,
+        entry: SourceAssociation.Entry,
+        recordedAs url: URL,
+        cancellation: EncodeCancellation? = nil
+    ) -> String? {
+        guard entry.isRegularFile, let snap = inodeSnapshot(of: handle) else {
+            return "Cannot read a source file's identity."
+        }
+        guard snap.size == entry.fileSize else {
+            return sourceChangedReason
+        }
+        guard let expectedDate = entry.modificationDate else {
+            return sourceChangedReason
+        }
+        let liveDate = Date(
+            timeIntervalSince1970: TimeInterval(snap.mtimeSec)
+                + TimeInterval(snap.mtimeNsec) / 1_000_000_000
+        )
+        if expectedDate != liveDate,
+           abs(expectedDate.timeIntervalSince1970 - liveDate.timeIntervalSince1970) >= 0.002 {
+            return sourceChangedReason
+        }
+        guard let current = currentURL(of: handle),
+              pathNamesHeldInode(current, expected: snap, handle: handle),
+              let identity = FileIdentity.read(from: current),
+              !identity.isDirectory
+        else {
+            return "Cannot read a source file's identity."
+        }
+        guard identity.matchesCapturedResourceIdentifier(entry) else {
+            return sourceChangedReason
+        }
+        let liveDigest: String?
+        do {
+            liveDigest = try SourceAssociation.sha256Hex(
+                of: handle,
+                recordedAs: url,
+                cancellation: cancellation
+            )
+        } catch BinderError.cancelled {
+            return cancelledReason
+        } catch is CancellationError {
+            return cancelledReason
+        } catch {
+            liveDigest = nil
+        }
+        guard let expectedDigest = entry.sha256, !expectedDigest.isEmpty,
+              let liveDigest,
+              liveDigest.caseInsensitiveCompare(expectedDigest) == .orderedSame
+        else {
+            return sourceChangedReason
+        }
+        return nil
     }
 
     private static func verifyRecordedDestination(
@@ -828,6 +1016,11 @@ struct FileIdentity: Equatable, Sendable, Codable {
            abs(expectedDate.timeIntervalSince1970 - liveDate.timeIntervalSince1970) >= 0.002 {
             return false
         }
+        return matchesCapturedResourceIdentifier(entry)
+    }
+
+    func matchesCapturedResourceIdentifier(_ entry: SourceAssociation.Entry) -> Bool {
+        guard !isDirectory, entry.isRegularFile else { return false }
         guard let expectedID = entry.fileResourceIdentifier, !expectedID.isEmpty,
               let liveID = fileResourceIdentifier, !liveID.isEmpty else {
             return false

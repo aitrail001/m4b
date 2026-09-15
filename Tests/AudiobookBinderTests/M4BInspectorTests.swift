@@ -129,15 +129,15 @@ final class M4BInspectorTests: XCTestCase {
         }
     }
 
-    func testMaxTrackIDIgnoresShortTkhdAndDoesNotReadSibling() {
+    func testMaxTrackIDIgnoresShortTkhdAndDoesNotReadSibling() throws {
         let fakeID: UInt32 = 0xFFFF_FFFE
         let shortOnly = Self.moovWithShortTkhdAndLongSibling(fakeTrackID: fakeID)
-        XCTAssertEqual(MP4AudiobookTagger.maxTrackID(in: shortOnly), 0)
-        XCTAssertNotEqual(MP4AudiobookTagger.maxTrackID(in: shortOnly), fakeID)
+        XCTAssertEqual(try MP4AudiobookTagger.maxTrackID(in: shortOnly), 0)
+        XCTAssertNotEqual(try MP4AudiobookTagger.maxTrackID(in: shortOnly), fakeID)
 
         let mixed = Self.moovWithShortTkhdSiblingAndValidTrack(fakeTrackID: fakeID, validTrackID: 3)
-        XCTAssertEqual(MP4AudiobookTagger.maxTrackID(in: mixed), 3)
-        XCTAssertNotEqual(MP4AudiobookTagger.maxTrackID(in: mixed), fakeID)
+        XCTAssertEqual(try MP4AudiobookTagger.maxTrackID(in: mixed), 3)
+        XCTAssertNotEqual(try MP4AudiobookTagger.maxTrackID(in: mixed), fakeID)
     }
 
     func testAllocateChapterTrackIDThrowsWhenNextTrackIDIsUInt32Max() {
@@ -211,6 +211,64 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(leftovers.map(\.lastPathComponent), ["max-next.m4a"])
     }
 
+    func testApplyThrowsAndLeavesOriginalWhenMoovExceedsNestedAtomBudget() throws {
+        let dir = try TestSupport.tempDir("tag-moov-budget")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("moov-budget.m4a")
+        let original = Self.moovOverNestedAtomBudgetFile()
+        try original.write(to: url)
+
+        let top = try MP4AtomIO.parseHeadersComplete(original, range: 0..<original.count)
+        XCTAssertEqual(top.map(\.type), ["ftyp", "moov", "mdat"])
+        let moov = try XCTUnwrap(top.first(where: { $0.type == "moov" }))
+        let payloadStart = try XCTUnwrap(Int(exactly: moov.payloadOffset))
+        let payloadEnd = try XCTUnwrap(Int(exactly: moov.end))
+        XCTAssertThrowsError(try MP4AtomIO.parseHeadersComplete(original, range: payloadStart..<payloadEnd))
+
+        try assertApplyThrowsLeavesOriginalAndNoScratch(url: url, original: original, fileName: "moov-budget.m4a")
+    }
+
+    func testApplyThrowsAndLeavesOriginalWhenTrakHasTrailingTruncatedChild() throws {
+        let dir = try TestSupport.tempDir("tag-trak-trunc")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("trak-trunc.m4a")
+        let original = Self.fileWithTrailingTruncatedChild(in: .trak)
+        try original.write(to: url)
+
+        let top = try MP4AtomIO.parseHeadersComplete(original, range: 0..<original.count)
+        XCTAssertEqual(top.map(\.type), ["ftyp", "moov", "mdat"])
+
+        try assertApplyThrowsLeavesOriginalAndNoScratch(url: url, original: original, fileName: "trak-trunc.m4a")
+    }
+
+    func testApplyThrowsAndLeavesOriginalWhenUdtaNestedParseIsIncomplete() throws {
+        let dir = try TestSupport.tempDir("tag-udta-trunc")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("udta-trunc.m4a")
+        let original = Self.fileWithTrailingTruncatedChild(in: .udta)
+        try original.write(to: url)
+
+        let top = try MP4AtomIO.parseHeadersComplete(original, range: 0..<original.count)
+        XCTAssertEqual(top.map(\.type), ["ftyp", "moov", "mdat"])
+
+        try assertApplyThrowsLeavesOriginalAndNoScratch(url: url, original: original, fileName: "udta-trunc.m4a")
+    }
+
+    private func assertApplyThrowsLeavesOriginalAndNoScratch(url: URL, original: Data, fileName: String) throws {
+        XCTAssertThrowsError(
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "T", author: "A"),
+                chapters: []
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let dir = url.deletingLastPathComponent()
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), [fileName])
+        XCTAssertFalse(leftovers.contains { $0.lastPathComponent.contains("tagging") })
+    }
+
     static func truncatedMdatAfterMoov() -> Data {
         let moov = MP4Box.box("moov", MP4Box.box("mvhd", Data(count: 100)))
         var mdat = Data()
@@ -221,6 +279,51 @@ final class M4BInspectorTests: XCTestCase {
     }
 
     static func minimalTaggableMP4(nextTrackID: UInt32 = 2) -> Data {
+        wrapTaggableFile(moovPayload: validMvhdV0(nextTrackID: nextTrackID))
+    }
+
+    /// `moov` with a valid `mvhd`, 9,999 empty `free` children, and a trailing `trak`
+    /// (10,001 nested atoms). Top-level complete parse succeeds; nested `moov` parse does not.
+    static func moovOverNestedAtomBudgetFile() -> Data {
+        let free = MP4Box.box("free", Data())
+        var payload = Data()
+        payload.reserveCapacity(validMvhdV0().count + (MP4AtomIO.maxHeadersPerParse * 8))
+        payload.append(validMvhdV0())
+        for _ in 0..<(MP4AtomIO.maxHeadersPerParse - 1) {
+            payload.append(free)
+        }
+        payload.append(MP4Box.box("trak", Data()))
+        return wrapTaggableFile(moovPayload: payload)
+    }
+
+    enum NestedTruncationContainer {
+        case trak
+        case udta
+    }
+
+    /// Valid `mvhd` plus a `trak` or `udta` whose own children end in a truncated atom.
+    static func fileWithTrailingTruncatedChild(in container: NestedTruncationContainer) -> Data {
+        let truncatedTail = Data([0, 0, 0, 8])
+        let nested: Data
+        switch container {
+        case .trak:
+            nested = MP4Box.box("trak", validTkhd(trackID: 1) + truncatedTail)
+        case .udta:
+            let meta = MP4Box.box("meta", MP4Box.u32(0))
+            nested = MP4Box.box("udta", meta + truncatedTail)
+        }
+        return wrapTaggableFile(moovPayload: validMvhdV0() + nested)
+    }
+
+    static func wrapTaggableFile(moovPayload: Data) -> Data {
+        let ftyp = MP4Box.box(
+            "ftyp",
+            MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ") + MP4Box.fourcc("mp42")
+        )
+        return ftyp + MP4Box.box("moov", moovPayload) + MP4Box.box("mdat", Data(count: 8))
+    }
+
+    static func validMvhdV0(nextTrackID: UInt32 = 2) -> Data {
         var mvhd = Data(count: 100)
         mvhd.replaceSubrange(12..<16, with: MP4Box.u32(1000))
         mvhd.replaceSubrange(16..<20, with: MP4Box.u32(1000))
@@ -230,11 +333,13 @@ final class M4BInspectorTests: XCTestCase {
         mvhd.replaceSubrange(52..<56, with: MP4Box.u32(0x00010000))
         mvhd.replaceSubrange(68..<72, with: MP4Box.u32(0x40000000))
         mvhd.replaceSubrange(96..<100, with: MP4Box.u32(nextTrackID))
-        let ftyp = MP4Box.box(
-            "ftyp",
-            MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ") + MP4Box.fourcc("mp42")
-        )
-        return ftyp + MP4Box.box("moov", MP4Box.box("mvhd", mvhd)) + MP4Box.box("mdat", Data(count: 8))
+        return MP4Box.box("mvhd", mvhd)
+    }
+
+    static func validTkhd(trackID: UInt32) -> Data {
+        var tkhd = Data(count: 84)
+        tkhd.replaceSubrange(12..<16, with: MP4Box.u32(trackID))
+        return MP4Box.box("tkhd", tkhd)
     }
 
     /// 4-byte `mvhd` payload plus a long sibling planted with distinctive field values

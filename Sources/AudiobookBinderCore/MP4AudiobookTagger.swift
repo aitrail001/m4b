@@ -156,7 +156,7 @@ public enum MP4AudiobookTagger {
         let mvhd = try readMovieHeader(originalMoov)
         let chapterTrackID = try allocateChapterTrackID(
             nextTrackID: mvhd.nextTrackID,
-            maxTrackID: maxTrackID(in: originalMoov)
+            maxTrackID: try maxTrackID(in: originalMoov)
         )
         let followingTrackID = try incrementTrackID(chapterTrackID)
 
@@ -164,9 +164,9 @@ public enum MP4AudiobookTagger {
         let extraMdat = MP4Box.box("mdat", chapterSamples.payload)
 
         var moovPayload = originalMoov.subdata(in: 8..<originalMoov.count)
-        moovPayload = replaceNextTrackID(in: moovPayload, next: followingTrackID)
-        moovPayload = upsertItunesMetadata(in: moovPayload, tags: tags)
-        moovPayload = addNeroChapters(in: moovPayload, chapters: chapters)
+        moovPayload = try replaceNextTrackID(in: moovPayload, next: followingTrackID)
+        moovPayload = try upsertItunesMetadata(in: moovPayload, tags: tags)
+        moovPayload = try addNeroChapters(in: moovPayload, chapters: chapters)
 
         if !chapters.isEmpty {
             let trak = makeChapterTrack(
@@ -178,7 +178,7 @@ public enum MP4AudiobookTagger {
                 chunkOffset: extraMdatFileOffset + 8
             )
             moovPayload.append(trak)
-            moovPayload = addChapterReference(to: moovPayload, chapterTrackID: chapterTrackID)
+            moovPayload = try addChapterReference(to: moovPayload, chapterTrackID: chapterTrackID)
         }
 
         return Extras(mdat: extraMdat, moov: MP4Box.box("moov", moovPayload))
@@ -198,7 +198,7 @@ public enum MP4AudiobookTagger {
 
     package static func readMovieHeader(_ moov: Data) throws -> MovieHeader {
         guard moov.count >= 8 else { throw BinderError.exportFailed("Missing mvhd") }
-        let children = MP4AtomIO.parseHeaders(moov, range: 8..<moov.count)
+        let children = try MP4AtomIO.parseHeadersComplete(moov, range: 8..<moov.count)
         guard let mvhd = children.first(where: { $0.type == "mvhd" }) else {
             throw BinderError.exportFailed("Missing mvhd")
         }
@@ -244,10 +244,10 @@ public enum MP4AudiobookTagger {
         }
     }
 
-    package static func maxTrackID(in moov: Data) -> UInt32 {
+    package static func maxTrackID(in moov: Data) throws -> UInt32 {
         var maxID: UInt32 = 0
         guard moov.count >= 8 else { return 0 }
-        let traks = MP4AtomIO.parseHeaders(moov, range: 8..<moov.count).filter { $0.type == "trak" }
+        let traks = try MP4AtomIO.parseHeadersComplete(moov, range: 8..<moov.count).filter { $0.type == "trak" }
         for trak in traks {
             guard let trakStart = Int(exactly: trak.payloadOffset),
                   let trakEnd = Int(exactly: trak.end),
@@ -255,7 +255,7 @@ public enum MP4AudiobookTagger {
                   trakEnd <= moov.count,
                   trakStart <= trakEnd
             else { continue }
-            let kids = MP4AtomIO.parseHeaders(moov, range: trakStart..<trakEnd)
+            let kids = try MP4AtomIO.parseHeadersComplete(moov, range: trakStart..<trakEnd)
             guard let tkhd = kids.first(where: { $0.type == "tkhd" }),
                   let id = readTrackID(from: moov, atom: tkhd)
             else { continue }
@@ -315,9 +315,9 @@ public enum MP4AudiobookTagger {
         return MP4AtomIO.readU64(data, offset)
     }
 
-    private static func replaceNextTrackID(in moovPayload: Data, next: UInt32) -> Data {
+    private static func replaceNextTrackID(in moovPayload: Data, next: UInt32) throws -> Data {
         var data = moovPayload
-        let children = parsePayloadAtoms(data)
+        let children = try parsePayloadAtoms(data)
         guard let mvhd = children.first(where: { $0.type == "mvhd" }),
               let start = Int(exactly: mvhd.payloadOffset),
               let payloadEnd = Int(exactly: mvhd.end),
@@ -340,40 +340,45 @@ public enum MP4AudiobookTagger {
         return data
     }
 
-    private static func parsePayloadAtoms(_ payload: Data) -> [MP4AtomHeader] {
-        MP4AtomIO.parseHeaders(payload, range: 0..<payload.count)
+    private static func parsePayloadAtoms(_ payload: Data) throws -> [MP4AtomHeader] {
+        try MP4AtomIO.parseHeadersComplete(payload, range: 0..<payload.count)
     }
 
-    private static func upsertItunesMetadata(in moovPayload: Data, tags: AudiobookTags) -> Data {
-        var children = splitAtoms(moovPayload)
+    private static func upsertItunesMetadata(in moovPayload: Data, tags: AudiobookTags) throws -> Data {
+        var children = try splitAtoms(moovPayload)
         if let idx = children.firstIndex(where: { fourCC(of: $0) == "udta" }) {
-            children[idx] = rebuildUdta(children[idx], tags: tags)
+            children[idx] = try rebuildUdta(children[idx], tags: tags)
         } else {
             children.append(makeUdta(tags: tags))
         }
         return children.reduce(into: Data(), { $0.append($1) })
     }
 
-    private static func addNeroChapters(in moovPayload: Data, chapters: [ChapterMark]) -> Data {
+    private static func addNeroChapters(in moovPayload: Data, chapters: [ChapterMark]) throws -> Data {
         guard !chapters.isEmpty else { return moovPayload }
-        var children = splitAtoms(moovPayload)
+        var children = try splitAtoms(moovPayload)
         if let idx = children.firstIndex(where: { fourCC(of: $0) == "udta" }) {
-            var udta = unwrap(children[idx])
-            udta.append(makeChpl(chapters))
-            children[idx] = MP4Box.box("udta", udta)
+            var udtaKids = try splitAtoms(unwrap(children[idx]))
+            udtaKids.append(makeChpl(chapters))
+            children[idx] = MP4Box.box("udta", udtaKids.reduce(into: Data(), { $0.append($1) }))
         } else {
             children.append(MP4Box.box("udta", makeChpl(chapters)))
         }
         return children.reduce(into: Data(), { $0.append($1) })
     }
 
-    private static func addChapterReference(to moovPayload: Data, chapterTrackID: UInt32) -> Data {
-        var children = splitAtoms(moovPayload)
-        guard let idx = children.firstIndex(where: { atom in
-            fourCC(of: atom) == "trak" && isAudioTrack(atom)
-        }) else { return moovPayload }
+    private static func addChapterReference(to moovPayload: Data, chapterTrackID: UInt32) throws -> Data {
+        var children = try splitAtoms(moovPayload)
+        var audioIndex: Int?
+        for (index, atom) in children.enumerated() where fourCC(of: atom) == "trak" {
+            if try isAudioTrack(atom) {
+                audioIndex = index
+                break
+            }
+        }
+        guard let idx = audioIndex else { return moovPayload }
 
-        var trakKids = splitAtoms(unwrap(children[idx]))
+        var trakKids = try splitAtoms(unwrap(children[idx]))
         let tref = MP4Box.box("tref", MP4Box.box("chap", MP4Box.u32(chapterTrackID)))
         if let existing = trakKids.firstIndex(where: { fourCC(of: $0) == "tref" }) {
             trakKids[existing] = tref
@@ -384,8 +389,8 @@ public enum MP4AudiobookTagger {
         return children.reduce(into: Data(), { $0.append($1) })
     }
 
-    private static func isAudioTrack(_ trak: Data) -> Bool {
-        guard let mdia = child(trak, "mdia"), let hdlr = child(mdia, "hdlr") else { return false }
+    private static func isAudioTrack(_ trak: Data) throws -> Bool {
+        guard let mdia = try child(trak, "mdia"), let hdlr = try child(mdia, "hdlr") else { return false }
         // hdlr payload: version/flags 4, componentType 4, componentSubtype 4
         let payload = unwrap(hdlr)
         guard payload.count >= 12 else { return false }
@@ -393,8 +398,8 @@ public enum MP4AudiobookTagger {
         return subtype == "soun"
     }
 
-    private static func rebuildUdta(_ udta: Data, tags: AudiobookTags) -> Data {
-        var kids = splitAtoms(unwrap(udta))
+    private static func rebuildUdta(_ udta: Data, tags: AudiobookTags) throws -> Data {
+        var kids = try splitAtoms(unwrap(udta))
         if let idx = kids.firstIndex(where: { fourCC(of: $0) == "meta" }) {
             kids[idx] = makeMeta(tags: tags)
         } else {
@@ -818,8 +823,8 @@ public enum MP4AudiobookTagger {
         return MP4Box.box("stsd", stsd)
     }
 
-    private static func splitAtoms(_ payload: Data) -> [Data] {
-        parsePayloadAtoms(payload).compactMap { header in
+    private static func splitAtoms(_ payload: Data) throws -> [Data] {
+        try parsePayloadAtoms(payload).compactMap { header in
             let piece = MP4AtomIO.slice(payload, header)
             return piece.isEmpty ? nil : piece
         }
@@ -842,7 +847,7 @@ public enum MP4AudiobookTagger {
         return MP4AtomIO.readFourCC(atom, 4) ?? "????"
     }
 
-    private static func child(_ atom: Data, _ type: String) -> Data? {
-        splitAtoms(unwrap(atom)).first { fourCC(of: $0) == type }
+    private static func child(_ atom: Data, _ type: String) throws -> Data? {
+        try splitAtoms(unwrap(atom)).first { fourCC(of: $0) == type }
     }
 }

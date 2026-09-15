@@ -1480,8 +1480,9 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertLessThanOrEqual(bytes.count, SourceAssociation.maxSidecarBytes)
 
         let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: root))
+        XCTAssertEqual(document.sources.map(\.path), ["01.mp3", "02.mp3"])
         XCTAssertEqual(
-            document.sources.map(\.path),
+            document.sources.map { $0.url(relativeTo: root).standardizedFileURL.path },
             [sourceA, sourceB].map { $0.standardizedFileURL.path }
         )
         XCTAssertEqual(document.sources.map(\.sha256), [
@@ -1520,9 +1521,137 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertNotNil(object["destinationSHA256"])
 
         let loaded = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: root))
-        XCTAssertEqual(loaded.sources.map(\.path), captured.map(\.path))
+        XCTAssertEqual(loaded.sources.map(\.path), ["01.mp3"])
+        XCTAssertEqual(
+            loaded.sources.map { $0.url(relativeTo: root).standardizedFileURL.path },
+            captured.map { URL(fileURLWithPath: $0.path).standardizedFileURL.path }
+        )
         XCTAssertEqual(loaded.sources.map(\.sha256), captured.map(\.sha256))
         XCTAssertEqual(loaded.destinationSHA256, destDigest)
+    }
+
+    func testSourceAssociationRecordsInBookSourcesAsRelativePaths() throws {
+        let folder = try TestSupport.tempDir("source-rel-inside")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let nested = folder.appendingPathComponent("mp3", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let source = nested.appendingPathComponent("01.mp3")
+        try Data("chapter".utf8).write(to: source)
+        let dest = folder.appendingPathComponent("book.m4b")
+        try Data("dest".utf8).write(to: dest)
+
+        XCTAssertTrue(SourceAssociation.record([source], dest: dest, inBookFolder: folder))
+        let loaded = try XCTUnwrap(SourceAssociation.load(inBookFolder: folder))
+        XCTAssertEqual(loaded.map(\.path), ["mp3/01.mp3"])
+        XCTAssertFalse(loaded[0].path.hasPrefix("/"))
+        XCTAssertFalse(loaded[0].path.split(separator: "/").contains(".."))
+        XCTAssertEqual(
+            loaded[0].url(relativeTo: folder).standardizedFileURL.path,
+            source.standardizedFileURL.path
+        )
+    }
+
+    func testSourceAssociationRelativePathsSurviveBookFolderRename() throws {
+        let parent = try TestSupport.tempDir("source-rel-move-parent")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let folder = parent.appendingPathComponent("Book", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let nested = folder.appendingPathComponent("mp3", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let source = nested.appendingPathComponent("01.mp3")
+        try Data("chapter".utf8).write(to: source)
+        let dest = folder.appendingPathComponent("book.m4b")
+        try Data("dest".utf8).write(to: dest)
+
+        XCTAssertTrue(SourceAssociation.record([source], dest: dest, inBookFolder: folder))
+        let recorded = try XCTUnwrap(SourceAssociation.load(inBookFolder: folder))
+        XCTAssertEqual(recorded.map(\.path), ["mp3/01.mp3"])
+
+        let moved = parent.appendingPathComponent("Book Renamed", isDirectory: true)
+        try FileManager.default.moveItem(at: folder, to: moved)
+        let movedSource = moved.appendingPathComponent("mp3/01.mp3")
+        let movedDest = moved.appendingPathComponent("book.m4b")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movedSource.path))
+
+        let loaded = try XCTUnwrap(SourceAssociation.load(inBookFolder: moved))
+        XCTAssertEqual(loaded.map(\.path), ["mp3/01.mp3"])
+        XCTAssertEqual(
+            loaded[0].url(relativeTo: moved).standardizedFileURL.path,
+            movedSource.standardizedFileURL.path
+        )
+
+        var book = TestSupport.dummyBook(
+            folder: moved.path,
+            chapters: [TestSupport.dummyChapter(index: 1, url: movedSource)]
+        )
+        book.existingM4BURL = movedDest
+        let files = M4BInspector.sourceFilesToRemove(from: book)
+        XCTAssertEqual(
+            files.map(\.standardizedFileURL.path),
+            [movedSource.standardizedFileURL.path]
+        )
+    }
+
+    func testSourceAssociationKeepsExternalSourceAbsolute() throws {
+        let root = try TestSupport.tempDir("source-rel-external")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Book", isDirectory: true)
+        let outside = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let source = outside.appendingPathComponent("ch.mp3")
+        try Data("out".utf8).write(to: source)
+        let dest = folder.appendingPathComponent("book.m4b")
+        try Data("dest".utf8).write(to: dest)
+
+        XCTAssertTrue(SourceAssociation.record([source], dest: dest, inBookFolder: folder))
+        let loaded = try XCTUnwrap(SourceAssociation.load(inBookFolder: folder))
+        XCTAssertEqual(loaded.map(\.path), [source.standardizedFileURL.path])
+        XCTAssertTrue(loaded[0].path.hasPrefix("/"))
+        XCTAssertEqual(
+            loaded[0].url(relativeTo: folder).standardizedFileURL.path,
+            source.standardizedFileURL.path
+        )
+    }
+
+    func testSourceAssociationAbsoluteSidecarResolvesWhenFolderUnmoved() throws {
+        let folder = try TestSupport.tempDir("source-abs-legacy")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("01.mp3")
+        try Data("ch".utf8).write(to: source)
+        let dest = folder.appendingPathComponent("book.m4b")
+        try Data("dest".utf8).write(to: dest)
+        let destIdentity = try XCTUnwrap(FileIdentity.read(from: dest))
+        let destDigest = try XCTUnwrap(SourceAssociation.sha256Hex(of: dest))
+        let captured = try SourceAssociation.capture([source], dest: dest)
+        XCTAssertTrue(captured[0].path.hasPrefix("/"))
+        XCTAssertEqual(captured[0].path, source.standardizedFileURL.path)
+
+        let data = try prettyPrintedProvenance(
+            entries: captured,
+            dest: dest,
+            destIdentity: destIdentity,
+            destDigest: destDigest
+        )
+        try data.write(to: SourceAssociation.sidecarURL(inBookFolder: folder))
+
+        let loaded = try XCTUnwrap(SourceAssociation.load(inBookFolder: folder))
+        XCTAssertEqual(loaded[0].path, source.standardizedFileURL.path)
+        XCTAssertTrue(loaded[0].path.hasPrefix("/"))
+        XCTAssertEqual(
+            loaded[0].url(relativeTo: folder).standardizedFileURL.path,
+            source.standardizedFileURL.path
+        )
+
+        var book = TestSupport.dummyBook(
+            folder: folder.path,
+            chapters: [TestSupport.dummyChapter(index: 1, url: source)]
+        )
+        book.existingM4BURL = dest
+        XCTAssertEqual(
+            M4BInspector.sourceFilesToRemove(from: book).map(\.standardizedFileURL.path),
+            [source.standardizedFileURL.path]
+        )
     }
 
     func testSourceAssociationRecordRejectsOverlongCapturedPath() throws {

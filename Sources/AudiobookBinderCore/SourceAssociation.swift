@@ -131,8 +131,12 @@ public enum SourceAssociation: Sendable {
             invalidate(inBookFolder: folder)
             return false
         }
+        // In-book sources become relative so the sidecar still matches after
+        // the folder is renamed or moved on the same volume. Capture stays
+        // absolute for encode snapshots.
+        let stored = remappedForPersist(captured, relativeTo: folder)
         let document = Document(
-            sources: captured,
+            sources: stored,
             destination: dest.standardizedFileURL.path,
             destinationIdentity: destIdentity,
             destinationSHA256: destinationSHA256
@@ -149,7 +153,7 @@ public enum SourceAssociation: Sendable {
             return false
         }
         guard let loaded = loadDocument(inBookFolder: folder),
-              matchesRecorded(loaded, captured: captured, destinationSHA256: destinationSHA256)
+              matchesRecorded(loaded, captured: stored, destinationSHA256: destinationSHA256)
         else {
             invalidate(inBookFolder: folder)
             return false
@@ -277,6 +281,35 @@ public enum SourceAssociation: Sendable {
             return "Source provenance exceeds sidecar size limit"
         }
         return nil
+    }
+
+    private static func remappedForPersist(_ captured: [Entry], relativeTo folder: URL) -> [Entry] {
+        captured.map { entry in
+            var stored = entry
+            stored.path = persistableSourcePath(entry.path, bookFolder: folder)
+            return stored
+        }
+    }
+
+    /// Paths inside the book folder become relative (no leading `/`, no `..`).
+    /// Sources outside the folder stay absolute.
+    private static func persistableSourcePath(_ path: String, bookFolder folder: URL) -> String {
+        guard path.hasPrefix("/") else { return path }
+        let source = URL(fileURLWithPath: path).standardizedFileURL
+        let folderComponents = folder.standardizedFileURL.pathComponents
+        let sourceComponents = source.pathComponents
+        guard sourceComponents.starts(with: folderComponents),
+              sourceComponents.count > folderComponents.count
+        else {
+            return source.path
+        }
+        let relativeComponents = Array(sourceComponents.dropFirst(folderComponents.count))
+        guard !relativeComponents.isEmpty, !relativeComponents.contains("..") else {
+            return source.path
+        }
+        let relative = relativeComponents.joined(separator: "/")
+        guard !relative.hasPrefix("/") else { return source.path }
+        return relative
     }
 
     private static func matchesRecorded(

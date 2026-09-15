@@ -1509,6 +1509,10 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(document.sources.count, 3)
         XCTAssertEqual(
             document.sources.map(\.path),
+            chapters.map(\.url.lastPathComponent)
+        )
+        XCTAssertEqual(
+            document.sources.map { $0.url(relativeTo: dir).standardizedFileURL.path },
             chapters.map { $0.url.standardizedFileURL.path }
         )
         XCTAssertEqual(

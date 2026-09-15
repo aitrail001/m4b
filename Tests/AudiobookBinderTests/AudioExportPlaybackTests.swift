@@ -531,6 +531,52 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertNotEqual(results[0].outcome, .replaced)
     }
 
+    func testExportAllOverwriteForgedStructuredJSONDoesNotReplaceDest() async throws {
+        let root = try TestSupport.tempDir("export-forged-json")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let bookB = try makeSilenceBook(folder: editionB, title: "Same", author: "Ann")
+        let dest = out.appendingPathComponent(bookB.suggestedFileName)
+        let payload = Data("FORGED-SHARED-DEST".utf8)
+        try payload.write(to: dest)
+        try TestSupport.writeStructuredOutputSidecar(dest, in: editionB)
+
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        XCTAssertFalse(settings.owns(dest, for: bookB))
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [bookB], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(try Data(contentsOf: dest), payload)
+        XCTAssertNotEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertNotEqual(results[0].outcome, .replaced)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
+    }
+
+    func testExportAllOverwriteLeftoverInFolderDoesNotReplaceBytes() async throws {
+        let root = try TestSupport.tempDir("export-leftover-folder")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+
+        var book = try makeSilenceBook(folder: bookDir, title: "Same", author: "Ann")
+        let dest = bookDir.appendingPathComponent(book.suggestedFileName)
+        let leftover = Data("LEFTOVER-M4B".utf8)
+        try leftover.write(to: dest)
+        book.existingM4BURL = dest
+
+        let settings = ExportSettings(overwrite: true, writeNextToBook: true)
+        XCTAssertFalse(settings.owns(dest, for: book))
+        let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [book], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(try Data(contentsOf: dest), leftover)
+        XCTAssertNotEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertNotEqual(results[0].outcome, .replaced)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
+    }
+
     func testExportAllOverwriteImportedOtherEditionSidecarDoesNotReplaceABytes() async throws {
         let root = try TestSupport.tempDir("export-imported-other")
         defer { try? FileManager.default.removeItem(at: root) }

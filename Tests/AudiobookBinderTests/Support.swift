@@ -95,4 +95,32 @@ enum TestSupport {
             encoding: .utf8
         )
     }
+
+    /// Writes a self-consistent `.audiobookbinder-output` JSON from live
+    /// identities without calling `OutputAssociation.record`.
+    static func writeStructuredOutputSidecar(_ dest: URL, in folder: URL) throws {
+        guard let destIdentity = FileIdentity.read(from: dest),
+              let folderIdentity = FileIdentity.read(from: folder) else {
+            throw BinderError.exportFailed("Could not read identities for structured sidecar")
+        }
+        struct Document: Codable {
+            var destination: String
+            var destinationIdentity: FileIdentity
+            var bookFolderIdentity: FileIdentity
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let data = try encoder.encode(
+            Document(
+                destination: dest.standardizedFileURL.path,
+                destinationIdentity: destIdentity,
+                bookFolderIdentity: folderIdentity
+            )
+        )
+        try data.write(
+            to: folder.appendingPathComponent(OutputAssociation.fileName),
+            options: .atomic
+        )
+    }
 }

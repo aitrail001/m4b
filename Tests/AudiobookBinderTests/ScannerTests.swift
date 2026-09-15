@@ -445,6 +445,30 @@ final class ScannerTests: XCTestCase {
         XCTAssertEqual(loaded.author, "OPF Author")
     }
 
+    func testLoadBookKeepsLeftoverForDisplayWithoutOwning() async throws {
+        let root = try TestSupport.tempDir("load-leftover-display")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try Data().write(to: bookDir.appendingPathComponent("01.mp3"))
+
+        let leftover = Data("LEFTOVER-DISPLAY".utf8)
+        let dest = bookDir.appendingPathComponent("Same - Ann.m4b")
+        try leftover.write(to: dest)
+
+        var loaded = try await BookScanner().loadBook(at: bookDir)
+        loaded.title = "Same"
+        loaded.author = "Ann"
+        XCTAssertEqual(loaded.existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertNil(OutputAssociation.load(inBookFolder: bookDir))
+
+        let settings = ExportSettings(overwrite: true, writeNextToBook: true)
+        XCTAssertFalse(settings.owns(dest, for: loaded))
+        let plan = settings.plannedOutputs(for: [loaded])
+        XCTAssertNotEqual(plan[loaded.id]?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertEqual(try Data(contentsOf: dest), leftover)
+    }
+
     func testLoadBookRestoresExistingM4BFromSidecar() async throws {
         let root = try TestSupport.tempDir("load-sidecar")
         defer { try? FileManager.default.removeItem(at: root) }

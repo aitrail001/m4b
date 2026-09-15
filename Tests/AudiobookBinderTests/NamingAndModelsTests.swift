@@ -543,7 +543,7 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertEqual(plan[book.id]?.pathExtension.lowercased(), "m4b")
     }
 
-    func testLeftoverInFolderM4BIsOwnedWhenWritingNextToBook() throws {
+    func testLeftoverInFolderM4BIsNotOwnedWhenWritingNextToBook() throws {
         let root = try TestSupport.tempDir("leftover-in-folder")
         defer { try? FileManager.default.removeItem(at: root) }
         let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
@@ -551,12 +551,90 @@ final class NamingAndModelsTests: XCTestCase {
 
         var book = TestSupport.dummyBook(folder: bookDir.path, title: "Same", author: "Ann")
         let dest = bookDir.appendingPathComponent(book.suggestedFileName)
-        try Data("LEFTOVER-M4B".utf8).write(to: dest)
+        let leftover = Data("LEFTOVER-M4B".utf8)
+        try leftover.write(to: dest)
         book.existingM4BURL = dest
-        let settings = ExportSettings(writeNextToBook: true)
+        let settings = ExportSettings(overwrite: true, writeNextToBook: true)
+        XCTAssertFalse(settings.owns(dest, for: book))
+        let plan = settings.plannedOutputs(for: [book])
+        XCTAssertNotEqual(plan[book.id]?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertEqual(plan[book.id]?.pathExtension.lowercased(), "m4b")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plan[book.id]!.path))
+        XCTAssertEqual(try Data(contentsOf: dest), leftover)
+    }
+
+    func testForgedStructuredFolderJSONDoesNotOwnSharedDest() throws {
+        let root = try TestSupport.tempDir("forged-structured-json")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let dest = out.appendingPathComponent("Same - Ann.m4b")
+        let payload = Data("FORGED-SHARED-DEST".utf8)
+        try payload.write(to: dest)
+        try TestSupport.writeStructuredOutputSidecar(dest, in: editionB)
+
+        XCTAssertNil(OutputAssociation.load(inBookFolder: editionB))
+        XCTAssertEqual(
+            OutputAssociation.destinationHint(inBookFolder: editionB)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+
+        let book = TestSupport.dummyBook(folder: editionB.path, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        XCTAssertFalse(settings.owns(dest, for: book))
+        let plan = settings.plannedOutputs(for: [book])
+        XCTAssertNotEqual(plan[book.id]?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertEqual(plan[book.id]?.pathExtension.lowercased(), "m4b")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plan[book.id]!.path))
+        XCTAssertEqual(try Data(contentsOf: dest), payload)
+    }
+
+    func testAppIssuedAuthoritySurvivesDeletedFolderSidecar() throws {
+        let root = try TestSupport.tempDir("authority-without-sidecar")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let dest = out.appendingPathComponent("Same - Ann - EditionB.m4b")
+        try Data("OWNED-B".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: editionB)
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: editionB)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+
+        try FileManager.default.removeItem(at: editionB.appendingPathComponent(OutputAssociation.fileName))
+        XCTAssertNil(OutputAssociation.destinationHint(inBookFolder: editionB))
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: editionB)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+
+        let book = TestSupport.dummyBook(folder: editionB.path, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
         XCTAssertTrue(settings.owns(dest, for: book))
         let plan = settings.plannedOutputs(for: [book])
         XCTAssertEqual(plan[book.id]?.standardizedFileURL.path, dest.standardizedFileURL.path)
+    }
+
+    func testXCTestAuthorityStoreIsIsolatedFromApplicationSupport() throws {
+        let root = try TestSupport.tempDir("authority-isolation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        let dest = root.appendingPathComponent("Same - Ann.m4b")
+        try Data("OWNED".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: bookDir)
+
+        let store = OutputAssociation.resolvedAuthorityDirectory()
+        XCTAssertTrue(store.path.contains("xctest-output-authority"))
+        XCTAssertFalse(store.path.contains("Library/Application Support/AudiobookBinder"))
+        XCTAssertNotNil(OutputAssociation.load(inBookFolder: bookDir))
     }
 
     func testImportedSidecarNotesTxtIsNotOwned() throws {

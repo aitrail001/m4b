@@ -237,10 +237,9 @@ public struct ExportSettings: Sendable, Equatable {
 
     /// Unique destination per book. Same title/author from different folders, and
     /// names that collide after `suggestedFileName` sanitization, get distinct paths.
-    /// Honors a trusted `.audiobookbinder-output` dest, an unused reserved
-    /// `existingM4BURL` name, or a leftover `.m4b` inside the book folder.
-    /// An existing file in a shared output directory is owned only when a live
-    /// trusted sidecar still matches. An unused sidecar path may be a naming hint.
+    /// Honors an app-issued output association dest, an unused reserved
+    /// `existingM4BURL` name, or an unused in-folder sidecar path hint.
+    /// An existing file is owned only when a live app-issued record still matches.
     public func plannedOutputs(for books: [Audiobook]) -> [UUID: URL] {
         var reserved = Set<String>()
         var owned: [UUID: URL] = [:]
@@ -279,13 +278,9 @@ public struct ExportSettings: Sendable, Equatable {
         ) {
             return dest
         }
-        if let dest = acceptableDestination(book.existingM4BURL, book: book, directory: dir) {
-            if !OutputAssociation.isExistingRegularFile(dest) {
-                return dest
-            }
-            if isInOutputDirectory(dest, directory: book.folder.standardizedFileURL) {
-                return dest
-            }
+        if let dest = acceptableDestination(book.existingM4BURL, book: book, directory: dir),
+           !OutputAssociation.isExistingRegularFile(dest) {
+            return dest
         }
         if let hint = OutputAssociation.destinationHint(inBookFolder: book.folder),
            let dest = acceptableDestination(hint, book: book, directory: dir),

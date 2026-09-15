@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct SourceCleanupAuthorization: Equatable, Sendable {
@@ -49,8 +50,8 @@ public enum SourceCleanup {
     /// Production callers never set this.
     nonisolated(unsafe) package static var testingBeforeTrashHeld: ((_ original: URL, _ held: URL) -> Void)?
 
-    /// Test seam: after dest recheck succeeds, before the hold is re-identified
-    /// and trashed. Production callers never set this.
+    /// Test seam: after dest recheck succeeds, before the open hold is
+    /// re-`fstat`ed and trashed via its current path. Production callers never set this.
     nonisolated(unsafe) package static var testingAfterDestRecheck: ((_ original: URL, _ held: URL) -> Void)?
 
     /// View-body helper: cached/pending/cheap guards only. Does not hash.
@@ -151,8 +152,8 @@ public enum SourceCleanup {
 
     /// One bulk verification, then dest revalidation before each hold.
     /// The source is renamed onto a same-directory hold, that held object is
-    /// verified, dest is rechecked, the hold identity is confirmed, and only
-    /// then is the hold trashed.
+    /// verified and opened, dest is rechecked, the same fd is re-`fstat`ed,
+    /// and only then is that inode trashed via its current path.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -213,7 +214,20 @@ public enum SourceCleanup {
                     reason: reason
                 )
             }
-            guard let verifiedHold = FileIdentity.read(from: hold), !verifiedHold.isDirectory else {
+            let handle: FileHandle
+            do {
+                handle = try FileHandle(forReadingFrom: hold)
+            } catch {
+                return abortAfterHoldRestore(
+                    hold: hold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: "Cannot read the held source identity."
+                )
+            }
+            defer { try? handle.close() }
+            guard let verifiedHold = inodeSnapshot(of: handle) else {
                 return abortAfterHoldRestore(
                     hold: hold,
                     original: next,
@@ -239,20 +253,32 @@ public enum SourceCleanup {
                 )
             }
             testingAfterDestRecheck?(next, hold)
-            guard let now = FileIdentity.read(from: hold), now.isSameVersion(as: verifiedHold) else {
+            guard let now = inodeSnapshot(of: handle), now == verifiedHold else {
                 return abortMismatchedHold(
                     original: next,
                     moved: moved,
                     remaining: remaining
                 )
             }
+            guard let trashURL = currentURL(of: handle),
+                  let pathSnap = inodeSnapshot(at: trashURL),
+                  pathSnap.device == verifiedHold.device,
+                  pathSnap.inode == verifiedHold.inode
+            else {
+                return abortMismatchedHold(
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: holdUnreachableForTrashReason
+                )
+            }
             do {
-                try FileManager.default.trashItem(at: hold, resultingItemURL: nil)
+                try FileManager.default.trashItem(at: trashURL, resultingItemURL: nil)
                 moved.append(next)
                 remaining.removeAll { refersToSameFile($0, next) }
             } catch {
                 return abortAfterHoldRestore(
-                    hold: hold,
+                    hold: trashURL,
                     original: next,
                     moved: moved,
                     remaining: remaining,
@@ -328,6 +354,8 @@ public enum SourceCleanup {
     private static let sourceChangedReason = "Source files changed since they were bound."
     private static let holdChangedAfterDestRecheckReason =
         "Held source is no longer the verified file."
+    private static let holdUnreachableForTrashReason =
+        "Held source is no longer reachable for trash."
     private static let cancelledReason = BinderError.cancelled.errorDescription ?? "Cancelled"
 
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
@@ -486,21 +514,68 @@ public enum SourceCleanup {
     private static func abortMismatchedHold(
         original: URL,
         moved: [URL],
-        remaining: [URL]
+        remaining: [URL],
+        reason: String = holdChangedAfterDestRecheckReason
     ) -> SourceCleanupResult {
         if FileManager.default.fileExists(atPath: original.path) {
             let leftover = remaining.filter { !refersToSameFile($0, original) }
             return SourceCleanupResult(
                 moved: moved,
                 remaining: leftover,
-                error: holdChangedAfterDestRecheckReason
+                error: reason
             )
         }
         return SourceCleanupResult(
             moved: moved,
             remaining: remaining,
-            error: holdChangedAfterDestRecheckReason
+            error: reason
         )
+    }
+
+    private struct HeldInodeSnapshot: Equatable {
+        var device: dev_t
+        var inode: ino_t
+        var size: off_t
+        var mtimeSec: time_t
+        var mtimeNsec: Int
+    }
+
+    private static func inodeSnapshot(of handle: FileHandle) -> HeldInodeSnapshot? {
+        snapshot(from: { fstat(handle.fileDescriptor, &$0) })
+    }
+
+    private static func inodeSnapshot(at url: URL) -> HeldInodeSnapshot? {
+        url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { return nil }
+            return snapshot(from: { lstat(cPath, &$0) })
+        }
+    }
+
+    private static func snapshot(from statFn: (inout stat) -> Int32) -> HeldInodeSnapshot? {
+        var info = stat()
+        guard statFn(&info) == 0 else { return nil }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return HeldInodeSnapshot(
+            device: info.st_dev,
+            inode: info.st_ino,
+            size: info.st_size,
+            mtimeSec: info.st_mtimespec.tv_sec,
+            mtimeNsec: info.st_mtimespec.tv_nsec
+        )
+    }
+
+    /// Current directory entry for the open inode. Fails if the inode is unlinked.
+    private static func currentURL(of handle: FileHandle) -> URL? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let status = buffer.withUnsafeMutableBufferPointer { ptr -> Int32 in
+            guard let base = ptr.baseAddress else { return -1 }
+            return fcntl(handle.fileDescriptor, F_GETPATH, base)
+        }
+        guard status == 0 else { return nil }
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let path = String(decoding: bytes, as: UTF8.self)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
     }
 
     private static func strandedRestoreError(hold: URL, reason: String) -> String {

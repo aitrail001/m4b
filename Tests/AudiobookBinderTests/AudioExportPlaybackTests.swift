@@ -1905,6 +1905,87 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertFalse(error.isEmpty)
     }
 
+    func testCleanupPerformTrashesRenamedHoldInodeNotReplacementAtHoldPath() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalA = try Data(contentsOf: fixture.sourceA)
+        let planted = Data(repeating: 0xDD, count: 24)
+        XCTAssertNotEqual(planted, originalA)
+
+        var holdPath: URL?
+        var relocatedURL: URL?
+        let renamedAndPlanted = StartedFlag()
+        SourceCleanup.testingAfterDestRecheck = { original, held in
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: original.path),
+                "original path must stay vacant while dest is rechecked"
+            )
+            guard SourceCleanup.refersToSameFile(original, fixture.sourceA) else { return }
+            let relocated = held.deletingLastPathComponent()
+                .appendingPathComponent("\(held.lastPathComponent).away")
+            do {
+                try FileManager.default.moveItem(at: held, to: relocated)
+                try planted.write(to: held)
+                holdPath = held
+                relocatedURL = relocated
+                renamedAndPlanted.mark()
+            } catch {
+                XCTFail("renaming hold and planting replacement failed: \(error)")
+            }
+        }
+        defer {
+            SourceCleanup.testingAfterDestRecheck = nil
+            SourceCleanup.testingBeforeTrashHeld = nil
+            SourceCleanup.testingAfterHold = nil
+        }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        let hold = try XCTUnwrap(holdPath, "hook must capture the hold URL")
+        let relocated = try XCTUnwrap(relocatedURL, "hook must capture the renamed hold URL")
+        XCTAssertTrue(renamedAndPlanted.isSet, "hook must rename the hold and plant a replacement")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: hold.path),
+            "planted replacement at the old hold pathname must survive"
+        )
+        XCTAssertEqual(try Data(contentsOf: hold), planted)
+
+        let verifiedStillPresent = FileManager.default.fileExists(atPath: relocated.path)
+        if verifiedStillPresent {
+            XCTAssertFalse(
+                result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+                "must not list the original as moved unless the verified inode was trashed"
+            )
+        } else {
+            XCTAssertTrue(
+                result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+                "verified inode was trashed, so the original must be listed as moved"
+            )
+        }
+        XCTAssertFalse(
+            verifiedStillPresent,
+            "verified inode must be trashed via its current path after rename-away"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.sourceA.path),
+            "must not restore a mismatched hold onto the original chapter path"
+        )
+        XCTAssertFalse(
+            result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+            "successfully trashed original must leave remaining"
+        )
+        XCTAssertTrue(result.didFinish)
+        XCTAssertNil(result.error)
+        XCTAssertTrue(result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
     func testCleanupDeniedWhenDestDigestMissing() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }

@@ -224,6 +224,20 @@ if resolve_tag_commit unknown abc123def; then
   fail "unknown git ref object type must fail"
 fi
 
+# App origin gate: fake bundle + receipt (no swift build / notarytool).
+install_fixture_app() {
+  local root="$1"
+  local version="$2"
+  local payload="${3:-fixture-exe}"
+  local app
+  app="$(packaged_app_path "$root")"
+  mkdir -p "$app/Contents/MacOS"
+  print -r -- "$payload" > "$app/Contents/MacOS/AudiobookBinder"
+  rm -f "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" \
+    "$app/Contents/Info.plist" >/dev/null
+}
+
 # Provenance: matching HEAD + hash + version + test stamp + app origin passes;
 # stale/wrong/missing fail. App-origin fields are required.
 PROV="$REPO"
@@ -231,19 +245,27 @@ mkdir -p "$PROV/dist"
 print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
 HEAD='abc123def'
 VER='1.2.3'
-APP_SHA='deadbeefcafebabe'
+install_fixture_app "$PROV" "$VER"
+APP_SHA="$(file_sha256 "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder")" \
+  || fail "fixture packaged exe must be hashable"
 write_release_tests_ok_stamp "$PROV" "$HEAD"
+if write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "" "false"; then
+  fail "write_release_provenance must refuse empty app_sha256"
+fi
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
   "$HEAD" "$VER" "$APP_SHA" "false"
 PROV_FILE="$(release_provenance_path "$PROV" "$VER")"
 
 require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
-  || fail "matching provenance HEAD+hash+version+stamp must pass"
+  || fail "matching live packaged exe hash must pass"
 
 got="$(provenance_json_field "$PROV_FILE" app_commit)"
 [[ "$got" == "$HEAD" ]] || fail "provenance must record app_commit from the receipt"
 got="$(provenance_json_field "$PROV_FILE" app_version)"
 [[ "$got" == "$VER" ]] || fail "provenance must record app_version from the receipt"
+got="$(provenance_json_field "$PROV_FILE" app_sha256)"
+[[ "$got" == "$APP_SHA" ]] || fail "provenance must record app_sha256 from the packaged exe"
 got="$(provenance_json_field "$PROV_FILE" tests_ok_source)"
 [[ "$got" == "stamp" ]] || fail "stamp-backed tests_ok must record tests_ok_source=stamp"
 
@@ -300,6 +322,45 @@ fi
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
   "$HEAD" "$VER" "$APP_SHA" "false"
 
+# C10: app_sha256 is required and must match the live packaged executable.
+python3 - "$PROV_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+obj.pop("app_sha256", None)
+with open(path, "w") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "provenance missing app_sha256 must fail"
+fi
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA" "false"
+
+python3 - "$PROV_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+obj["app_sha256"] = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+with open(path, "w") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "provenance app_sha256 mismatch vs packaged exe must fail"
+fi
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA" "false"
+
+print -r -- 'mutated-packaged-exe' > "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder"
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "mutated packaged exe must fail provenance app_sha256 check"
+fi
+install_fixture_app "$PROV" "$VER"
+require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
+  || fail "matching live packaged exe hash must pass after restore"
+
 rm -f "$(release_tests_ok_stamp_path "$PROV")"
 (
   unset RELEASE_TESTS_OK
@@ -313,19 +374,6 @@ if require_release_provenance "$PROV/dist/missing.provenance.json" "$PROV/dist/A
 fi
 
 # App origin gate: fake bundle + receipt (no swift build / notarytool).
-install_fixture_app() {
-  local root="$1"
-  local version="$2"
-  local payload="${3:-fixture-exe}"
-  local app
-  app="$(packaged_app_path "$root")"
-  mkdir -p "$app/Contents/MacOS"
-  print -r -- "$payload" > "$app/Contents/MacOS/AudiobookBinder"
-  rm -f "$app/Contents/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" \
-    "$app/Contents/Info.plist" >/dev/null
-}
-
 install_fixture_app "$PROV" "$VER"
 write_packaged_app_receipt "$PROV" 'aaa'
 if require_packaged_app_origin "$PROV" 'bbb' "$VER"; then
@@ -495,6 +543,8 @@ require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
   || fail "clean_matching packaged-app origin must pass"
 write_release_tests_ok_stamp "$PROV" "$HEAD"
 print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+APP_SHA="$(file_sha256 "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder")" \
+  || fail "clean_matching fixture exe must be hashable"
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
   "$HEAD" "$VER" "$APP_SHA" "false"
 PROV_FILE="$(release_provenance_path "$PROV" "$VER")"
@@ -521,6 +571,8 @@ got="$(provenance_json_field "$(packaged_app_receipt_path "$PROV")" dirty)"
 if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
   fail "dirty_matching packaged-app origin must fail production"
 fi
+APP_SHA="$(file_sha256 "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder")" \
+  || fail "dirty_matching fixture exe must be hashable"
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
   "$HEAD" "$VER" "$APP_SHA"
 got="$(provenance_json_field "$PROV_FILE" dirty)"
@@ -562,6 +614,8 @@ PY
 if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
   fail "receipt without dirty field must fail production"
 fi
+APP_SHA="$(file_sha256 "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder")" \
+  || fail "legacy dirty-field fixture exe must be hashable"
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
   "$HEAD" "$VER" "$APP_SHA" "false"
 python3 - "$PROV_FILE" <<'PY'

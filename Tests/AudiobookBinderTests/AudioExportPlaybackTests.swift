@@ -1327,6 +1327,61 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
     }
 
+    func testCleanupPerformDeniedWhenDestEditedInPlaceSameSizeRestoredMtime() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalDest = try Data(contentsOf: fixture.dest)
+        let originalSourceA = try Data(contentsOf: fixture.sourceA)
+        let originalSourceB = try Data(contentsOf: fixture.sourceB)
+        let edited = Data(repeating: 0xCD, count: originalDest.count)
+        XCTAssertEqual(edited.count, originalDest.count)
+        XCTAssertNotEqual(edited, originalDest)
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(auth.allowed, "authorization must succeed on the original dest")
+
+        let destTokenBefore = try XCTUnwrap(SourceCleanup.destGeneration(of: fixture.dest))
+        let mutated = StartedFlag()
+        SourceCleanup.testingBeforeEachDeletion = {
+            guard !mutated.isSet else { return }
+            do {
+                try self.overwriteInPlaceKeepingMtime(at: fixture.dest, with: edited)
+                mutated.mark()
+            } catch {
+                XCTFail("in-place dest overwrite failed: \(error)")
+            }
+        }
+        defer { SourceCleanup.testingBeforeEachDeletion = nil }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(mutated.isSet, "hook must mutate dest after authorization and before trash")
+        XCTAssertEqual(
+            SourceCleanup.destGeneration(of: fixture.dest),
+            destTokenBefore,
+            "same-size restored mtime must keep the dest generation token"
+        )
+        XCTAssertFalse(result.didFinish)
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.remaining.isEmpty)
+        XCTAssertNotNil(result.error)
+        XCTAssertEqual(try Data(contentsOf: fixture.dest), edited)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), originalSourceA)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalSourceB)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.dest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
     func testCleanupDeniedWhenDestDigestMissing() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }
@@ -1488,12 +1543,22 @@ final class AudioExportPlaybackTests: XCTestCase {
 
         XCTAssertTrue(measured3.didFinish)
         XCTAssertTrue(measured6.didFinish)
-        XCTAssertEqual(measured3.destCalls, 1, "dest SHA-256 must run O(1) per perform, not per deletion")
-        XCTAssertEqual(measured6.destCalls, 1, "dest SHA-256 must run O(1) per perform, not per deletion")
-        XCTAssertEqual(measured3.destCalls, measured6.destCalls)
+        XCTAssertGreaterThanOrEqual(
+            measured3.destCalls,
+            1 + 3,
+            "dest SHA-256 must run at authorization and before each deletion"
+        )
+        XCTAssertGreaterThanOrEqual(
+            measured6.destCalls,
+            1 + 6,
+            "dest SHA-256 must run at authorization and before each deletion"
+        )
+        XCTAssertGreaterThan(measured6.destCalls, measured3.destCalls)
+        XCTAssertEqual(measured3.calls - measured3.destCalls, 2 * 3, "source hashing stays linear in N")
+        XCTAssertEqual(measured6.calls - measured6.destCalls, 2 * 6, "source hashing stays linear in N")
 
-        XCTAssertLessThanOrEqual(measured3.calls, 2 * 3 + 2)
-        XCTAssertLessThanOrEqual(measured6.calls, 2 * 6 + 2)
+        XCTAssertLessThanOrEqual(measured3.calls, 3 * 3 + 2)
+        XCTAssertLessThanOrEqual(measured6.calls, 3 * 6 + 2)
         XCTAssertLessThan(
             measured6.calls,
             27,
@@ -2084,13 +2149,25 @@ final class AudioExportPlaybackTests: XCTestCase {
     }
 
     private func overwriteInPlaceKeepingMtime(at url: URL, with data: Data) throws {
-        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-        let mtime = try XCTUnwrap(attrs[.modificationDate] as? Date)
+        var info = stat()
+        try url.path.withCString { path in
+            guard lstat(path, &info) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+        }
         let handle = try FileHandle(forWritingTo: url)
         try handle.truncate(atOffset: 0)
         try handle.write(contentsOf: data)
         try handle.close()
-        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
+        let times = [info.st_atimespec, info.st_mtimespec]
+        let restored = url.path.withCString { path in
+            times.withUnsafeBufferPointer { buffer in
+                utimensat(AT_FDCWD, path, buffer.baseAddress, 0)
+            }
+        }
+        guard restored == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
     }
 
     private func measureCleanupHashes(sourceCount: Int) throws -> (

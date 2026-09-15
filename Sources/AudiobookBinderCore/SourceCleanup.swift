@@ -37,6 +37,10 @@ public struct SourceCleanupResult: Equatable, Sendable {
 /// still this book's bound file, recorded source identity still matches, and
 /// neither dest nor sources have drifted since export/inspect.
 public enum SourceCleanup {
+    /// Test seam: runs at the start of each perform loop iteration, before dest
+    /// revalidation and trash. Production callers never set this.
+    nonisolated(unsafe) package static var testingBeforeEachDeletion: (() -> Void)?
+
     /// View-body helper: cached/pending/cheap guards only. Does not hash.
     public static func controlsState(
         canCleanupSources: Bool,
@@ -104,8 +108,8 @@ public enum SourceCleanup {
         return SourceCleanupAuthorization(allowed: true, sources: sources)
     }
 
-    /// One bulk verification, then a last-moment check of only the file about to
-    /// be trashed. Dest is re-hashed only if its generation token changes.
+    /// One bulk verification, then a last-moment check of dest digest and the
+    /// file about to be trashed. Dest is re-hashed before every deletion.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -125,18 +129,17 @@ public enum SourceCleanup {
             )
         }
 
-        var destToken = destGeneration(of: dest)
         var moved: [URL] = []
         var remaining = initial.sources
 
         while !remaining.isEmpty {
+            testingBeforeEachDeletion?()
             if let reason = destStillAuthorized(
                 dest: dest,
                 book: book,
                 inspection: inspection,
                 isBuilding: isBuilding,
-                document: document,
-                destToken: &destToken
+                document: document
             ) {
                 return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
             }
@@ -252,14 +255,13 @@ public enum SourceCleanup {
         return nil
     }
 
-    /// Cheap dest/inspection guards, plus dest digest only when generation changed.
+    /// Cheap dest/inspection guards, then dest digest before every deletion.
     private static func destStillAuthorized(
         dest: URL,
         book: Audiobook,
         inspection: M4BInspection,
         isBuilding: Bool,
-        document: SourceAssociation.Document,
-        destToken: inout String?
+        document: SourceAssociation.Document
     ) -> String? {
         if isBuilding {
             return "Cannot trash sources while a build is running."
@@ -279,14 +281,7 @@ public enum SourceCleanup {
         guard live.matches(inspection) else {
             return "Bound .m4b changed since it was inspected."
         }
-        let liveToken = live.generationToken()
-        if liveToken != destToken {
-            if let reason = verifyRecordedDestination(dest: dest, document: document) {
-                return reason
-            }
-            destToken = liveToken
-        }
-        return nil
+        return verifyRecordedDestination(dest: dest, document: document)
     }
 
     private static func verifySingleRecordedSource(

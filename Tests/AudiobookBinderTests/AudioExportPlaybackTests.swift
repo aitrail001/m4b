@@ -1723,6 +1723,67 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalB)
     }
 
+    func testCleanupPerformReportsStrandedHoldWhenReplacementOccupiesOriginalAndHeldVerifyFails() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalA = try Data(contentsOf: fixture.sourceA)
+        let planted = Data(repeating: 0xCD, count: 24)
+        XCTAssertNotEqual(planted, originalA)
+
+        var heldURL: URL?
+        let plantedAndMutated = StartedFlag()
+        SourceCleanup.testingAfterHold = { original, held in
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: original.path),
+                "source must be off the original path before held verify"
+            )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+            do {
+                try planted.write(to: original)
+                try Data(repeating: 0xFF, count: 16).write(to: held)
+                heldURL = held
+                plantedAndMutated.mark()
+            } catch {
+                XCTFail("planting replacement and mutating hold failed: \(error)")
+            }
+        }
+        defer {
+            SourceCleanup.testingAfterHold = nil
+            SourceCleanup.testingBeforeTrashHeld = nil
+        }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        let hold = try XCTUnwrap(heldURL, "hook must capture the hold URL")
+        XCTAssertTrue(plantedAndMutated.isSet, "hook must plant a replacement and mutate the hold")
+        XCTAssertFalse(result.didFinish)
+        let error = try XCTUnwrap(result.error)
+        XCTAssertFalse(error.isEmpty)
+        XCTAssertTrue(
+            error.contains(hold.path),
+            "stranded restore must name the hold path: \(error)"
+        )
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), planted)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: hold.path),
+            "stranded hold must remain so it can be found from the error"
+        )
+        XCTAssertFalse(result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) })
+        XCTAssertFalse(
+            result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+            "remaining must not invite retry-trashing the replacement at the original path"
+        )
+        XCTAssertTrue(
+            result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) },
+            "other unprocessed sources stay in remaining"
+        )
+    }
+
     func testCleanupPerformRestoresOriginalWhenDestUnauthorizedAfterHeldVerify() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }

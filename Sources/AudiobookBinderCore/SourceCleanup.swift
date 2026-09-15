@@ -200,8 +200,13 @@ public enum SourceCleanup {
                 bookFolder: book.folder,
                 document: document
             ) {
-                restoreHeldSource(from: hold, to: next)
-                return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
+                return abortAfterHoldRestore(
+                    hold: hold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: reason
+                )
             }
             testingBeforeTrashHeld?(next, hold)
             if let reason = destStillAuthorized(
@@ -211,19 +216,25 @@ public enum SourceCleanup {
                 isBuilding: isBuilding,
                 document: document
             ) {
-                restoreHeldSource(from: hold, to: next)
-                return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
+                return abortAfterHoldRestore(
+                    hold: hold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: reason
+                )
             }
             do {
                 try FileManager.default.trashItem(at: hold, resultingItemURL: nil)
                 moved.append(next)
                 remaining.removeAll { refersToSameFile($0, next) }
             } catch {
-                restoreHeldSource(from: hold, to: next)
-                return SourceCleanupResult(
+                return abortAfterHoldRestore(
+                    hold: hold,
+                    original: next,
                     moved: moved,
                     remaining: remaining,
-                    error: error.localizedDescription
+                    reason: error.localizedDescription
                 )
             }
         }
@@ -405,12 +416,52 @@ public enum SourceCleanup {
         return hold
     }
 
-    /// Best effort: put the held object back only when the original path is vacant.
-    private static func restoreHeldSource(from hold: URL, to original: URL) {
+    private enum HeldSourceRestore: Equatable {
+        case restored
+        case alreadyAtOriginal
+        /// Hold still exists; original path is occupied or the move failed.
+        case stranded
+    }
+
+    /// Put the held object back only when the original path is vacant.
+    private static func restoreHeldSource(from hold: URL, to original: URL) -> HeldSourceRestore {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: hold.path) else { return }
-        if fm.fileExists(atPath: original.path) { return }
-        try? fm.moveItem(at: hold, to: original)
+        guard fm.fileExists(atPath: hold.path) else { return .alreadyAtOriginal }
+        if fm.fileExists(atPath: original.path) { return .stranded }
+        do {
+            try fm.moveItem(at: hold, to: original)
+            return .restored
+        } catch {
+            return .stranded
+        }
+    }
+
+    /// Abort after a failed verify/dest/trash: restore when possible, else name the hold.
+    private static func abortAfterHoldRestore(
+        hold: URL,
+        original: URL,
+        moved: [URL],
+        remaining: [URL],
+        reason: String
+    ) -> SourceCleanupResult {
+        switch restoreHeldSource(from: hold, to: original) {
+        case .restored, .alreadyAtOriginal:
+            return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
+        case .stranded:
+            let leftover = remaining.filter { !refersToSameFile($0, original) }
+            return SourceCleanupResult(
+                moved: moved,
+                remaining: leftover,
+                error: strandedRestoreError(hold: hold, reason: reason)
+            )
+        }
+    }
+
+    private static func strandedRestoreError(hold: URL, reason: String) -> String {
+        let restoreNote = "Could not restore held source; it remains at \(hold.path)."
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return restoreNote }
+        return "\(trimmed) \(restoreNote)"
     }
 
     /// Match the sidecar entry by the original path, then identity-check the hold.

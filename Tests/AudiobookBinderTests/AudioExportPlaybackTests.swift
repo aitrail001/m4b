@@ -2197,6 +2197,105 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(shortRange.end, 4.05)
     }
 
+    func testUsesScannedEndBoundaryOnlyForEmbeddedChapters() {
+        let standalone = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.mp3"),
+            index: 0,
+            title: "File",
+            duration: 0,
+            fileSize: 1
+        )
+        XCTAssertFalse(ChapterPlayback.usesScannedEndBoundary(for: standalone))
+
+        let underestimated = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.mp3"),
+            index: 1,
+            title: "Short scan",
+            duration: 0.01,
+            fileSize: 1
+        )
+        XCTAssertFalse(ChapterPlayback.usesScannedEndBoundary(for: underestimated))
+
+        let embedded = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.m4b"),
+            index: 1,
+            title: "One",
+            duration: 10,
+            fileSize: 1,
+            startOffset: 0,
+            isEmbedded: true
+        )
+        XCTAssertTrue(ChapterPlayback.usesScannedEndBoundary(for: embedded))
+
+        let embeddedEmpty = Chapter(
+            url: URL(fileURLWithPath: "/tmp/book.m4b"),
+            index: 2,
+            title: "Tiny",
+            duration: 0,
+            fileSize: 1,
+            startOffset: 4,
+            isEmbedded: true
+        )
+        XCTAssertTrue(ChapterPlayback.usesScannedEndBoundary(for: embeddedEmpty))
+    }
+
+    @MainActor
+    func testStandaloneZeroDurationChapterPlaysPastFiftyMilliseconds() async throws {
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: TestSupport.tink.path), "Tink.aiff missing")
+        let playback = ChapterPlayback()
+        let chapter = Chapter(
+            url: TestSupport.tink,
+            index: 1,
+            title: "Tink",
+            duration: 0,
+            fileSize: 1
+        )
+        XCTAssertFalse(ChapterPlayback.usesScannedEndBoundary(for: chapter))
+        playback.toggle(chapter)
+        let started = await waitUntil(timeout: 3) {
+            playback.isPlaying(chapter)
+        }
+        XCTAssertTrue(started)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(
+            playback.isPlaying(chapter),
+            "standalone duration 0 must not stop at the 50ms scanned-end fallback"
+        )
+        let ended = await waitUntil(timeout: 3) {
+            !playback.isPlaying && playback.playingID == nil
+        }
+        XCTAssertTrue(ended, "standalone playback should clear on AVPlayer end")
+    }
+
+    @MainActor
+    func testStandaloneUnderestimatedChapterPlaysToFileEnd() async throws {
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: TestSupport.tink.path), "Tink.aiff missing")
+        let playback = ChapterPlayback()
+        // Tink ~0.56s; 0.2s is a large underestimate so a scanned-end stop is observable.
+        let chapter = Chapter(
+            url: TestSupport.tink,
+            index: 1,
+            title: "Tink",
+            duration: 0.2,
+            fileSize: 1
+        )
+        XCTAssertFalse(ChapterPlayback.usesScannedEndBoundary(for: chapter))
+        playback.toggle(chapter)
+        let started = await waitUntil(timeout: 3) {
+            playback.isPlaying(chapter)
+        }
+        XCTAssertTrue(started)
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(
+            playback.isPlaying(chapter),
+            "standalone file must keep playing past the scanned-duration boundary"
+        )
+        let ended = await waitUntil(timeout: 3) {
+            !playback.isPlaying && playback.playingID == nil
+        }
+        XCTAssertTrue(ended, "standalone playback should clear on AVPlayer end")
+    }
+
     @MainActor
     func testChapterPlaybackStartPauseStopMissing() async throws {
         try XCTSkipUnless(FileManager.default.fileExists(atPath: TestSupport.tink.path), "Tink.aiff missing")

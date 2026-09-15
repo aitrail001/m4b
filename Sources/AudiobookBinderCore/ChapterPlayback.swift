@@ -17,10 +17,16 @@ public final class ChapterPlayback {
     public init() {}
 
     /// Playback window for a chapter: start at `startOffset`, end at offset + duration (min 0.05s).
+    /// The end is a stop boundary only for embedded `.m4b` ranges; standalone files play to AVPlayer end.
     public nonisolated static func playbackRange(for chapter: Chapter) -> (start: TimeInterval, end: TimeInterval) {
         let start = chapter.startOffset
         let end = start + max(chapter.duration, 0.05)
         return (start, end)
+    }
+
+    /// Embedded `.m4b` chapter windows stop at the scanned end; standalone files do not.
+    package nonisolated static func usesScannedEndBoundary(for chapter: Chapter) -> Bool {
+        chapter.isEmbedded
     }
 
     public func isPlaying(_ chapter: Chapter) -> Bool {
@@ -61,14 +67,16 @@ public final class ChapterPlayback {
 
         let range = Self.playbackRange(for: chapter)
         let start = CMTime(seconds: range.start, preferredTimescale: 600)
-        let end = CMTime(seconds: range.end, preferredTimescale: 600)
-        boundaryToken = player.addBoundaryTimeObserver(
-            forTimes: [NSValue(time: end)],
-            queue: .main
-        ) { [weak self] in
-            Task { @MainActor in
-                guard let self, self.session == request else { return }
-                self.stop()
+        if Self.usesScannedEndBoundary(for: chapter) {
+            let end = CMTime(seconds: range.end, preferredTimescale: 600)
+            boundaryToken = player.addBoundaryTimeObserver(
+                forTimes: [NSValue(time: end)],
+                queue: .main
+            ) { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.session == request else { return }
+                    self.stop()
+                }
             }
         }
         player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in

@@ -181,10 +181,17 @@ public enum SourceCleanup {
         dest: URL,
         alreadyMoved: [URL]
     ) -> String? {
-        guard let entries = SourceAssociation.load(inBookFolder: book.folder) else {
+        guard let document = SourceAssociation.loadDocument(inBookFolder: book.folder) else {
             return "Cannot verify sources: missing export provenance."
         }
-        for entry in entries {
+        guard let recordedDest = document.destinationIdentity else {
+            return "Cannot verify sources: missing export provenance."
+        }
+        guard let liveDest = FileIdentity.read(from: dest), !liveDest.isDirectory,
+              liveDest.matchesRecordedIdentity(recordedDest) else {
+            return "Bound .m4b is not the file recorded at export."
+        }
+        for entry in document.sources {
             let url = entry.url(relativeTo: book.folder)
             if refersToSameFile(url, dest) { continue }
             if alreadyMoved.contains(where: { refersToSameFile($0, url) }) { continue }
@@ -201,6 +208,12 @@ public enum SourceCleanup {
                 return "Cannot read a source file's identity."
             }
             guard live.matchesCaptured(entry) else {
+                return "Source files changed since they were bound."
+            }
+            guard let expectedDigest = entry.sha256, !expectedDigest.isEmpty,
+                  let liveDigest = SourceAssociation.sha256Hex(of: url),
+                  liveDigest.caseInsensitiveCompare(expectedDigest) == .orderedSame
+            else {
                 return "Source files changed since they were bound."
             }
         }

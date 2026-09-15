@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import CryptoKit
 import XCTest
 @testable import AudiobookBinderCore
 
@@ -1065,6 +1066,186 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testExportLateSourceReplacementDoesNotUpdateSidecarAndDeniesCleanup() async throws {
+        let dir = try TestSupport.tempDir("source-late-capture")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "LateCapture", author: "A")
+        let source = book.chapters[0].url
+        let dest = dir.appendingPathComponent("out.m4b")
+        let original = try Data(contentsOf: source)
+        let originalHash = sha256Hex(original)
+        let originalSize = Int64(original.count)
+        let replacement = Data(repeating: 0xAB, count: original.count + 32)
+        XCTAssertNotEqual(replacement.count, original.count)
+
+        let replaced = StartedFlag()
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true) { fraction, _ in
+            guard fraction >= 0.92, fraction < 1.0, !replaced.isSet else { return }
+            replaced.mark()
+            try? replacement.write(to: source)
+        }
+
+        XCTAssertTrue(replaced.isSet, "replacement must happen after encode and before source persist")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertEqual(try Data(contentsOf: source), replacement)
+
+        let entries = try XCTUnwrap(SourceAssociation.load(inBookFolder: dir))
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].fileSize, originalSize)
+        XCTAssertEqual(entries[0].sha256, originalHash)
+        XCTAssertNotEqual(entries[0].fileSize, Int64(replacement.count))
+        XCTAssertNotEqual(entries[0].sha256, sha256Hex(replacement))
+
+        var bound = book
+        bound.existingM4BURL = dest
+        let inspection = await M4BInspector.inspect(dest, bookID: book.id)
+        let auth = SourceCleanup.authorization(book: bound, inspection: inspection, isBuilding: false)
+        XCTAssertFalse(auth.allowed, "replacement bytes must not be authorized for cleanup")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+    }
+
+    func testCleanupDeniedWhenSourceEditedInPlaceSameSizeRestoredMtime() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let original = try Data(contentsOf: fixture.sourceA)
+        let edited = Data(repeating: 0xAB, count: original.count)
+        XCTAssertEqual(edited.count, original.count)
+        XCTAssertNotEqual(edited, original)
+        try overwriteInPlaceKeepingMtime(at: fixture.sourceA, with: edited)
+
+        let live = try XCTUnwrap(FileIdentity.readResolved(from: fixture.sourceA))
+        let recorded = try XCTUnwrap(SourceAssociation.load(inBookFolder: fixture.dir)?.first)
+        XCTAssertTrue(live.matchesCaptured(recorded), "identity-only compare must still match after mtime restore")
+        XCTAssertNotEqual(recorded.sha256, sha256Hex(edited))
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed, "same-size in-place edit with restored mtime must fail closed on digest")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testCleanupDeniedWhenReplacedDestHasFreshMatchingInspection() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        try Data(repeating: 0xCD, count: 64).write(to: fixture.dest)
+        let fresh = M4BInspection.capturingIdentity(
+            url: fixture.dest,
+            duration: 30,
+            chapters: [
+                ChapterMark(start: 0, duration: 10, title: "One"),
+                ChapterMark(start: 10, duration: 20, title: "Two")
+            ],
+            bookID: fixture.book.id
+        )
+        XCTAssertTrue(fresh.identityVerified)
+        XCTAssertTrue(
+            ChapterCompare.summary(
+                original: fixture.book.chapters,
+                bound: M4BInspector.playableChapters(from: fresh),
+                boundDuration: fresh.duration
+            ).allMatch,
+            "chapter durations of the replacement must look like a match"
+        )
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fresh,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed, "fresh inspection of a replaced dest must not authorize cleanup")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testExportSourcePersistFailureInvalidatesSidecarAndDeniesCleanup() async throws {
+        let dir = try TestSupport.tempDir("source-persist-fail")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "PersistFail", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: dir)
+        try Data("stale-source-record".utf8).write(to: sidecar)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
+
+        let blocked = StartedFlag()
+        do {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true) { fraction, _ in
+                guard fraction >= 0.92, fraction < 1.0, !blocked.isSet else { return }
+                blocked.mark()
+                try? FileManager.default.removeItem(at: sidecar)
+                try? FileManager.default.createDirectory(at: sidecar, withIntermediateDirectories: true)
+            }
+            XCTFail("expected source persist failure after publish")
+        } catch let error as BinderError {
+            guard case .exportFailed = error else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertTrue(blocked.isSet)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: dir))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sidecar.path),
+            "older source sidecar must be invalidated when persist fails"
+        )
+
+        var bound = book
+        bound.existingM4BURL = dest
+        let inspection = await M4BInspector.inspect(dest, bookID: book.id)
+        XCTAssertFalse(
+            SourceCleanup.authorization(book: bound, inspection: inspection, isBuilding: false).allowed
+        )
+    }
+
+    func testExportFailureBeforePublishLeavesExistingSourceSidecar() async throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let seeded = try XCTUnwrap(SourceAssociation.load(inBookFolder: fixture.dir))
+        XCTAssertFalse(seeded.isEmpty)
+        let destBytes = try Data(contentsOf: fixture.dest)
+        XCTAssertTrue(
+            SourceCleanup.authorization(
+                book: fixture.book,
+                inspection: fixture.inspection,
+                isBuilding: false
+            ).allowed,
+            "seeded bind must be authorized before the failed retry"
+        )
+
+        let retry = try makeSilenceBook(folder: fixture.dir, title: "Retry", author: "A")
+        do {
+            try await M4BExporter(bitrate: 48_000).export(book: retry, to: fixture.dest, overwrite: true) { fraction, _ in
+                guard fraction >= 0.92, fraction < 1.0 else { return }
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            XCTFail("expected cancel before publish")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        } catch is CancellationError {}
+
+        XCTAssertEqual(try Data(contentsOf: fixture.dest), destBytes)
+        let loaded = try XCTUnwrap(
+            SourceAssociation.load(inBookFolder: fixture.dir),
+            "pre-publish failure must leave the previous source record"
+        )
+        XCTAssertEqual(loaded.map(\.path), seeded.map(\.path))
+        XCTAssertEqual(loaded.map(\.sha256), seeded.map(\.sha256))
+        XCTAssertTrue(
+            SourceCleanup.authorization(
+                book: fixture.book,
+                inspection: fixture.inspection,
+                isBuilding: false
+            ).allowed,
+            "cleanup of the previous bind must still use the seeded record"
+        )
+    }
+
     func testPCMRetimingSampleDurationIsOneFrameAndAdvanceIsNFrames() {
         let timescale: Int32 = 44_100
         let frames = 1_024
@@ -1310,6 +1491,58 @@ final class AudioExportPlaybackTests: XCTestCase {
         return wav
     }
 
+    private func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func overwriteInPlaceKeepingMtime(at url: URL, with data: Data) throws {
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        let mtime = try XCTUnwrap(attrs[.modificationDate] as? Date)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: 0)
+        try handle.write(contentsOf: data)
+        try handle.close()
+        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
+    }
+
+    private func makeRecordedCleanupFixture() throws -> RecordedCleanupFixture {
+        let dir = try TestSupport.tempDir("export-cleanup-auth")
+        let dest = dir.appendingPathComponent("book.m4b")
+        let sourceA = dir.appendingPathComponent("01.mp3")
+        let sourceB = dir.appendingPathComponent("02.mp3")
+        try Data(count: 32).write(to: dest)
+        try Data(count: 8).write(to: sourceA)
+        try Data(count: 8).write(to: sourceB)
+
+        var book = TestSupport.dummyBook(
+            folder: dir.path,
+            chapters: [
+                TestSupport.dummyChapter(index: 1, url: sourceA, duration: 10),
+                TestSupport.dummyChapter(index: 2, url: sourceB, duration: 20)
+            ]
+        )
+        book.existingM4BURL = dest
+        XCTAssertTrue(SourceAssociation.record([sourceA, sourceB], dest: dest, inBookFolder: dir))
+
+        let inspection = M4BInspection.capturingIdentity(
+            url: dest,
+            duration: 30,
+            chapters: [
+                ChapterMark(start: 0, duration: 10, title: "One"),
+                ChapterMark(start: 10, duration: 20, title: "Two")
+            ],
+            bookID: book.id
+        )
+        return RecordedCleanupFixture(
+            dir: dir,
+            dest: dest,
+            sourceA: sourceA,
+            sourceB: sourceB,
+            book: book,
+            inspection: inspection
+        )
+    }
+
     private func makeSilenceBook(
         folder: URL,
         title: String,
@@ -1373,6 +1606,19 @@ private final class ErrorBox: @unchecked Sendable {
             stored = newValue
             lock.unlock()
         }
+    }
+}
+
+private struct RecordedCleanupFixture {
+    var dir: URL
+    var dest: URL
+    var sourceA: URL
+    var sourceB: URL
+    var book: Audiobook
+    var inspection: M4BInspection
+
+    func tearDown() {
+        try? FileManager.default.removeItem(at: dir)
     }
 }
 

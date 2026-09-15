@@ -55,6 +55,10 @@ public struct M4BExporter: Sendable {
         progress?(0.01, "Preparing \(book.title)")
 
         let chapters = try Self.chaptersForExport(book.chapters, folder: book.folder)
+        let captured = try SourceAssociation.capture(chapters.map(\.url), dest: outputURL)
+        guard !captured.isEmpty else {
+            throw BinderError.exportFailed("Cannot capture source provenance")
+        }
         let cancellation = EncodeCancellation()
         try await withTaskCancellationHandler {
             let marks = try await encode(
@@ -93,7 +97,19 @@ public struct M4BExporter: Sendable {
                 expectedIdentity: expectedIdentity
             )
             OutputAssociation.record(outputURL, inBookFolder: book.folder)
-            SourceAssociation.record(chapters.map(\.url), dest: outputURL, inBookFolder: book.folder)
+            guard let destIdentity = FileIdentity.read(from: outputURL), !destIdentity.isDirectory else {
+                SourceAssociation.invalidate(inBookFolder: book.folder)
+                throw BinderError.exportFailed("Could not record published output identity")
+            }
+            guard SourceAssociation.record(
+                captured: captured,
+                dest: outputURL,
+                destIdentity: destIdentity,
+                inBookFolder: book.folder
+            ) else {
+                SourceAssociation.invalidate(inBookFolder: book.folder)
+                throw BinderError.exportFailed("Could not record source provenance")
+            }
             progress?(1.0, "Finished \(book.title)")
         } onCancel: {
             cancellation.cancel()

@@ -1359,6 +1359,47 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
     }
 
+    func testExportRecordsLoadableSidecarForSmallMultiChapterBook() async throws {
+        let dir = try TestSupport.tempDir("export-sidecar-small")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var chapters: [Chapter] = []
+        for index in 1...3 {
+            let url = dir.appendingPathComponent(String(format: "ch%02d.wav", index))
+            try TestSupport.writeSilenceWAV(to: url, seconds: 1)
+            let info = AudioMetadata.fileInfo(of: url)
+            chapters.append(
+                Chapter(
+                    url: url,
+                    index: index,
+                    title: "Ch\(index)",
+                    duration: info.duration,
+                    fileSize: 1,
+                    audioInfo: info.audioInfo
+                )
+            )
+        }
+        let book = Audiobook(folder: dir, title: "SmallSidecar", author: "A", chapters: chapters)
+        let dest = dir.appendingPathComponent("out.m4b")
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: dir)
+        let bytes = try Data(contentsOf: sidecar)
+        XCTAssertGreaterThan(bytes.count, 0)
+        XCTAssertLessThanOrEqual(bytes.count, SourceAssociation.maxSidecarBytes)
+        let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: dir))
+        XCTAssertEqual(document.sources.count, 3)
+        XCTAssertEqual(
+            document.sources.map(\.path),
+            chapters.map { $0.url.standardizedFileURL.path }
+        )
+        XCTAssertEqual(
+            document.sources.map(\.sha256),
+            chapters.map { SourceAssociation.sha256Hex(of: $0.url) }
+        )
+        XCTAssertEqual(document.destinationSHA256, SourceAssociation.sha256Hex(of: dest))
+    }
+
     func testExportRecordsOutputDigestAndAllowsUnchangedCleanup() async throws {
         let dir = try TestSupport.tempDir("export-dest-digest")
         defer { try? FileManager.default.removeItem(at: dir) }

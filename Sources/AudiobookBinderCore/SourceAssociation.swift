@@ -78,7 +78,7 @@ public enum SourceAssociation: Sendable {
         dest: URL,
         cancellation: EncodeCancellation?
     ) throws -> [Entry] {
-        var entries: [Entry] = []
+        var unique: [URL] = []
         var seen = Set<String>()
         for url in urls {
             try cancellation?.checkCancelled()
@@ -86,6 +86,18 @@ public enum SourceAssociation: Sendable {
             if M4BExporter.isSameFileURL(standardized, dest) { continue }
             let key = standardized.path
             guard seen.insert(key).inserted else { continue }
+            guard BoundedFileRead.isAllowedPath(key, maxLength: maxPathLength) else {
+                throw BinderError.exportFailed("Source path exceeds provenance limit")
+            }
+            unique.append(standardized)
+            if unique.count > maxSourceEntries {
+                throw BinderError.exportFailed("Too many source files to record provenance")
+            }
+        }
+        var entries: [Entry] = []
+        entries.reserveCapacity(unique.count)
+        for standardized in unique {
+            try cancellation?.checkCancelled()
             guard let entry = try captureEntry(standardized, cancellation: cancellation) else {
                 throw BinderError.exportFailed(
                     "Cannot capture source provenance for \(standardized.lastPathComponent)"
@@ -93,7 +105,17 @@ public enum SourceAssociation: Sendable {
             }
             entries.append(entry)
         }
+        try validateForExport(captured: entries, dest: dest)
         return entries
+    }
+
+    /// Dry-run the reader contract before encode. Dummy dest identity/digest
+    /// is enough to budget pretty-printed size.
+    static func validateForExport(captured: [Entry], dest: URL) throws {
+        let document = planningDocument(captured: captured, dest: dest)
+        if let reason = rejectionReason(for: document) {
+            throw BinderError.exportFailed(reason)
+        }
     }
 
     /// Persist pre-encode captures plus the published dest identity and digest.
@@ -115,20 +137,24 @@ public enum SourceAssociation: Sendable {
             destinationIdentity: destIdentity,
             destinationSHA256: destinationSHA256
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .secondsSince1970
-        guard let data = try? encoder.encode(document) else {
+        guard let data = encodeDocument(document),
+              rejectionReason(for: document, encoded: data) == nil else {
             invalidate(inBookFolder: folder)
             return false
         }
         do {
             try data.write(to: sidecarURL(inBookFolder: folder), options: .atomic)
-            return true
         } catch {
             invalidate(inBookFolder: folder)
             return false
         }
+        guard let loaded = loadDocument(inBookFolder: folder),
+              matchesRecorded(loaded, captured: captured, destinationSHA256: destinationSHA256)
+        else {
+            invalidate(inBookFolder: folder)
+            return false
+        }
+        return true
     }
 
     /// Test/helper convenience: capture live files now and persist immediately.
@@ -205,6 +231,66 @@ public enum SourceAssociation: Sendable {
         let sidecar = sidecarURL(inBookFolder: folder)
         guard FileManager.default.fileExists(atPath: sidecar.path) else { return }
         try? FileManager.default.removeItem(at: sidecar)
+    }
+
+    private static let planningDestinationDigest = String(repeating: "0", count: 64)
+    private static let planningDestinationIdentity = FileIdentity(
+        fileSize: 1,
+        modificationDate: Date(timeIntervalSince1970: 0),
+        fileResourceIdentifier: Data(repeating: 0x5A, count: 256),
+        isDirectory: false
+    )
+
+    private static func planningDocument(captured: [Entry], dest: URL) -> Document {
+        Document(
+            sources: captured,
+            destination: dest.standardizedFileURL.path,
+            destinationIdentity: planningDestinationIdentity,
+            destinationSHA256: planningDestinationDigest
+        )
+    }
+
+    private static func encodeDocument(_ document: Document) -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .secondsSince1970
+        return try? encoder.encode(document)
+    }
+
+    private static func rejectionReason(for document: Document, encoded: Data? = nil) -> String? {
+        if document.sources.count > maxSourceEntries {
+            return "Too many source files to record provenance"
+        }
+        if let destination = document.destination,
+           !BoundedFileRead.isAllowedPath(destination, maxLength: maxPathLength) {
+            return "Destination path exceeds provenance limit"
+        }
+        for entry in document.sources {
+            if !BoundedFileRead.isAllowedPath(entry.path, maxLength: maxPathLength) {
+                return "Source path exceeds provenance limit"
+            }
+        }
+        guard let data = encoded ?? encodeDocument(document) else {
+            return "Source provenance exceeds sidecar size limit"
+        }
+        if data.count > maxSidecarBytes {
+            return "Source provenance exceeds sidecar size limit"
+        }
+        return nil
+    }
+
+    private static func matchesRecorded(
+        _ loaded: Document,
+        captured: [Entry],
+        destinationSHA256: String
+    ) -> Bool {
+        guard loaded.sources.map(\.path) == captured.map(\.path) else { return false }
+        guard loaded.sources.map(\.sha256) == captured.map(\.sha256) else { return false }
+        guard let destDigest = loaded.destinationSHA256, !destDigest.isEmpty,
+              destDigest.caseInsensitiveCompare(destinationSHA256) == .orderedSame else {
+            return false
+        }
+        return true
     }
 
     static func sha256Hex(of url: URL) -> String? {

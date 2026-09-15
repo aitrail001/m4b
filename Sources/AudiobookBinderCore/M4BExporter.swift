@@ -68,6 +68,7 @@ public struct M4BExporter: Sendable {
             guard !captured.isEmpty else {
                 throw BinderError.exportFailed("Cannot capture source provenance")
             }
+            try SourceAssociation.validateForExport(captured: captured, dest: outputURL)
             afterSourceCapture?()
             let snapshots = try SourceAssociation.stageEncodeSnapshots(
                 captured,

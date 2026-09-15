@@ -842,6 +842,219 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
     }
 
+    func testSourceAssociationRecordRejectsOversizedPrettyPrintedDocument() throws {
+        let root = try TestSupport.tempDir("source-record-700")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let entries = syntheticCapturedEntries(count: 700)
+        let destIdentity = syntheticDestIdentity()
+        let destDigest = String(repeating: "ab", count: 32)
+        let encoded = try prettyPrintedProvenance(
+            entries: entries,
+            dest: dest,
+            destIdentity: destIdentity,
+            destDigest: destDigest
+        )
+        XCTAssertGreaterThan(encoded.count, SourceAssociation.maxSidecarBytes)
+        XCTAssertLessThan(entries.count, SourceAssociation.maxSourceEntries)
+
+        let recorded = SourceAssociation.record(
+            captured: entries,
+            dest: dest,
+            destIdentity: destIdentity,
+            destinationSHA256: destDigest,
+            inBookFolder: root
+        )
+        XCTAssertFalse(recorded, "writer must not claim success for a sidecar the reader rejects")
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: root))
+        assertNoSuccessfulUnreadableSidecar(in: root, recorded: recorded)
+    }
+
+    func testSourceAssociationRecordRoundTripMatchesLoadedDocument() throws {
+        let root = try TestSupport.tempDir("source-record-roundtrip")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let sourceA = root.appendingPathComponent("01.mp3")
+        let sourceB = root.appendingPathComponent("02.mp3")
+        try Data("dest-bytes".utf8).write(to: dest)
+        try Data("aaa".utf8).write(to: sourceA)
+        try Data("bbb".utf8).write(to: sourceB)
+
+        XCTAssertTrue(SourceAssociation.record([sourceA, sourceB], dest: dest, inBookFolder: root))
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: root)
+        let bytes = try Data(contentsOf: sidecar)
+        XCTAssertGreaterThan(bytes.count, 0)
+        XCTAssertLessThanOrEqual(bytes.count, SourceAssociation.maxSidecarBytes)
+
+        let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: root))
+        XCTAssertEqual(
+            document.sources.map(\.path),
+            [sourceA, sourceB].map { $0.standardizedFileURL.path }
+        )
+        XCTAssertEqual(document.sources.map(\.sha256), [
+            SourceAssociation.sha256Hex(of: sourceA),
+            SourceAssociation.sha256Hex(of: sourceB)
+        ])
+        XCTAssertEqual(document.destinationSHA256, SourceAssociation.sha256Hex(of: dest))
+    }
+
+    func testSourceAssociationRecordReloadsSupportedPrettyPrintedDocument() throws {
+        let root = try TestSupport.tempDir("source-record-small-pretty")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let source = root.appendingPathComponent("01.mp3")
+        try Data("dest".utf8).write(to: dest)
+        try Data("src".utf8).write(to: source)
+        let destIdentity = try XCTUnwrap(FileIdentity.read(from: dest))
+        let destDigest = try XCTUnwrap(SourceAssociation.sha256Hex(of: dest))
+        let captured = try SourceAssociation.capture([source], dest: dest)
+
+        XCTAssertTrue(
+            SourceAssociation.record(
+                captured: captured,
+                dest: dest,
+                destIdentity: destIdentity,
+                destinationSHA256: destDigest,
+                inBookFolder: root
+            )
+        )
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: root)
+        let bytes = try Data(contentsOf: sidecar)
+        XCTAssertGreaterThan(bytes.count, 0)
+        XCTAssertLessThanOrEqual(bytes.count, SourceAssociation.maxSidecarBytes)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        XCTAssertNotNil(object["destinationIdentity"])
+        XCTAssertNotNil(object["destinationSHA256"])
+
+        let loaded = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: root))
+        XCTAssertEqual(loaded.sources.map(\.path), captured.map(\.path))
+        XCTAssertEqual(loaded.sources.map(\.sha256), captured.map(\.sha256))
+        XCTAssertEqual(loaded.destinationSHA256, destDigest)
+    }
+
+    func testSourceAssociationRecordRejectsOverlongCapturedPath() throws {
+        let root = try TestSupport.tempDir("source-record-long-path")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let path = String(repeating: "x", count: SourceAssociation.maxPathLength + 1)
+        XCTAssertGreaterThan(path.count, SourceAssociation.maxPathLength)
+        let entries = [
+            SourceAssociation.Entry(
+                path: path,
+                isRegularFile: true,
+                fileSize: 1,
+                modificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+                fileResourceIdentifier: Data([1]),
+                sha256: String(repeating: "ab", count: 32)
+            )
+        ]
+
+        let recorded = SourceAssociation.record(
+            captured: entries,
+            dest: dest,
+            destIdentity: syntheticDestIdentity(),
+            destinationSHA256: String(repeating: "cd", count: 32),
+            inBookFolder: root
+        )
+        XCTAssertFalse(recorded)
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: root))
+        assertNoSuccessfulUnreadableSidecar(in: root, recorded: recorded)
+    }
+
+    func testSourceAssociationRecordRejectsTooManyCapturedEntries() throws {
+        let root = try TestSupport.tempDir("source-record-too-many")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let entries = syntheticCapturedEntries(
+            count: SourceAssociation.maxSourceEntries + 1,
+            resourceBytes: 1
+        )
+        XCTAssertEqual(entries.count, SourceAssociation.maxSourceEntries + 1)
+
+        let recorded = SourceAssociation.record(
+            captured: entries,
+            dest: dest,
+            destIdentity: syntheticDestIdentity(),
+            destinationSHA256: String(repeating: "ef", count: 32),
+            inBookFolder: root
+        )
+        XCTAssertFalse(recorded)
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: root))
+        assertNoSuccessfulUnreadableSidecar(in: root, recorded: recorded)
+    }
+
+    func testSourceAssociationCaptureRejectsOversizedProvenanceBeforeEncode() throws {
+        let root = try TestSupport.tempDir("source-capture-700")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let entries = syntheticCapturedEntries(count: 700)
+        let encoded = try prettyPrintedProvenance(
+            entries: entries,
+            dest: dest,
+            destIdentity: syntheticDestIdentity(),
+            destDigest: String(repeating: "0", count: 64)
+        )
+        XCTAssertGreaterThan(encoded.count, SourceAssociation.maxSidecarBytes)
+
+        XCTAssertThrowsError(try SourceAssociation.validateForExport(captured: entries, dest: dest)) { error in
+            guard case BinderError.exportFailed = error else {
+                return XCTFail("\(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
+    func testSourceAssociationCaptureRejectsOverlongPath() throws {
+        let root = try TestSupport.tempDir("source-capture-long-path")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let url = URL(
+            fileURLWithPath: "/" + String(repeating: "x", count: SourceAssociation.maxPathLength + 1) + "/ch.mp3"
+        )
+        XCTAssertGreaterThan(url.path.count, SourceAssociation.maxPathLength)
+
+        XCTAssertThrowsError(try SourceAssociation.capture([url], dest: dest)) { error in
+            guard case let BinderError.exportFailed(message) = error else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertTrue(
+                message.localizedCaseInsensitiveContains("path")
+                    || message.localizedCaseInsensitiveContains("exceed"),
+                message
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
+    func testSourceAssociationCaptureRejectsTooManyEntries() throws {
+        let root = try TestSupport.tempDir("source-capture-too-many")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("out.m4b")
+        let urls = (0...SourceAssociation.maxSourceEntries).map {
+            root.appendingPathComponent("ch\($0).mp3")
+        }
+        XCTAssertEqual(urls.count, SourceAssociation.maxSourceEntries + 1)
+
+        XCTAssertThrowsError(try SourceAssociation.capture(urls, dest: dest)) { error in
+            guard case let BinderError.exportFailed(message) = error else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertTrue(
+                message.localizedCaseInsensitiveContains("many")
+                    || message.localizedCaseInsensitiveContains("entries")
+                    || message.localizedCaseInsensitiveContains("limit"),
+                message
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
     func testScanGenerationNewestWins() {
         var generation = ScanGeneration()
         let a = generation.begin()
@@ -883,6 +1096,78 @@ final class NamingAndModelsTests: XCTestCase {
         let data = try JSONSerialization.data(withJSONObject: ["sources": entries])
         XCTAssertLessThanOrEqual(data.count, SourceAssociation.maxSidecarBytes)
         try data.write(to: SourceAssociation.sidecarURL(inBookFolder: folder))
+    }
+
+    private func syntheticCapturedEntries(
+        count: Int,
+        resourceBytes: Int = 160
+    ) -> [SourceAssociation.Entry] {
+        (0..<count).map { index in
+            SourceAssociation.Entry(
+                path: "/Users/shared/Audiobooks/Synthetic Provenance Book/CD1/chapter-\(String(format: "%04d", index))-full-title.mp3",
+                isRegularFile: true,
+                fileSize: Int64(index + 1),
+                modificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+                fileResourceIdentifier: Data(
+                    repeating: UInt8(truncatingIfNeeded: index),
+                    count: resourceBytes
+                ),
+                sha256: String(repeating: String(format: "%02x", index % 256), count: 32)
+            )
+        }
+    }
+
+    private func syntheticDestIdentity() -> FileIdentity {
+        FileIdentity(
+            fileSize: 12,
+            modificationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            fileResourceIdentifier: Data(repeating: 7, count: 160),
+            isDirectory: false
+        )
+    }
+
+    private func prettyPrintedProvenance(
+        entries: [SourceAssociation.Entry],
+        dest: URL,
+        destIdentity: FileIdentity,
+        destDigest: String
+    ) throws -> Data {
+        let document = SourceAssociation.Document(
+            sources: entries,
+            destination: dest.standardizedFileURL.path,
+            destinationIdentity: destIdentity,
+            destinationSHA256: destDigest
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .secondsSince1970
+        return try encoder.encode(document)
+    }
+
+    private func assertNoSuccessfulUnreadableSidecar(
+        in folder: URL,
+        recorded: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: folder)
+        guard FileManager.default.fileExists(atPath: sidecar.path) else { return }
+        XCTAssertFalse(recorded, "leftover sidecar must not be a writer success", file: file, line: line)
+        XCTAssertNil(
+            SourceAssociation.loadDocument(inBookFolder: folder),
+            "leftover sidecar must be unreadable",
+            file: file,
+            line: line
+        )
+        if let leftover = try? Data(contentsOf: sidecar) {
+            XCTAssertTrue(
+                leftover.count > SourceAssociation.maxSidecarBytes
+                    || SourceAssociation.loadDocument(inBookFolder: folder) == nil,
+                "leftover bytes must not be a loadable success record",
+                file: file,
+                line: line
+            )
+        }
     }
 }
 

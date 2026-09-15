@@ -1184,6 +1184,62 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(auth.sources.map(\.lastPathComponent), ["01.mp3", "02.mp3"])
     }
 
+    func testCleanupVerificationCacheKeyIgnoresInclusionAndTracksChapterURLs() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let destGeneration = try XCTUnwrap(SourceCleanup.destGeneration(of: fixture.dest))
+        let baseline = SourceCleanup.verificationCacheKey(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            destGeneration: destGeneration
+        )
+
+        var excluded = fixture.book
+        excluded.chapters[1].included = false
+        excluded.chapters[1].exclusionReason = "user"
+        XCTAssertEqual(
+            SourceCleanup.verificationCacheKey(
+                book: excluded,
+                inspection: fixture.inspection,
+                destGeneration: destGeneration
+            ),
+            baseline,
+            "inclusion and exclusion reason must not restart cleanup verification"
+        )
+
+        var added = fixture.book
+        added.chapters.append(
+            TestSupport.dummyChapter(
+                index: 3,
+                url: fixture.dir.appendingPathComponent("03.mp3"),
+                duration: 5,
+                included: false
+            )
+        )
+        XCTAssertNotEqual(
+            SourceCleanup.verificationCacheKey(
+                book: added,
+                inspection: fixture.inspection,
+                destGeneration: destGeneration
+            ),
+            baseline,
+            "adding a listed chapter URL must change the verification cache key"
+        )
+
+        var removed = fixture.book
+        removed.chapters.removeLast()
+        XCTAssertNotEqual(
+            SourceCleanup.verificationCacheKey(
+                book: removed,
+                inspection: fixture.inspection,
+                destGeneration: destGeneration
+            ),
+            baseline,
+            "removing a listed chapter URL must change the verification cache key"
+        )
+    }
+
     func testSourceFilesToRemoveIntersectsManifestAndSkipsDirectory() throws {
         let fixture = try CleanupFixture.make()
         defer { fixture.tearDown() }

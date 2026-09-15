@@ -1414,6 +1414,69 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
     }
 
+    func testCleanupAuthorizationCancelDuringDestHashIsNotDestMismatch() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let destBytes = try Data(contentsOf: fixture.dest)
+        let sourceA = try Data(contentsOf: fixture.sourceA)
+        let sourceB = try Data(contentsOf: fixture.sourceB)
+        let destMismatch = "Bound .m4b is not the file recorded at export."
+        let sourceChanged = "Source files changed since they were bound."
+
+        let token = EncodeCancellation()
+        DigestProbe.reset()
+        defer { DigestProbe.reset() }
+        DigestProbe.onChunk = { token.cancel() }
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false,
+            cancellation: token
+        )
+
+        XCTAssertFalse(auth.allowed, "cancelled dest hash must not authorize cleanup")
+        XCTAssertNotEqual(auth.reason, destMismatch, "cancel must not look like a dest digest mismatch")
+        XCTAssertNotEqual(auth.reason, sourceChanged, "cancel must not look like a source digest mismatch")
+        XCTAssertTrue(
+            auth.reason?.localizedCaseInsensitiveContains("cancel") == true,
+            "cancelled authorization must surface cancel distinctly, got \(auth.reason ?? "nil")"
+        )
+        XCTAssertTrue(token.isCancelled)
+        XCTAssertEqual(try Data(contentsOf: fixture.dest), destBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), sourceA)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceB), sourceB)
+
+        DigestProbe.onChunk = nil
+        let allowed = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(allowed.allowed, "unchanged bytes must still authorize after a cancelled probe")
+
+        try overwriteInPlaceKeepingMtime(
+            at: fixture.dest,
+            with: Data(repeating: 0xEF, count: destBytes.count)
+        )
+        let denied = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: M4BInspection.capturingIdentity(
+                url: fixture.dest,
+                duration: 30,
+                chapters: [
+                    ChapterMark(start: 0, duration: 10, title: "One"),
+                    ChapterMark(start: 10, duration: 20, title: "Two")
+                ],
+                bookID: fixture.book.id
+            ),
+            isBuilding: false
+        )
+        XCTAssertFalse(denied.allowed, "real dest edits must still deny")
+        XCTAssertEqual(denied.reason, destMismatch)
+    }
+
     func testExportRecordsLoadableSidecarForSmallMultiChapterBook() async throws {
         let dir = try TestSupport.tempDir("export-sidecar-small")
         defer { try? FileManager.default.removeItem(at: dir) }

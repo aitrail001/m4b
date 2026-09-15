@@ -56,14 +56,38 @@ public enum SourceCleanup {
         return .hidden
     }
 
+    /// Identity for SwiftUI `.task` restarts. Listed chapter URLs only —
+    /// inclusion and exclusion reason do not change authorization.
+    public static func verificationCacheKey(
+        book: Audiobook,
+        inspection: M4BInspection,
+        destGeneration: String
+    ) -> String {
+        let sources = book.chapters
+            .map { $0.url.standardizedFileURL.path }
+            .joined(separator: ";")
+        return [
+            book.id.uuidString,
+            inspection.url.path,
+            inspection.identityGeneration ?? "",
+            String(inspection.fileSize),
+            destGeneration,
+            sources
+        ].joined(separator: "|")
+    }
+
     public static func authorization(
         book: Audiobook,
         inspection: M4BInspection,
         isBuilding: Bool,
-        alreadyMoved: [URL] = []
+        alreadyMoved: [URL] = [],
+        cancellation: EncodeCancellation? = nil
     ) -> SourceCleanupAuthorization {
         let sources = M4BInspector.sourceFilesToRemove(from: book)
 
+        if cancellation?.isCancelled == true {
+            return deny(sources, cancelledReason)
+        }
         if isBuilding {
             return deny(sources, "Cannot trash sources while a build is running.")
         }
@@ -102,7 +126,8 @@ public enum SourceCleanup {
             book: book,
             dest: dest,
             alreadyMoved: alreadyMoved,
-            document: document
+            document: document,
+            cancellation: cancellation
         ) {
             return deny(sources, sourceReason)
         }
@@ -232,6 +257,10 @@ public enum SourceCleanup {
         return live.matches(inspection)
     }
 
+    private static let destMismatchReason = "Bound .m4b is not the file recorded at export."
+    private static let sourceChangedReason = "Source files changed since they were bound."
+    private static let cancelledReason = BinderError.cancelled.errorDescription ?? "Cancelled"
+
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
         SourceCleanupAuthorization(allowed: false, sources: sources, reason: reason)
     }
@@ -241,20 +270,31 @@ public enum SourceCleanup {
         book: Audiobook,
         dest: URL,
         alreadyMoved: [URL],
-        document: SourceAssociation.Document?
+        document: SourceAssociation.Document?,
+        cancellation: EncodeCancellation? = nil
     ) -> String? {
         guard let document else {
             return "Cannot verify sources: missing export provenance."
         }
-        if let reason = verifyRecordedDestination(dest: dest, document: document) {
+        if cancellation?.isCancelled == true {
+            return cancelledReason
+        }
+        if let reason = verifyRecordedDestination(
+            dest: dest,
+            document: document,
+            cancellation: cancellation
+        ) {
             return reason
         }
         for entry in document.sources {
+            if cancellation?.isCancelled == true {
+                return cancelledReason
+            }
             let url = entry.url(relativeTo: book.folder)
             if refersToSameFile(url, dest) { continue }
             if alreadyMoved.contains(where: { refersToSameFile($0, url) }) { continue }
             if !isListedChapter(url, on: book) { continue }
-            if let reason = verifyLiveSource(url: url, entry: entry) {
+            if let reason = verifyLiveSource(url: url, entry: entry, cancellation: cancellation) {
                 return reason
             }
         }
@@ -341,30 +381,42 @@ public enum SourceCleanup {
 
     private static func verifyRecordedDestination(
         dest: URL,
-        document: SourceAssociation.Document
+        document: SourceAssociation.Document,
+        cancellation: EncodeCancellation? = nil
     ) -> String? {
         guard let recordedDest = document.destinationIdentity else {
             return "Cannot verify sources: missing export provenance."
         }
         guard let liveDest = FileIdentity.read(from: dest), !liveDest.isDirectory,
               liveDest.matchesRecordedIdentity(recordedDest) else {
-            return "Bound .m4b is not the file recorded at export."
+            return destMismatchReason
         }
         guard let recordedDestDigest = document.destinationSHA256, !recordedDestDigest.isEmpty else {
             return "Cannot verify sources: missing export provenance."
         }
-        guard let liveDestDigest = SourceAssociation.sha256Hex(of: dest),
+        let liveDestDigest: String?
+        do {
+            liveDestDigest = try SourceAssociation.sha256Hex(of: dest, cancellation: cancellation)
+        } catch BinderError.cancelled {
+            return cancelledReason
+        } catch is CancellationError {
+            return cancelledReason
+        } catch {
+            liveDestDigest = nil
+        }
+        guard let liveDestDigest,
               !liveDestDigest.isEmpty,
               liveDestDigest.caseInsensitiveCompare(recordedDestDigest) == .orderedSame
         else {
-            return "Bound .m4b is not the file recorded at export."
+            return destMismatchReason
         }
         return nil
     }
 
     private static func verifyLiveSource(
         url: URL,
-        entry: SourceAssociation.Entry
+        entry: SourceAssociation.Entry,
+        cancellation: EncodeCancellation? = nil
     ) -> String? {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
@@ -378,13 +430,23 @@ public enum SourceCleanup {
             return "Cannot read a source file's identity."
         }
         guard live.matchesCaptured(entry) else {
-            return "Source files changed since they were bound."
+            return sourceChangedReason
+        }
+        let liveDigest: String?
+        do {
+            liveDigest = try SourceAssociation.sha256Hex(of: url, cancellation: cancellation)
+        } catch BinderError.cancelled {
+            return cancelledReason
+        } catch is CancellationError {
+            return cancelledReason
+        } catch {
+            liveDigest = nil
         }
         guard let expectedDigest = entry.sha256, !expectedDigest.isEmpty,
-              let liveDigest = SourceAssociation.sha256Hex(of: url),
+              let liveDigest,
               liveDigest.caseInsensitiveCompare(expectedDigest) == .orderedSame
         else {
-            return "Source files changed since they were bound."
+            return sourceChangedReason
         }
         return nil
     }

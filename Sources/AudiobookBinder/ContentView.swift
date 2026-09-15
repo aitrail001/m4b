@@ -548,17 +548,11 @@ struct ChaptersCompareSection: View {
             return "idle|\(book.id.uuidString)"
         }
         let destGen = m4bURL.flatMap { SourceCleanup.destGeneration(of: $0) } ?? ""
-        let sources = book.chapters
-            .map { "\($0.url.standardizedFileURL.path)|\($0.included)" }
-            .joined(separator: ";")
-        return [
-            book.id.uuidString,
-            inspection.url.path,
-            inspection.identityGeneration ?? "",
-            String(inspection.fileSize),
-            destGen,
-            sources
-        ].joined(separator: "|")
+        return SourceCleanup.verificationCacheKey(
+            book: book,
+            inspection: inspection,
+            destGeneration: destGen
+        )
     }
     private var showOriginal: Bool { !book.chapters.isEmpty }
     private var showBound: Bool { m4bURL != nil }
@@ -917,14 +911,21 @@ struct ChaptersCompareSection: View {
         guard let inspection, book.canCleanupSources else { return }
         let bookSnapshot = book
         let inspectionSnapshot = inspection
-        let result = await Task.detached(priority: .utility) {
-            SourceCleanup.authorization(
-                book: bookSnapshot,
-                inspection: inspectionSnapshot,
-                isBuilding: false
-            )
-        }.value
-        guard !Task.isCancelled else { return }
+        let token = EncodeCancellation()
+        let result = await withTaskCancellationHandler {
+            await Task.detached(priority: .utility) {
+                SourceCleanup.authorization(
+                    book: bookSnapshot,
+                    inspection: inspectionSnapshot,
+                    isBuilding: false,
+                    cancellation: token
+                )
+            }.value
+        } onCancel: {
+            token.cancel()
+        }
+        guard !Task.isCancelled, !token.isCancelled else { return }
+        if result.reason?.localizedCaseInsensitiveContains("cancel") == true { return }
         cleanupAuth = result
     }
 

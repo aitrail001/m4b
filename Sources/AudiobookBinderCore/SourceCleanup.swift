@@ -208,7 +208,7 @@ public enum SourceCleanup {
     }
 }
 
-struct FileIdentity: Equatable, Sendable {
+struct FileIdentity: Equatable, Sendable, Codable {
     var fileSize: Int64
     var modificationDate: Date?
     var fileResourceIdentifier: Data?
@@ -273,6 +273,24 @@ struct FileIdentity: Equatable, Sendable {
         }
     }
 
+    /// Dest files compare size, mtime (JSON-safe slop), and resource id.
+    /// Folders compare resource id only — writing the sidecar updates mtime.
+    func matchesRecordedIdentity(_ recorded: FileIdentity) -> Bool {
+        if isDirectory || recorded.isDirectory {
+            guard isDirectory, recorded.isDirectory else { return false }
+            return resourceIdentifierMatches(recorded.fileResourceIdentifier)
+        }
+        guard fileSize == recorded.fileSize else { return false }
+        guard let expectedDate = recorded.modificationDate, let liveDate = modificationDate else {
+            return false
+        }
+        if expectedDate != liveDate,
+           abs(expectedDate.timeIntervalSince1970 - liveDate.timeIntervalSince1970) >= 0.002 {
+            return false
+        }
+        return resourceIdentifierMatches(recorded.fileResourceIdentifier)
+    }
+
     func matches(_ inspection: M4BInspection) -> Bool {
         guard inspection.identityVerified else { return false }
         guard !isDirectory else { return false }
@@ -307,6 +325,19 @@ struct FileIdentity: Equatable, Sendable {
         }
         guard let savedObject = decodeResourceID(expectedID),
               let liveObject = decodeResourceID(liveID) else {
+            return false
+        }
+        return savedObject.isEqual(liveObject)
+    }
+
+    private func resourceIdentifierMatches(_ expected: Data?) -> Bool {
+        guard let expected, !expected.isEmpty,
+              let live = fileResourceIdentifier, !live.isEmpty else {
+            return false
+        }
+        if expected == live { return true }
+        guard let savedObject = decodeResourceID(expected),
+              let liveObject = decodeResourceID(live) else {
             return false
         }
         return savedObject.isEqual(liveObject)

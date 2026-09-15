@@ -237,8 +237,10 @@ public struct ExportSettings: Sendable, Equatable {
 
     /// Unique destination per book. Same title/author from different folders, and
     /// names that collide after `suggestedFileName` sanitization, get distinct paths.
-    /// Honors a validated owned dest (`existingM4BURL` or `.audiobookbinder-output`)
-    /// and never assigns an on-disk path this book does not own.
+    /// Honors a trusted `.audiobookbinder-output` dest, an unused reserved
+    /// `existingM4BURL` name, or a leftover `.m4b` inside the book folder.
+    /// An existing file in a shared output directory is owned only when a live
+    /// trusted sidecar still matches. An unused sidecar path may be a naming hint.
     public func plannedOutputs(for books: [Audiobook]) -> [UUID: URL] {
         var reserved = Set<String>()
         var owned: [UUID: URL] = [:]
@@ -270,19 +272,39 @@ public struct ExportSettings: Sendable, Equatable {
 
     private func ownedDestination(for book: Audiobook) -> URL? {
         let dir = resolvedOutputDirectory(for: book).standardizedFileURL
-        let candidates = [book.existingM4BURL, OutputAssociation.load(inBookFolder: book.folder)]
-            .compactMap { $0 }
-        for candidate in candidates {
-            let dest = candidate.standardizedFileURL
-            guard isInOutputDirectory(dest, directory: dir) else { continue }
-            guard Self.destinationMatchesCurrentNaming(dest.lastPathComponent, book: book) else { continue }
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: dest.path, isDirectory: &isDirectory), isDirectory.boolValue {
-                continue
+        if let dest = acceptableDestination(
+            OutputAssociation.load(inBookFolder: book.folder),
+            book: book,
+            directory: dir
+        ) {
+            return dest
+        }
+        if let dest = acceptableDestination(book.existingM4BURL, book: book, directory: dir) {
+            if !OutputAssociation.isExistingRegularFile(dest) {
+                return dest
             }
+            if isInOutputDirectory(dest, directory: book.folder.standardizedFileURL) {
+                return dest
+            }
+        }
+        if let hint = OutputAssociation.destinationHint(inBookFolder: book.folder),
+           let dest = acceptableDestination(hint, book: book, directory: dir),
+           !FileManager.default.fileExists(atPath: dest.path) {
             return dest
         }
         return nil
+    }
+
+    private func acceptableDestination(_ candidate: URL?, book: Audiobook, directory: URL) -> URL? {
+        guard let candidate else { return nil }
+        let dest = candidate.standardizedFileURL
+        guard isInOutputDirectory(dest, directory: directory) else { return nil }
+        guard Self.destinationMatchesCurrentNaming(dest.lastPathComponent, book: book) else { return nil }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: dest.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return nil
+        }
+        return dest
     }
 
     private func isInOutputDirectory(_ file: URL, directory: URL) -> Bool {
@@ -290,6 +312,7 @@ public struct ExportSettings: Sendable, Equatable {
     }
 
     private static func destinationMatchesCurrentNaming(_ name: String, book: Audiobook) -> Bool {
+        guard (name as NSString).pathExtension.lowercased() == "m4b" else { return false }
         let stem = (book.suggestedFileName as NSString).deletingPathExtension.lowercased()
         let destStem = (name as NSString).deletingPathExtension.lowercased()
         if destStem == stem { return true }

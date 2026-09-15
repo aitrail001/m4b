@@ -268,7 +268,9 @@ public struct BookScanner: Sendable {
         }.first
         let associated = OutputAssociation.load(inBookFolder: folder)
         let existingM4B: URL?
-        if let associated, OutputAssociation.isExistingRegularFile(associated) {
+        if let associated,
+           OutputAssociation.hasM4BExtension(associated),
+           OutputAssociation.isExistingRegularFile(associated) {
             existingM4B = associated
         } else {
             existingM4B = leftoverM4B

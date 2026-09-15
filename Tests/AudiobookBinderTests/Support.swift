@@ -87,4 +87,12 @@ enum TestSupport {
         data.append(Data(count: Int(dataSize)))
         try data.write(to: url)
     }
+
+    static func writePathOnlyOutputSidecar(_ dest: URL, in folder: URL) throws {
+        try dest.standardizedFileURL.path.write(
+            to: folder.appendingPathComponent(OutputAssociation.fileName),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
 }

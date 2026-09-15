@@ -43,6 +43,9 @@ public struct M4BExporter: Sendable {
             at: outputURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        let expectedIdentity = FileIdentity.read(from: outputURL).flatMap { identity in
+            identity.isDirectory ? nil : identity
+        }
 
         let tempURL = outputURL.deletingLastPathComponent()
             .appendingPathComponent(".\(UUID().uuidString).m4a")
@@ -83,7 +86,12 @@ public struct M4BExporter: Sendable {
             }
 
             try cancellation.checkCancelled()
-            try Self.publish(staging: tempURL, to: outputURL, overwrite: overwrite)
+            try Self.publish(
+                staging: tempURL,
+                to: outputURL,
+                overwrite: overwrite,
+                expectedIdentity: expectedIdentity
+            )
             OutputAssociation.record(outputURL, inBookFolder: book.folder)
             SourceAssociation.record(chapters.map(\.url), dest: outputURL, inBookFolder: book.folder)
             progress?(1.0, "Finished \(book.title)")
@@ -569,17 +577,29 @@ extension M4BExporter {
     }
 
     /// Publishes a ready staging file. Never delete-then-move the previous dest.
-    static func publish(staging: URL, to dest: URL, overwrite: Bool) throws {
+    /// `expectedIdentity` is the dest snapshot from export start (`nil` = absent).
+    static func publish(
+        staging: URL,
+        to dest: URL,
+        overwrite: Bool,
+        expectedIdentity: FileIdentity?
+    ) throws {
         let kind = destinationKind(dest)
         if kind.isDirectory {
             throw BinderError.exportFailed("Destination is a directory: \(dest.path)")
         }
-        if kind.exists && !overwrite {
-            throw BinderError.outputExists(dest)
+        let live = FileIdentity.read(from: dest).flatMap { identity in
+            identity.isDirectory ? nil : identity
         }
 
-        do {
-            if kind.exists {
+        if let expectedIdentity {
+            guard let live, live.isSameVersion(as: expectedIdentity) else {
+                throw BinderError.outputExists(dest)
+            }
+            if !overwrite {
+                throw BinderError.outputExists(dest)
+            }
+            do {
                 var resultingItemURL: NSURL?
                 try FileManager.default.replaceItem(
                     at: dest,
@@ -588,19 +608,30 @@ extension M4BExporter {
                     options: [],
                     resultingItemURL: &resultingItemURL
                 )
-            } else {
-                try FileManager.default.moveItem(at: staging, to: dest)
-            }
-        } catch {
-            if overwrite && !FileManager.default.fileExists(atPath: dest.path) {
-                do {
-                    try FileManager.default.moveItem(at: staging, to: dest)
-                    return
-                } catch {
-                    throw BinderError.exportFailed(error.localizedDescription)
+            } catch {
+                if overwrite && !FileManager.default.fileExists(atPath: dest.path) {
+                    do {
+                        try FileManager.default.moveItem(at: staging, to: dest)
+                        return
+                    } catch {
+                        throw BinderError.exportFailed(error.localizedDescription)
+                    }
                 }
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    throw BinderError.outputExists(dest)
+                }
+                throw BinderError.exportFailed(error.localizedDescription)
             }
-            if !overwrite && FileManager.default.fileExists(atPath: dest.path) {
+            return
+        }
+
+        if live != nil || kind.exists {
+            throw BinderError.outputExists(dest)
+        }
+        do {
+            try FileManager.default.moveItem(at: staging, to: dest)
+        } catch {
+            if FileManager.default.fileExists(atPath: dest.path) {
                 throw BinderError.outputExists(dest)
             }
             throw BinderError.exportFailed(error.localizedDescription)

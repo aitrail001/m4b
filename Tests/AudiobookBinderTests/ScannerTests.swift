@@ -457,11 +457,7 @@ final class ScannerTests: XCTestCase {
 
         let dest = out.appendingPathComponent("Same - Ann - EditionB.m4b")
         try Data("OWNED-B".utf8).write(to: dest)
-        try dest.standardizedFileURL.path.write(
-            to: book.appendingPathComponent(".audiobookbinder-output"),
-            atomically: true,
-            encoding: .utf8
-        )
+        OutputAssociation.record(dest, inBookFolder: book)
 
         let loaded = try await BookScanner().loadBook(at: book)
         XCTAssertEqual(loaded.existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)

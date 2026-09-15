@@ -40,29 +40,33 @@ public struct CleanupJobOwner: Equatable, Sendable {
         current == job && job.generation == generation
     }
 
-    /// Success: remaining chapters from reconciling the *snapshot* chapters against moved files.
+    /// Success: remaining chapters from reconciling the live book's chapters against moved files.
     @discardableResult
     public func commitSuccess(
         _ books: inout [Audiobook],
         job: CleanupJob,
         inspection: M4BInspection,
-        snapshotChapters: [Chapter],
         moved: [URL]
     ) -> Bool {
-        let remaining = SourceCleanup.reconcile(chapters: snapshotChapters, moved: moved)
+        guard let index = books.firstIndex(where: { $0.id == job.bookID }) else {
+            return false
+        }
+        let remaining = SourceCleanup.reconcile(chapters: books[index].chapters, moved: moved)
         return apply(to: &books, job: job, inspection: inspection, remainingChapters: remaining)
     }
 
-    /// Partial: remaining chapters from reconciling the *snapshot* chapters.
+    /// Partial: remaining chapters from reconciling the live book's chapters.
     @discardableResult
     public func commitPartial(
         _ books: inout [Audiobook],
         job: CleanupJob,
         inspection: M4BInspection,
-        snapshotChapters: [Chapter],
         moved: [URL]
     ) -> Bool {
-        let remaining = SourceCleanup.reconcile(chapters: snapshotChapters, moved: moved)
+        guard let index = books.firstIndex(where: { $0.id == job.bookID }) else {
+            return false
+        }
+        let remaining = SourceCleanup.reconcile(chapters: books[index].chapters, moved: moved)
         return apply(to: &books, job: job, inspection: inspection, remainingChapters: remaining)
     }
 

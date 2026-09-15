@@ -22,7 +22,6 @@ final class CleanupJobTests: XCTestCase {
             &books,
             job: job!,
             inspection: bookA.inspection,
-            snapshotChapters: bookA.book.chapters,
             moved: bookA.chapterURLs
         )
 
@@ -49,7 +48,6 @@ final class CleanupJobTests: XCTestCase {
             &books,
             job: job!,
             inspection: bookA.inspection,
-            snapshotChapters: bookA.book.chapters,
             moved: bookA.chapterURLs
         )
         XCTAssertTrue(books.isEmpty)
@@ -74,7 +72,6 @@ final class CleanupJobTests: XCTestCase {
             &books,
             job: job!,
             inspection: bookA.inspection,
-            snapshotChapters: bookA.book.chapters,
             moved: bookA.chapterURLs
         )
 
@@ -107,7 +104,6 @@ final class CleanupJobTests: XCTestCase {
                 &books,
                 job: job,
                 inspection: fixture.inspection,
-                snapshotChapters: snapshot.chapters,
                 moved: moved
             )
         )
@@ -116,6 +112,72 @@ final class CleanupJobTests: XCTestCase {
         XCTAssertFalse(books[0].chapters[0].included)
         XCTAssertEqual(books[0].existingM4BURL, fixture.inspection.url)
         XCTAssertEqual(books[0].boundDuration, fixture.inspection.duration)
+        XCTAssertTrue(books[0].selected)
+    }
+
+    func testCommitSuccessKeepsLiveEditsOnUnmovedExtraChapter() throws {
+        let fixture = try makeBoundBook(name: "LiveEditSuccess", chapterFiles: ["01.mp3", "02.mp3", "extra.mp3"])
+        defer { fixture.tearDown() }
+
+        let snapshot = fixture.book
+        XCTAssertEqual(snapshot.chapters[2].title, "Chapter 3")
+        XCTAssertTrue(snapshot.chapters[2].included)
+        XCTAssertNil(snapshot.chapters[2].exclusionReason)
+
+        var owner = CleanupJobOwner()
+        var books = [snapshot]
+        let job = try XCTUnwrap(owner.begin(bookID: snapshot.id))
+
+        books[0].chapters[2].title = "Edited extra"
+        books[0].chapters[2].included = false
+        books[0].chapters[2].exclusionReason = "user off"
+
+        XCTAssertTrue(
+            owner.commitSuccess(
+                &books,
+                job: job,
+                inspection: fixture.inspection,
+                moved: [fixture.chapterURLs[0], fixture.chapterURLs[1]]
+            )
+        )
+
+        XCTAssertEqual(books[0].chapters.map(\.url.lastPathComponent), ["extra.mp3"])
+        XCTAssertEqual(books[0].chapters[0].title, "Edited extra")
+        XCTAssertFalse(books[0].chapters[0].included)
+        XCTAssertEqual(books[0].chapters[0].exclusionReason, "user off")
+        XCTAssertNotEqual(books[0].chapters[0].title, snapshot.chapters[2].title)
+        XCTAssertTrue(books[0].selected)
+    }
+
+    func testCommitPartialKeepsLiveEditsOnUnmovedExtraChapter() throws {
+        let fixture = try makeBoundBook(name: "LiveEditPartial", chapterFiles: ["01.mp3", "02.mp3", "extra.mp3"])
+        defer { fixture.tearDown() }
+
+        let snapshot = fixture.book
+        XCTAssertEqual(snapshot.chapters[2].title, "Chapter 3")
+        XCTAssertTrue(snapshot.chapters[2].included)
+
+        var owner = CleanupJobOwner()
+        var books = [snapshot]
+        let job = try XCTUnwrap(owner.begin(bookID: snapshot.id))
+
+        books[0].chapters[2].title = "Edited extra"
+        books[0].chapters[2].included = false
+        books[0].chapters[2].exclusionReason = "user off"
+
+        XCTAssertTrue(
+            owner.commitPartial(
+                &books,
+                job: job,
+                inspection: fixture.inspection,
+                moved: [fixture.chapterURLs[0], fixture.chapterURLs[1]]
+            )
+        )
+
+        XCTAssertEqual(books[0].chapters.map(\.url.lastPathComponent), ["extra.mp3"])
+        XCTAssertEqual(books[0].chapters[0].title, "Edited extra")
+        XCTAssertFalse(books[0].chapters[0].included)
+        XCTAssertEqual(books[0].chapters[0].exclusionReason, "user off")
         XCTAssertTrue(books[0].selected)
     }
 
@@ -132,7 +194,6 @@ final class CleanupJobTests: XCTestCase {
                 &books,
                 job: job,
                 inspection: fixture.inspection,
-                snapshotChapters: fixture.book.chapters,
                 moved: fixture.chapterURLs
             )
         )
@@ -164,7 +225,6 @@ final class CleanupJobTests: XCTestCase {
             &books,
             job: job!,
             inspection: bookA.inspection,
-            snapshotChapters: snapshot,
             moved: moved
         )
 
@@ -212,7 +272,6 @@ final class CleanupJobTests: XCTestCase {
                 &books,
                 job: job,
                 inspection: inspection,
-                snapshotChapters: bookA.book.chapters,
                 moved: [bookA.chapterURLs[0]]
             )
         )
@@ -244,7 +303,6 @@ final class CleanupJobTests: XCTestCase {
             &books,
             job: job!,
             inspection: bookA.inspection,
-            snapshotChapters: bookA.book.chapters,
             moved: bookA.chapterURLs
         )
 

@@ -327,7 +327,6 @@ final class AppState {
                     &books,
                     job: job,
                     inspection: inspectionSnapshot,
-                    snapshotChapters: bookSnapshot.chapters,
                     moved: result.moved
                 ) {
                     playback.stop()
@@ -342,7 +341,6 @@ final class AppState {
                     &books,
                     job: job,
                     inspection: inspectionSnapshot,
-                    snapshotChapters: bookSnapshot.chapters,
                     moved: result.moved
                 )
             }

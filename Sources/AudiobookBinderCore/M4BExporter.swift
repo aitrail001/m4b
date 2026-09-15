@@ -664,14 +664,10 @@ extension M4BExporter {
     }
 
     private static func isOwnedDestination(_ dest: URL, book: Audiobook) -> Bool {
-        if let associated = OutputAssociation.load(inBookFolder: book.folder),
-           isSameFileURL(associated, dest) {
-            return true
+        guard let associated = OutputAssociation.load(inBookFolder: book.folder) else {
+            return false
         }
-        if let existing = book.existingM4BURL, isSameFileURL(existing, dest) {
-            return true
-        }
-        return false
+        return isSameFileURL(associated, dest)
     }
 
     private static func shouldSkipExistingDestination(

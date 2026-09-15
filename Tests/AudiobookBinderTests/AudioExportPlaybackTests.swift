@@ -177,6 +177,68 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dest), planted)
     }
 
+    func testExportRefusesStaleExistingM4BURLDestAppearingAfterPreflight() async throws {
+        let dir = try TestSupport.tempDir("export-stale-existing-appear")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var book = try makeSilenceBook(folder: dir, title: "StaleExisting", author: "A")
+        let dest = dir.appendingPathComponent(book.suggestedFileName)
+        try Data("PRIOR-OWNED".utf8).write(to: dest)
+        book.existingM4BURL = dest
+        XCTAssertTrue(OutputAssociation.record(dest, inBookFolder: dir))
+        try FileManager.default.removeItem(at: dest)
+        XCTAssertNil(OutputAssociation.load(inBookFolder: dir))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+
+        let planted = Data("PLANTED-STALE-EXISTING".utf8)
+        let plantedFlag = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPreflight = {
+            plantedFlag.mark()
+            try? planted.write(to: dest)
+        }
+
+        do {
+            try await exporter.export(book: book, to: dest, overwrite: true)
+            XCTFail("expected outputExists")
+        } catch let error as BinderError {
+            guard case .outputExists = error else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertTrue(plantedFlag.isSet, "hook must plant dest after preflight")
+        XCTAssertNil(OutputAssociation.load(inBookFolder: dir))
+        XCTAssertEqual(try Data(contentsOf: dest), planted)
+    }
+
+    func testExportAdoptsAssociatedDestAppearingAfterPreflight() async throws {
+        let dir = try TestSupport.tempDir("export-adopt-associated-appear")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var book = try makeSilenceBook(folder: dir, title: "AdoptAssociated", author: "A")
+        let dest = dir.appendingPathComponent(book.suggestedFileName)
+        let owned = Data("ASSOCIATED-DEST".utf8)
+        try owned.write(to: dest)
+        book.existingM4BURL = dest
+        XCTAssertTrue(OutputAssociation.record(dest, inBookFolder: dir))
+        let aside = dest.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).m4b")
+        try FileManager.default.moveItem(at: dest, to: aside)
+        XCTAssertNil(OutputAssociation.load(inBookFolder: dir))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+
+        let restored = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPreflight = {
+            restored.mark()
+            try? FileManager.default.moveItem(at: aside, to: dest)
+        }
+
+        try await exporter.export(book: book, to: dest, overwrite: true)
+
+        XCTAssertTrue(restored.isSet, "hook must restore associated dest after preflight")
+        XCTAssertNotEqual(try Data(contentsOf: dest), owned)
+        let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
+    }
+
     func testExportOverwriteReplacesDestThatExistedAtStart() async throws {
         let dir = try TestSupport.tempDir("export-existed-at-start")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -448,6 +510,47 @@ final class AudioExportPlaybackTests: XCTestCase {
             XCTFail("expected skip or failure, got \(results[0].outcome)")
         }
         XCTAssertEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertEqual(try Data(contentsOf: dest), planted)
+    }
+
+    func testExportAllRefusesStaleExistingM4BURLDestAppearingBeforeExport() async throws {
+        let root = try TestSupport.tempDir("export-all-stale-existing-appear")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("Book", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        var book = try makeSilenceBook(folder: bookDir, title: "StaleExisting", author: "A")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+        book.existingM4BURL = dest
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+        XCTAssertNil(OutputAssociation.load(inBookFolder: bookDir))
+        XCTAssertEqual(
+            settings.plannedOutputs(for: [book])[book.id]?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+
+        let planted = Data("PLANTED-STALE-BEFORE-EXPORT".utf8)
+        let plantedFlag = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.beforeExport = {
+            plantedFlag.mark()
+            try? planted.write(to: dest)
+        }
+
+        let results = try await exporter.exportAll(books: [book], settings: settings)
+        XCTAssertTrue(plantedFlag.isSet, "hook must plant dest after the last skip check")
+        XCTAssertEqual(results.count, 1)
+        switch results[0].outcome {
+        case .skippedExisting, .failed:
+            break
+        default:
+            XCTFail("expected skip or failure, got \(results[0].outcome)")
+        }
+        XCTAssertEqual(results[0].url.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertNil(OutputAssociation.load(inBookFolder: bookDir))
         XCTAssertEqual(try Data(contentsOf: dest), planted)
     }
 

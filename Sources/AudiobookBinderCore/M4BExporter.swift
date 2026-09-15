@@ -8,12 +8,18 @@ public struct M4BExporter: Sendable {
     package var afterSourceCapture: (@Sendable () -> Void)?
     /// Test seam: runs after successful publish, before dest hash / provenance.
     package var afterPublish: (@Sendable () -> Void)?
+    /// Test seam: runs after dest-absent is recorded and before identity capture.
+    package var afterPreflight: (@Sendable () -> Void)?
+    /// Test seam: runs after the first exportAll existence/owns check.
+    package var afterDestinationCheck: (@Sendable () -> Void)?
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
         self.sampleRate = sampleRate
         self.afterSourceCapture = nil
         self.afterPublish = nil
+        self.afterPreflight = nil
+        self.afterDestinationCheck = nil
     }
 
     public static func chaptersReadyForExport(_ chapters: [Chapter]) -> [Chapter] {
@@ -42,16 +48,20 @@ public struct M4BExporter: Sendable {
         overwrite: Bool,
         progress: (@Sendable (Double, String) -> Void)? = nil
     ) async throws {
+        let destWasAbsent = !Self.existingRegularFile(outputURL)
         try Self.preflightDestination(outputURL, book: book, overwrite: overwrite)
         _ = try Self.chaptersForExport(book.chapters, folder: book.folder)
+        afterPreflight?()
 
         try FileManager.default.createDirectory(
             at: outputURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let expectedIdentity = FileIdentity.read(from: outputURL).flatMap { identity in
-            identity.isDirectory ? nil : identity
-        }
+        let expectedIdentity = try Self.expectedDestinationIdentity(
+            dest: outputURL,
+            book: book,
+            destWasAbsent: destWasAbsent
+        )
 
         let tempURL = outputURL.deletingLastPathComponent()
             .appendingPathComponent(".\(UUID().uuidString).m4a")
@@ -156,15 +166,16 @@ public struct M4BExporter: Sendable {
                 )
                 return results
             }
+            if Self.shouldSkipExistingDestination(dest, book: book, settings: settings) {
+                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                continue
+            }
+            afterDestinationCheck?()
+            if Self.shouldSkipExistingDestination(dest, book: book, settings: settings) {
+                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                continue
+            }
             let existed = Self.existingRegularFile(dest)
-            if existed && !settings.owns(dest, for: book) {
-                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
-                continue
-            }
-            if existed && !settings.overwrite {
-                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
-                continue
-            }
             do {
                 try await export(book: book, to: dest, overwrite: settings.overwrite) { fraction, detail in
                     progress?(
@@ -622,6 +633,44 @@ extension M4BExporter {
             let dest = destinations[book.id] ?? settings.outputURL(for: book)
             results.append(BookExportResult(bookID: book.id, url: dest, outcome: .cancelled))
         }
+    }
+
+    /// Dest that existed at export start keeps current overwrite/replace identity.
+    /// Dest that appears after that observation is adopted only when this book owns it.
+    private static func expectedDestinationIdentity(
+        dest: URL,
+        book: Audiobook,
+        destWasAbsent: Bool
+    ) throws -> FileIdentity? {
+        let live = FileIdentity.read(from: dest).flatMap { identity in
+            identity.isDirectory ? nil : identity
+        }
+        guard destWasAbsent else { return live }
+        guard live != nil || existingRegularFile(dest) else { return nil }
+        guard isOwnedDestination(dest, book: book) else {
+            throw BinderError.outputExists(dest)
+        }
+        return live
+    }
+
+    private static func isOwnedDestination(_ dest: URL, book: Audiobook) -> Bool {
+        if let associated = OutputAssociation.load(inBookFolder: book.folder),
+           isSameFileURL(associated, dest) {
+            return true
+        }
+        if let existing = book.existingM4BURL, isSameFileURL(existing, dest) {
+            return true
+        }
+        return false
+    }
+
+    private static func shouldSkipExistingDestination(
+        _ dest: URL,
+        book: Audiobook,
+        settings: ExportSettings
+    ) -> Bool {
+        guard existingRegularFile(dest) else { return false }
+        return !settings.owns(dest, for: book) || !settings.overwrite
     }
 
     static func preflightDestination(_ dest: URL, book: Audiobook, overwrite: Bool) throws {

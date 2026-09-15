@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import AudiobookBinderCore
 
@@ -883,4 +884,169 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertLessThanOrEqual(data.count, SourceAssociation.maxSidecarBytes)
         try data.write(to: SourceAssociation.sidecarURL(inBookFolder: folder))
     }
+}
+
+final class BoundedFileReadTests: XCTestCase {
+    func testRejectsFIFOPromptly() throws {
+        let root = try TestSupport.tempDir("bounded-fifo")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fifo = root.appendingPathComponent(OutputAssociation.fileName)
+        try makeFIFO(at: fifo)
+        try makeFIFO(at: SourceAssociation.sidecarURL(inBookFolder: root))
+
+        assertNilPromptly("fifo-read") {
+            BoundedFileRead.read(from: fifo, maxBytes: 64)
+        }
+        assertNilPromptly("fifo-output-load") {
+            OutputAssociation.load(inBookFolder: root)
+        }
+        assertNilPromptly("fifo-output-hint") {
+            OutputAssociation.destinationHint(inBookFolder: root)
+        }
+        assertNilPromptly("fifo-source-load") {
+            SourceAssociation.loadDocument(inBookFolder: root)
+        }
+    }
+
+    func testRejectsDirectoryPromptly() throws {
+        let root = try TestSupport.tempDir("bounded-dir")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sidecar = root.appendingPathComponent(OutputAssociation.fileName)
+        try FileManager.default.createDirectory(at: sidecar, withIntermediateDirectories: true)
+
+        assertNilPromptly("dir-read") {
+            BoundedFileRead.read(from: sidecar, maxBytes: 64)
+        }
+        assertNilPromptly("dir-hint") {
+            OutputAssociation.destinationHint(inBookFolder: root)
+        }
+    }
+
+    func testRejectsSymlinkToRegularSidecarWithoutFollowing() throws {
+        let root = try TestSupport.tempDir("bounded-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("book.m4b")
+        try Data("M4B".utf8).write(to: dest)
+        let real = root.appendingPathComponent("real-sidecar")
+        try dest.standardizedFileURL.path.write(to: real, atomically: true, encoding: .utf8)
+        let link = root.appendingPathComponent(OutputAssociation.fileName)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        assertNilPromptly("symlink-read") {
+            BoundedFileRead.read(from: link, maxBytes: 256)
+        }
+        assertNilPromptly("symlink-hint") {
+            OutputAssociation.destinationHint(inBookFolder: root)
+        }
+    }
+
+    func testRejectsSymlinkToFIFOPromptly() throws {
+        let root = try TestSupport.tempDir("bounded-symlink-fifo")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fifo = root.appendingPathComponent("no-writer.fifo")
+        try makeFIFO(at: fifo)
+        let link = root.appendingPathComponent(OutputAssociation.fileName)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fifo)
+
+        assertNilPromptly("symlink-fifo-read") {
+            BoundedFileRead.read(from: link, maxBytes: 64)
+        }
+    }
+
+    func testRejectsCharacterDevicePromptly() throws {
+        let device = URL(fileURLWithPath: "/dev/null")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: device.path), "/dev/null missing")
+        assertNilPromptly("dev-null") {
+            BoundedFileRead.read(from: device, maxBytes: 16)
+        }
+    }
+
+    func testEmptyMissingAndSizeLimits() throws {
+        let root = try TestSupport.tempDir("bounded-limits")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertNil(BoundedFileRead.read(from: root.appendingPathComponent("missing"), maxBytes: 16))
+
+        let empty = root.appendingPathComponent("empty")
+        try Data().write(to: empty)
+        XCTAssertNil(BoundedFileRead.read(from: empty, maxBytes: 16))
+
+        let exact = Data(repeating: 0x61, count: 16)
+        let exactURL = root.appendingPathComponent("exact")
+        try exact.write(to: exactURL)
+        XCTAssertEqual(BoundedFileRead.read(from: exactURL, maxBytes: 16), exact)
+        XCTAssertNil(BoundedFileRead.read(from: exactURL, maxBytes: 15))
+
+        let over = Data(repeating: 0x62, count: 17)
+        let overURL = root.appendingPathComponent("over")
+        try over.write(to: overURL)
+        XCTAssertNil(BoundedFileRead.read(from: overURL, maxBytes: 16))
+        XCTAssertEqual(BoundedFileRead.read(from: overURL, maxBytes: 17), over)
+    }
+
+    func testMalformedJSONLoadReturnsNil() throws {
+        let root = try TestSupport.tempDir("bounded-bad-json")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("not-json".utf8).write(to: root.appendingPathComponent(OutputAssociation.fileName))
+        try Data("not-json".utf8).write(to: SourceAssociation.sidecarURL(inBookFolder: root))
+
+        XCTAssertNil(OutputAssociation.load(inBookFolder: root))
+        XCTAssertNil(OutputAssociation.destinationHint(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
+    func testOutputAssociationRecordStillLoads() throws {
+        let root = try TestSupport.tempDir("bounded-record")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("book.m4b")
+        try Data("M4B".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: root)
+
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: root)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            OutputAssociation.destinationHint(inBookFolder: root)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+    }
+
+    private func assertNilPromptly<T>(
+        _ name: String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        work: @escaping @Sendable () -> T?
+    ) {
+        let finished = expectation(description: name)
+        let box = PromptBox<T>()
+        DispatchQueue.global(qos: .userInitiated).async {
+            box.value = work()
+            box.didFinish = true
+            finished.fulfill()
+        }
+        let outcome = XCTWaiter().wait(for: [finished], timeout: 1.0)
+        XCTAssertEqual(outcome, .completed, "\(name) did not return within 1s", file: file, line: line)
+        XCTAssertTrue(box.didFinish, "\(name) did not finish", file: file, line: line)
+        XCTAssertNil(box.value, file: file, line: line)
+    }
+
+    private func makeFIFO(at url: URL) throws {
+        let status = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return mkfifo(path, S_IRUSR | S_IWUSR)
+        }
+        guard status == 0 else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(errno),
+                userInfo: [NSFilePathErrorKey: url.path]
+            )
+        }
+    }
+}
+
+private final class PromptBox<T>: @unchecked Sendable {
+    var value: T?
+    var didFinish = false
 }

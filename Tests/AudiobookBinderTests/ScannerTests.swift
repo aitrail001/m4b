@@ -488,6 +488,113 @@ final class ScannerTests: XCTestCase {
         XCTAssertNotEqual(loaded.existingM4BURL?.lastPathComponent, "leftover.m4b")
     }
 
+    func testScanDiscoversCleanedBookViaOutputAssociation() async throws {
+        let root = try TestSupport.tempDir("scan-cleaned-assoc")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = root.appendingPathComponent("library", isDirectory: true)
+        let book = library.appendingPathComponent("Cleaned Book", isDirectory: true)
+        let dest = try recordExternalBoundM4B(named: "Cleaned Book - Ann.m4b", inBookFolder: book, under: root)
+
+        let books = try await BookScanner().scan(root: library)
+        XCTAssertEqual(books.count, 1)
+        XCTAssertEqual(books[0].folder.standardizedFileURL.path, book.standardizedFileURL.path)
+        XCTAssertEqual(books[0].existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertTrue(books[0].chapters.isEmpty)
+        XCTAssertTrue(books[0].isAlreadyBound)
+    }
+
+    func testScanDiscoversCleanedBookUnderAuthorFolder() async throws {
+        let root = try TestSupport.tempDir("scan-cleaned-nested-assoc")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = root.appendingPathComponent("library", isDirectory: true)
+        let author = library.appendingPathComponent("Ann Author", isDirectory: true)
+        let book = author.appendingPathComponent("Cleaned Book", isDirectory: true)
+        let dest = try recordExternalBoundM4B(named: "Cleaned Book - Ann.m4b", inBookFolder: book, under: root)
+
+        let emptyAuthor = library.appendingPathComponent("Empty Author", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: emptyAuthor.appendingPathComponent("Empty Folder", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let books = try await BookScanner().scan(root: library)
+        XCTAssertEqual(books.count, 1)
+        XCTAssertEqual(books[0].folder.standardizedFileURL.path, book.standardizedFileURL.path)
+        XCTAssertEqual(books[0].existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertTrue(books[0].chapters.isEmpty)
+
+        let lonely = root.appendingPathComponent("lonely-library", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: lonely.appendingPathComponent("Lonely Author/Empty Folder", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        do {
+            _ = try await BookScanner().scan(root: lonely)
+            XCTFail("expected noBooksFound")
+        } catch let error as BinderError {
+            guard case .noBooksFound = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testScanOmitsCleanedFolderWithoutValidAssociation() async throws {
+        let root = try TestSupport.tempDir("scan-cleaned-no-assoc")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = root.appendingPathComponent("library", isDirectory: true)
+        let missingDest = library.appendingPathComponent("Missing Dest", isDirectory: true)
+        let sidecarOnly = library.appendingPathComponent("Sidecar Only", isDirectory: true)
+        try FileManager.default.createDirectory(at: missingDest, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sidecarOnly, withIntermediateDirectories: true)
+
+        let vanished = root.appendingPathComponent("out/vanished.m4b")
+        try FileManager.default.createDirectory(at: vanished.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("GONE".utf8).write(to: vanished)
+        OutputAssociation.record(vanished, inBookFolder: missingDest)
+        try FileManager.default.removeItem(at: vanished)
+
+        let hint = root.appendingPathComponent("out/hint-only.m4b")
+        try Data("HINT".utf8).write(to: hint)
+        try TestSupport.writePathOnlyOutputSidecar(hint, in: sidecarOnly)
+
+        XCTAssertFalse(BookScanner().isSingleBookFolder(missingDest))
+        XCTAssertFalse(BookScanner().isSingleBookFolder(sidecarOnly))
+        do {
+            _ = try await BookScanner().scan(root: library)
+            XCTFail("expected noBooksFound")
+        } catch let error as BinderError {
+            guard case .noBooksFound = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testLoadAlreadyBoundBookUsesAssociatedDestination() async throws {
+        let root = try TestSupport.tempDir("load-cleaned-assoc")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("Cleaned Book", isDirectory: true)
+        let dest = try recordExternalBoundM4B(named: "Cleaned Book - Ann.m4b", inBookFolder: book, under: root)
+
+        let scanner = BookScanner()
+        let loaded = try await scanner.loadBook(at: book)
+        XCTAssertEqual(loaded.existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertTrue(loaded.chapters.isEmpty)
+
+        try Data("LOCAL".utf8).write(to: book.appendingPathComponent("leftover.m4b"))
+        let alreadyBound = try await scanner.loadAlreadyBoundBook(at: book)
+        XCTAssertEqual(alreadyBound.existingM4BURL?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertNotEqual(alreadyBound.existingM4BURL?.lastPathComponent, "leftover.m4b")
+        XCTAssertTrue(alreadyBound.chapters.isEmpty)
+    }
+
+    func testIsSingleBookFolderWhenOnlyValidAssociationRemains() throws {
+        let root = try TestSupport.tempDir("single-cleaned-assoc")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("Cleaned Book", isDirectory: true)
+        try FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+        let scanner = BookScanner()
+        XCTAssertFalse(scanner.isSingleBookFolder(book))
+
+        _ = try recordExternalBoundM4B(named: "Cleaned Book - Ann.m4b", inBookFolder: book, under: root)
+        XCTAssertTrue(scanner.isSingleBookFolder(book))
+    }
+
     func testHasDirectAudioIgnoresM4B() throws {
         let dir = try TestSupport.tempDir("direct")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -624,6 +731,17 @@ final class ScannerTests: XCTestCase {
         relative.split(separator: "/").reduce(root) { partial, part in
             partial.appendingPathComponent(String(part))
         }
+    }
+
+    @discardableResult
+    private func recordExternalBoundM4B(named name: String, inBookFolder book: URL, under root: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let dest = out.appendingPathComponent(name)
+        try Data("BOUND".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: book)
+        return dest
     }
 
     private func writeRelativeMP3(in root: URL, _ relative: String) throws {

@@ -47,7 +47,9 @@ public struct BookScanner: Sendable {
     }
 
     public func isSingleBookFolder(_ folder: URL) -> Bool {
-        if hasDirectAudio(folder) || hasDirectM4B(folder) { return true }
+        if hasDirectAudio(folder) || hasDirectM4B(folder) || hasValidOutputAssociation(folder) {
+            return true
+        }
         let children = bookSubfolders(folder)
         if children.isEmpty { return false }
         if children.count == 1 {
@@ -67,6 +69,9 @@ public struct BookScanner: Sendable {
             return [folder]
         }
         if hasDirectM4B(folder) {
+            return [folder]
+        }
+        if hasValidOutputAssociation(folder) {
             return [folder]
         }
 
@@ -154,6 +159,29 @@ public struct BookScanner: Sendable {
         return items.contains { $0.pathExtension.lowercased() == "m4b" }
     }
 
+    func hasValidOutputAssociation(_ folder: URL) -> Bool {
+        OutputAssociation.load(inBookFolder: folder) != nil
+    }
+
+    func containsValidOutputAssociation(_ folder: URL) -> Bool {
+        if hasValidOutputAssociation(folder) { return true }
+        return candidateSubdirectories(folder).contains { containsValidOutputAssociation($0) }
+    }
+
+    func containsValidOutputAssociation(
+        _ folder: URL,
+        progress: (@Sendable (JobProgress) -> Void)?
+    ) async throws -> Bool {
+        if hasValidOutputAssociation(folder) { return true }
+        for child in candidateSubdirectories(folder) {
+            try await emit(progress, .checking(child))
+            if try await containsValidOutputAssociation(child, progress: progress) {
+                return true
+            }
+        }
+        return false
+    }
+
     func bookSubfolders(
         _ folder: URL,
         progress: (@Sendable (JobProgress) -> Void)? = nil
@@ -165,6 +193,8 @@ public struct BookScanner: Sendable {
             let m4bs = try collectM4BThrowing(in: dir)
             if !audio.isEmpty || !m4bs.isEmpty {
                 kept.append(dir)
+            } else if try await containsValidOutputAssociation(dir, progress: progress) {
+                kept.append(dir)
             }
         }
         return kept
@@ -172,7 +202,7 @@ public struct BookScanner: Sendable {
 
     func bookSubfolders(_ folder: URL) -> [URL] {
         candidateSubdirectories(folder).filter {
-            !collectAudio(in: $0).isEmpty || !collectM4B(in: $0).isEmpty
+            !collectAudio(in: $0).isEmpty || !collectM4B(in: $0).isEmpty || containsValidOutputAssociation($0)
         }
     }
 
@@ -315,10 +345,20 @@ public struct BookScanner: Sendable {
 
     func loadAlreadyBoundBook(at folder: URL) async throws -> Audiobook {
         try Task.checkCancellation()
-        let m4bs = try collectM4BThrowing(in: folder).sorted {
+        let associated = OutputAssociation.load(inBookFolder: folder)
+        let localM4Bs = try collectM4BThrowing(in: folder).sorted {
             $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
         }
-        guard let m4b = m4bs.first else { throw BinderError.noAudioFiles(folder) }
+        let m4b: URL
+        if let associated,
+           OutputAssociation.hasM4BExtension(associated),
+           OutputAssociation.isExistingRegularFile(associated) {
+            m4b = associated
+        } else if let local = localM4Bs.first {
+            m4b = local
+        } else {
+            throw BinderError.noAudioFiles(folder)
+        }
 
         Self.testingBeforeLoadTags?()
         let firstTags = await AudioMetadata.loadTags(from: m4b, includeArtwork: true)

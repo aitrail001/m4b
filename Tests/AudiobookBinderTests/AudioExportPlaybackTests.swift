@@ -1465,6 +1465,15 @@ final class AudioExportPlaybackTests: XCTestCase {
             SourceCleanup.controlsState(canCleanupSources: true, isBuilding: false, cached: cachedAllow),
             .allowed(sourceCount: 2)
         )
+        XCTAssertEqual(
+            SourceCleanup.controlsState(
+                canCleanupSources: true,
+                isBuilding: false,
+                cached: cachedAllow,
+                isCleaningUp: true
+            ),
+            .hidden
+        )
 
         let snap = DigestProbe.snapshot()
         XCTAssertEqual(snap.callCount, 0)

@@ -41,9 +41,10 @@ public enum SourceCleanup {
     public static func controlsState(
         canCleanupSources: Bool,
         isBuilding: Bool,
-        cached: SourceCleanupAuthorization?
+        cached: SourceCleanupAuthorization?,
+        isCleaningUp: Bool = false
     ) -> SourceCleanupControlsState {
-        guard canCleanupSources, !isBuilding else { return .hidden }
+        guard canCleanupSources, !isBuilding, !isCleaningUp else { return .hidden }
         guard let cached else { return .pending }
         if cached.allowed {
             return .allowed(sourceCount: cached.sources.count)

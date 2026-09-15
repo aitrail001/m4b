@@ -66,7 +66,7 @@ struct ContentView: View {
             Spacer()
             Button("Open Folder…") { appState.openFolder() }
                 .buttonStyle(BinderButtonStyle())
-                .disabled(appState.isScanning || appState.isBuilding)
+                .disabled(appState.isScanning || appState.isBuilding || appState.isCleaningUp)
             Button(appState.isBuilding ? "Building…" : "Build \(appState.selectedCount) Selected") {
                 appState.buildSelected()
             }
@@ -75,7 +75,8 @@ struct ContentView: View {
                 appState.selectedCount == 0
                     || !JobGate.canStartBuild(
                         isScanning: appState.isScanning,
-                        isBuilding: appState.isBuilding
+                        isBuilding: appState.isBuilding,
+                        isCleaningUp: appState.isCleaningUp
                     )
             )
         }
@@ -261,7 +262,7 @@ struct ContentView: View {
 
     private var statusBar: some View {
         HStack(spacing: 12) {
-            if appState.isScanning || appState.isBuilding {
+            if appState.isScanning || appState.isBuilding || appState.isCleaningUp {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -532,7 +533,6 @@ struct ChaptersCompareSection: View {
     @State private var fileChapter: Chapter?
     @State private var inspecting = false
     @State private var confirmCleanup = false
-    @State private var cleanupError: String?
     @State private var cleanupAuth: SourceCleanupAuthorization?
 
     private var m4bURL: URL? { appState.boundURL(for: book) }
@@ -597,7 +597,7 @@ struct ChaptersCompareSection: View {
                 )
             }
 
-            if let cleanupError {
+            if let cleanupError = appState.cleanupError {
                 Text(cleanupError)
                     .font(.system(size: 12))
                     .foregroundStyle(Color.red.opacity(0.85))
@@ -864,7 +864,8 @@ struct ChaptersCompareSection: View {
         switch SourceCleanup.controlsState(
             canCleanupSources: book.canCleanupSources,
             isBuilding: appState.isBuilding,
-            cached: cleanupAuth
+            cached: cleanupAuth,
+            isCleaningUp: appState.isCleaningUp
         ) {
         case .allowed(let count):
             Button("Move \(count) original audio files to Trash") {
@@ -889,7 +890,7 @@ struct ChaptersCompareSection: View {
         let bookID = book.id
         let requestedGeneration = SourceCleanup.destGeneration(of: requested)
         inspecting = true
-        cleanupError = nil
+        appState.cleanupError = nil
         let result = await M4BInspector.inspect(requested, bookID: bookID)
         defer { inspecting = false }
         guard !Task.isCancelled else { return }
@@ -931,34 +932,8 @@ struct ChaptersCompareSection: View {
         guard let inspection else { return }
         let bookSnapshot = book
         let inspectionSnapshot = inspection
-        let isBuilding = appState.isBuilding
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                SourceCleanup.perform(
-                    book: bookSnapshot,
-                    inspection: inspectionSnapshot,
-                    isBuilding: isBuilding
-                )
-            }.value
-            if result.didFinish {
-                appState.applyCleanup(to: book.id, inspection: inspectionSnapshot)
-                cleanupError = nil
-                cleanupAuth = SourceCleanupAuthorization(allowed: false, sources: [])
-                return
-            }
-            if !result.moved.isEmpty {
-                let leftover = SourceCleanup.reconcile(
-                    chapters: bookSnapshot.chapters,
-                    moved: result.moved
-                )
-                appState.applyPartialCleanup(
-                    to: book.id,
-                    inspection: inspectionSnapshot,
-                    remainingChapters: leftover
-                )
-            }
-            cleanupError = result.error
-        }
+        appState.startCleanup(book: bookSnapshot, inspection: inspectionSnapshot)
+        cleanupAuth = nil
     }
 }
 

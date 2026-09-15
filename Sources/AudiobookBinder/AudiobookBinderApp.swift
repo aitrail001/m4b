@@ -45,6 +45,7 @@ struct BinderApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open Folder…") { appState.openFolder() }
                     .keyboardShortcut("o", modifiers: .command)
+                    .disabled(appState.isScanning || appState.isBuilding || appState.isCleaningUp)
             }
             CommandMenu("Library") {
                 Button("Select All") { appState.selectAll(true) }
@@ -57,7 +58,8 @@ struct BinderApp: App {
                         appState.books.isEmpty
                             || !JobGate.canStartBuild(
                                 isScanning: appState.isScanning,
-                                isBuilding: appState.isBuilding
+                                isBuilding: appState.isBuilding,
+                                isCleaningUp: appState.isCleaningUp
                             )
                     )
             }

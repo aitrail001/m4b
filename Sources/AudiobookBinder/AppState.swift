@@ -33,6 +33,7 @@ final class AppState {
     }
     var isScanning = false
     var isBuilding = false
+    var cleanupError: String?
     var status: String = "Choose a books folder to begin."
     var lastError: String?
     var scanProgress: JobProgress?
@@ -42,6 +43,9 @@ final class AppState {
     private var buildTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = ScanGeneration()
+    private var cleanupOwner = CleanupJobOwner()
+
+    var isCleaningUp: Bool { cleanupOwner.isCleaningUp }
 
     init() {
         settings = Self.loadSettings()
@@ -109,8 +113,14 @@ final class AppState {
     }
 
     func scan(_ url: URL) {
-        guard JobGate.canStartScan(isBuilding: isBuilding, isScanning: isScanning) else {
-            status = JobGate.cannotScanWhileBuilding
+        guard JobGate.canStartScan(
+            isBuilding: isBuilding,
+            isScanning: isScanning,
+            isCleaningUp: isCleaningUp
+        ) else {
+            status = isCleaningUp
+                ? JobGate.cannotScanWhileCleaningUp
+                : JobGate.cannotScanWhileBuilding
             return
         }
         playback.stop()
@@ -191,9 +201,15 @@ final class AppState {
     }
 
     func buildSelected() {
-        guard JobGate.canStartBuild(isScanning: isScanning, isBuilding: isBuilding) else {
+        guard JobGate.canStartBuild(
+            isScanning: isScanning,
+            isBuilding: isBuilding,
+            isCleaningUp: isCleaningUp
+        ) else {
             if isScanning {
                 status = JobGate.cannotBuildWhileScanning
+            } else if isCleaningUp {
+                status = JobGate.cannotBuildWhileCleaningUp
             }
             return
         }
@@ -268,22 +284,71 @@ final class AppState {
         return url
     }
 
-    func applyCleanup(to bookID: Audiobook.ID, inspection: M4BInspection) {
-        applyPartialCleanup(to: bookID, inspection: inspection, remainingChapters: [])
-    }
-
-    func applyPartialCleanup(
-        to bookID: Audiobook.ID,
-        inspection: M4BInspection,
-        remainingChapters: [Chapter]
-    ) {
-        guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
+    func startCleanup(book: Audiobook, inspection: M4BInspection) {
+        let bookSnapshot = book
+        let inspectionSnapshot = inspection
+        guard JobGate.canStartCleanup(
+            isScanning: isScanning,
+            isBuilding: isBuilding,
+            isCleaningUp: isCleaningUp
+        ) else {
+            let reason: String
+            if isScanning {
+                reason = JobGate.cannotCleanupWhileScanning
+            } else if isBuilding {
+                reason = JobGate.cannotCleanupWhileBuilding
+            } else {
+                reason = JobGate.cannotCleanupWhileCleaningUp
+            }
+            cleanupError = reason
+            status = reason
+            return
+        }
+        guard let job = cleanupOwner.begin(bookID: bookSnapshot.id) else {
+            cleanupError = JobGate.cannotCleanupWhileCleaningUp
+            status = JobGate.cannotCleanupWhileCleaningUp
+            return
+        }
         playback.stop()
-        books[index].chapters = remainingChapters
-        books[index].existingM4BURL = inspection.url
-        books[index].boundDuration = inspection.duration
-        if remainingChapters.isEmpty {
-            books[index].selected = false
+        lastError = nil
+        cleanupError = nil
+        status = "Moving original audio files to Trash…"
+        Task {
+            defer { cleanupOwner.finish(job) }
+            let result = await Task.detached(priority: .userInitiated) {
+                SourceCleanup.perform(
+                    book: bookSnapshot,
+                    inspection: inspectionSnapshot,
+                    isBuilding: false
+                )
+            }.value
+            if result.didFinish {
+                if cleanupOwner.commitSuccess(
+                    &books,
+                    job: job,
+                    inspection: inspectionSnapshot
+                ) {
+                    playback.stop()
+                }
+                cleanupError = nil
+                lastError = nil
+                status = "Moved original audio files to Trash."
+                return
+            }
+            if !result.moved.isEmpty {
+                _ = cleanupOwner.commitPartial(
+                    &books,
+                    job: job,
+                    inspection: inspectionSnapshot,
+                    snapshotChapters: bookSnapshot.chapters,
+                    moved: result.moved
+                )
+            }
+            cleanupError = result.error
+            if let error = result.error {
+                lastError = error
+                status = error
+            }
         }
     }
 

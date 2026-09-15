@@ -510,6 +510,66 @@ final class ScannerTests: XCTestCase {
         XCTAssertEqual(books.first?.title, "On Writing Well")
     }
 
+    func testCancelledScanThrowsCancellationError() async throws {
+        let root = try TestSupport.tempDir("cancel-scan")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try TestSupport.writeMP3(in: root, book: "BookA")
+        try TestSupport.writeMP3(in: root, book: "BookB")
+
+        let task = Task {
+            try await BookScanner().scan(root: root)
+        }
+        task.cancel()
+        await assertCancellationError {
+            try await task.value
+        }
+    }
+
+    func testCancelledLoadBookThrowsCancellationError() async throws {
+        let root = try TestSupport.tempDir("cancel-load")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try TestSupport.writeMP3(in: root, book: "BookA")
+        let book = root.appendingPathComponent("BookA", isDirectory: true)
+
+        let task = Task {
+            try await BookScanner().loadBook(at: book)
+        }
+        task.cancel()
+        await assertCancellationError {
+            try await task.value
+        }
+    }
+
+    func testScanDoesNotSwallowLoadBookCancellation() async throws {
+        let root = try TestSupport.tempDir("cancel-scan-load")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try TestSupport.writeMP3(in: root, book: "BookA")
+        try TestSupport.writeMP3(in: root, book: "BookB")
+
+        let task = Task {
+            try await BookScanner().scan(root: root) { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }
+        await assertCancellationError {
+            try await task.value
+        }
+    }
+
+    private func assertCancellationError(
+        _ body: () async throws -> some Any,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await body()
+            XCTFail("expected CancellationError", file: file, line: line)
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)", file: file, line: line)
+        }
+    }
+
     private func relativePaths(_ urls: [URL], to root: URL) -> [String] {
         let rootParts = root.standardizedFileURL.pathComponents
         return urls.map { url in

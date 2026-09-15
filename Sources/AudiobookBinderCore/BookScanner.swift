@@ -13,19 +13,25 @@ public struct BookScanner: Sendable {
         root: URL,
         progress: (@Sendable (JobProgress) -> Void)? = nil
     ) async throws -> [Audiobook] {
+        try Task.checkCancellation()
         let root = root.resolvingSymlinksInPath()
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
             throw BinderError.noBooksFound(root)
         }
 
-        let folders = await discoverBookFolders(root, progress: progress)
+        let folders = try await discoverBookFolders(root, progress: progress)
         var books: [Audiobook] = []
         books.reserveCapacity(folders.count)
         for (index, folder) in folders.enumerated() {
-            await emit(progress, .reading(folder, index: index + 1, count: folders.count))
-            if let book = try? await loadBook(at: folder) {
-                books.append(book)
+            try Task.checkCancellation()
+            try await emit(progress, .reading(folder, index: index + 1, count: folders.count))
+            do {
+                books.append(try await loadBook(at: folder))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                continue
             }
         }
 
@@ -50,8 +56,8 @@ public struct BookScanner: Sendable {
     func discoverBookFolders(
         _ folder: URL,
         progress: (@Sendable (JobProgress) -> Void)? = nil
-    ) async -> [URL] {
-        await emit(progress, .looking(in: folder))
+    ) async throws -> [URL] {
+        try await emit(progress, .looking(in: folder))
         if hasDirectAudio(folder) {
             return [folder]
         }
@@ -59,14 +65,14 @@ public struct BookScanner: Sendable {
             return [folder]
         }
 
-        let children = await bookSubfolders(folder, progress: progress)
+        let children = try await bookSubfolders(folder, progress: progress)
         if children.isEmpty {
             return []
         }
 
         if children.count == 1 {
             let child = children[0]
-            let nested = await discoverBookFolders(child, progress: progress)
+            let nested = try await discoverBookFolders(child, progress: progress)
             if nested.count > 1 {
                 return nested
             }
@@ -83,7 +89,7 @@ public struct BookScanner: Sendable {
 
         var found: [URL] = []
         for child in children {
-            found += await discoverBookFolders(child, progress: progress)
+            found += try await discoverBookFolders(child, progress: progress)
         }
         return found
     }
@@ -91,9 +97,9 @@ public struct BookScanner: Sendable {
     private func emit(
         _ progress: (@Sendable (JobProgress) -> Void)?,
         _ value: JobProgress
-    ) async {
+    ) async throws {
         progress?(value)
-        await Task.yield()
+        try Task.checkCancellation()
     }
 
     func isAudioContainerName(_ name: String) -> Bool {
@@ -146,10 +152,10 @@ public struct BookScanner: Sendable {
     func bookSubfolders(
         _ folder: URL,
         progress: (@Sendable (JobProgress) -> Void)? = nil
-    ) async -> [URL] {
+    ) async throws -> [URL] {
         var kept: [URL] = []
         for dir in candidateSubdirectories(folder) {
-            await emit(progress, .checking(dir))
+            try await emit(progress, .checking(dir))
             if !collectAudio(in: dir).isEmpty || !collectM4B(in: dir).isEmpty {
                 kept.append(dir)
             }
@@ -178,6 +184,7 @@ public struct BookScanner: Sendable {
     }
 
     public func loadBook(at folder: URL) async throws -> Audiobook {
+        try Task.checkCancellation()
         let audio = collectAudio(in: folder)
         if audio.isEmpty {
             return try await loadAlreadyBoundBook(at: folder)

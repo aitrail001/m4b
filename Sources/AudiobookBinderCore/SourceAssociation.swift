@@ -9,6 +9,8 @@ public enum SourceAssociation: Sendable {
     static let maxSidecarBytes = 256 * 1024
     static let maxSourceEntries = 4_096
     static let maxPathLength = BoundedFileRead.maxPathLength
+    /// Filesystem `NAME_MAX` for a single path component (UTF-8 bytes).
+    static let maxSnapshotComponentBytes = 255
 
     public struct Entry: Equatable, Sendable, Codable {
         public var path: String
@@ -208,7 +210,9 @@ public enum SourceAssociation: Sendable {
                     )
                 }
                 let live = URL(fileURLWithPath: entry.path).resolvingSymlinksInPath()
-                let snapshot = directory.appendingPathComponent("\(index)-\(live.lastPathComponent)")
+                let snapshot = directory.appendingPathComponent(
+                    snapshotFileName(index: index, source: live)
+                )
                 do {
                     try FileManager.default.copyItem(at: live, to: snapshot)
                 } catch {
@@ -229,6 +233,29 @@ public enum SourceAssociation: Sendable {
 
     static func removeEncodeSnapshots(at directory: URL) {
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Unique per capture index, ≤ `NAME_MAX` UTF-8 bytes, keeps a usable extension.
+    static func snapshotFileName(index: Int, source: URL) -> String {
+        let ext = source.pathExtension
+        let name = ext.isEmpty ? "\(index)" : "\(index).\(ext)"
+        return utf8Prefix(name, maxBytes: maxSnapshotComponentBytes)
+    }
+
+    /// Drops trailing Unicode scalars until the UTF-8 byte length fits. Never
+    /// splits a scalar in the middle (CJK / combining marks stay whole).
+    private static func utf8Prefix(_ string: String, maxBytes: Int) -> String {
+        if maxBytes <= 0 { return "" }
+        if string.utf8.count <= maxBytes { return string }
+        var used = 0
+        var scalars = String.UnicodeScalarView()
+        for scalar in string.unicodeScalars {
+            let n = scalar.utf8.count
+            if used + n > maxBytes { break }
+            scalars.append(scalar)
+            used += n
+        }
+        return String(scalars)
     }
 
     public static func invalidate(inBookFolder folder: URL) {

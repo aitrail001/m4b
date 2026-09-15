@@ -1843,6 +1843,89 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
     }
 
+    func testSnapshotFileNameStaysWithinComponentLimit() {
+        XCTAssertEqual(SourceAssociation.maxSnapshotComponentBytes, Int(NAME_MAX))
+        let basename = nameMaxComponent(stemByte: 0x61, pathExtension: "mp3")
+        XCTAssertEqual(basename.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        let source = URL(fileURLWithPath: "/tmp/\(basename)")
+        let naive = "0-\(basename)"
+        XCTAssertGreaterThan(naive.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+
+        let name0 = SourceAssociation.snapshotFileName(index: 0, source: source)
+        let name10 = SourceAssociation.snapshotFileName(index: 10, source: source)
+        let name100 = SourceAssociation.snapshotFileName(index: 100, source: source)
+
+        XCTAssertLessThanOrEqual(name0.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        XCTAssertLessThanOrEqual(name10.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        XCTAssertLessThanOrEqual(name100.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        XCTAssertEqual(Set([name0, name10, name100]).count, 3)
+        XCTAssertEqual((name0 as NSString).pathExtension, "mp3")
+        XCTAssertEqual((name10 as NSString).pathExtension, "mp3")
+        XCTAssertEqual((name100 as NSString).pathExtension, "mp3")
+    }
+
+    func testSnapshotFileNameKeepsShortNameAndExtension() {
+        let source = URL(fileURLWithPath: "/tmp/01-prologue.mp3")
+        let naive = "0-\(source.lastPathComponent)"
+        XCTAssertLessThanOrEqual(naive.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+
+        let name = SourceAssociation.snapshotFileName(index: 0, source: source)
+        XCTAssertLessThanOrEqual(name.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        XCTAssertEqual((name as NSString).pathExtension, "mp3")
+        XCTAssertNotEqual(
+            name,
+            SourceAssociation.snapshotFileName(index: 1, source: source)
+        )
+    }
+
+    func testStageEncodeSnapshotsCopiesNAME_MAXBasename() throws {
+        let root = try TestSupport.tempDir("source-snapshot-namemax")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let basename = nameMaxComponent(stemByte: 0x62, pathExtension: "mp3")
+        XCTAssertEqual(basename.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        let live = root.appendingPathComponent(basename)
+        try Data("chapter-bytes".utf8).write(to: live)
+        XCTAssertEqual(live.lastPathComponent.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.path))
+
+        let dest = root.appendingPathComponent("out.m4b")
+        let captured = try SourceAssociation.capture([live], dest: dest)
+        XCTAssertEqual(captured.count, 1)
+
+        let staged = try SourceAssociation.stageEncodeSnapshots(captured)
+        defer { SourceAssociation.removeEncodeSnapshots(at: staged.directory) }
+
+        let remapped = try XCTUnwrap(staged.remap[captured[0].path])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: remapped.path))
+        XCTAssertLessThanOrEqual(
+            remapped.lastPathComponent.utf8.count,
+            SourceAssociation.maxSnapshotComponentBytes
+        )
+        XCTAssertEqual(remapped.pathExtension, "mp3")
+        XCTAssertEqual(SourceAssociation.sha256Hex(of: remapped), captured[0].sha256)
+    }
+
+    func testStageEncodeSnapshotsCopiesShortBasename() throws {
+        let root = try TestSupport.tempDir("source-snapshot-short")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = root.appendingPathComponent("01-prologue.mp3")
+        try Data("short-chapter".utf8).write(to: live)
+        let dest = root.appendingPathComponent("out.m4b")
+        let captured = try SourceAssociation.capture([live], dest: dest)
+
+        let staged = try SourceAssociation.stageEncodeSnapshots(captured)
+        defer { SourceAssociation.removeEncodeSnapshots(at: staged.directory) }
+
+        let remapped = try XCTUnwrap(staged.remap[captured[0].path])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: remapped.path))
+        XCTAssertLessThanOrEqual(
+            remapped.lastPathComponent.utf8.count,
+            SourceAssociation.maxSnapshotComponentBytes
+        )
+        XCTAssertEqual(remapped.pathExtension, "mp3")
+        XCTAssertEqual(SourceAssociation.sha256Hex(of: remapped), captured[0].sha256)
+    }
+
     func testScanGenerationNewestWins() {
         var generation = ScanGeneration()
         let a = generation.begin()
@@ -1882,6 +1965,18 @@ final class NamingAndModelsTests: XCTestCase {
                 )
             }
         }
+    }
+
+    /// `NAME_MAX` last-path-component: ASCII stem + `.ext` totaling 255 UTF-8 bytes.
+    private func nameMaxComponent(stemByte: UInt8, pathExtension: String) -> String {
+        let suffix = ".\(pathExtension)"
+        let suffixBytes = suffix.utf8.count
+        let limit = SourceAssociation.maxSnapshotComponentBytes
+        XCTAssertGreaterThan(limit, suffixBytes)
+        let stem = String(repeating: String(UnicodeScalar(stemByte)), count: limit - suffixBytes)
+        let name = stem + suffix
+        XCTAssertEqual(name.utf8.count, limit)
+        return name
     }
 
     private func writeOutputSidecar(_ dest: URL, in folder: URL) throws {

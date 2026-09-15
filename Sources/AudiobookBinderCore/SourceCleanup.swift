@@ -49,6 +49,10 @@ public enum SourceCleanup {
     /// Production callers never set this.
     nonisolated(unsafe) package static var testingBeforeTrashHeld: ((_ original: URL, _ held: URL) -> Void)?
 
+    /// Test seam: after dest recheck succeeds, before the hold is re-identified
+    /// and trashed. Production callers never set this.
+    nonisolated(unsafe) package static var testingAfterDestRecheck: ((_ original: URL, _ held: URL) -> Void)?
+
     /// View-body helper: cached/pending/cheap guards only. Does not hash.
     public static func controlsState(
         canCleanupSources: Bool,
@@ -147,7 +151,8 @@ public enum SourceCleanup {
 
     /// One bulk verification, then dest revalidation before each hold.
     /// The source is renamed onto a same-directory hold, that held object is
-    /// verified, dest is rechecked, and only then is the hold trashed.
+    /// verified, dest is rechecked, the hold identity is confirmed, and only
+    /// then is the hold trashed.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -208,6 +213,15 @@ public enum SourceCleanup {
                     reason: reason
                 )
             }
+            guard let verifiedHold = FileIdentity.read(from: hold), !verifiedHold.isDirectory else {
+                return abortAfterHoldRestore(
+                    hold: hold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: "Cannot read the held source identity."
+                )
+            }
             testingBeforeTrashHeld?(next, hold)
             if let reason = destStillAuthorized(
                 dest: dest,
@@ -222,6 +236,14 @@ public enum SourceCleanup {
                     moved: moved,
                     remaining: remaining,
                     reason: reason
+                )
+            }
+            testingAfterDestRecheck?(next, hold)
+            guard let now = FileIdentity.read(from: hold), now.isSameVersion(as: verifiedHold) else {
+                return abortMismatchedHold(
+                    original: next,
+                    moved: moved,
+                    remaining: remaining
                 )
             }
             do {
@@ -304,6 +326,8 @@ public enum SourceCleanup {
 
     private static let destMismatchReason = "Bound .m4b is not the file recorded at export."
     private static let sourceChangedReason = "Source files changed since they were bound."
+    private static let holdChangedAfterDestRecheckReason =
+        "Held source is no longer the verified file."
     private static let cancelledReason = BinderError.cancelled.errorDescription ?? "Cancelled"
 
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
@@ -455,6 +479,28 @@ public enum SourceCleanup {
                 error: strandedRestoreError(hold: hold, reason: reason)
             )
         }
+    }
+
+    /// Hold path no longer names the verified object. Do not trash it and do
+    /// not move a replacement onto the original path.
+    private static func abortMismatchedHold(
+        original: URL,
+        moved: [URL],
+        remaining: [URL]
+    ) -> SourceCleanupResult {
+        if FileManager.default.fileExists(atPath: original.path) {
+            let leftover = remaining.filter { !refersToSameFile($0, original) }
+            return SourceCleanupResult(
+                moved: moved,
+                remaining: leftover,
+                error: holdChangedAfterDestRecheckReason
+            )
+        }
+        return SourceCleanupResult(
+            moved: moved,
+            remaining: remaining,
+            error: holdChangedAfterDestRecheckReason
+        )
     }
 
     private static func strandedRestoreError(hold: URL, reason: String) -> String {

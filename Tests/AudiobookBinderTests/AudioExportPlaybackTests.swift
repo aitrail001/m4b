@@ -239,6 +239,31 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testOwnedAppearedDestRefusesWhenLiveIdentityDiffersFromLoadVerified() throws {
+        let dir = try TestSupport.tempDir("owned-appeared-dest-identity")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dest = dir.appendingPathComponent("out.m4b")
+        try Data("OWNED-DEST-B".utf8).write(to: dest)
+        let book = TestSupport.dummyBook(folder: dir.path)
+        XCTAssertTrue(OutputAssociation.record(dest, inBookFolder: dir))
+
+        let verified = try XCTUnwrap(OutputAssociation.loadVerified(inBookFolder: dir))
+        XCTAssertEqual(OutputAssociation.load(inBookFolder: dir)?.standardizedFileURL.path, dest.standardizedFileURL.path)
+        XCTAssertTrue(M4BExporter.isSameFileURL(verified.url, dest))
+        let ownedLive = try XCTUnwrap(FileIdentity.read(from: dest))
+        XCTAssertTrue(ownedLive.isSameVersion(as: verified.identity))
+        XCTAssertTrue(M4BExporter.isOwnedAppearedDest(dest, book: book, live: ownedLive))
+
+        let unowned = dir.appendingPathComponent("unowned-a.m4b")
+        try Data("UNOWNED-DEST-A-DIFFERENT".utf8).write(to: unowned)
+        let unownedLive = try XCTUnwrap(FileIdentity.read(from: unowned))
+        XCTAssertFalse(unownedLive.isSameVersion(as: verified.identity))
+        XCTAssertFalse(
+            M4BExporter.isOwnedAppearedDest(dest, book: book, live: unownedLive),
+            "live identity A must not adopt when load validated owned identity B"
+        )
+    }
+
     func testExportOverwriteReplacesDestThatExistedAtStart() async throws {
         let dir = try TestSupport.tempDir("export-existed-at-start")
         defer { try? FileManager.default.removeItem(at: dir) }

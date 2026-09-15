@@ -18,6 +18,11 @@ public enum OutputAssociation: Sendable {
     /// Trusted dest only. Folder JSON, path-only, old-format, missing, or
     /// mismatched identities do not grant ownership of an existing file.
     public static func load(inBookFolder folder: URL) -> URL? {
+        loadVerified(inBookFolder: folder)?.url
+    }
+
+    /// Dest URL plus the live identity that passed the same checks as `load`.
+    static func loadVerified(inBookFolder folder: URL) -> (url: URL, identity: FileIdentity)? {
         guard let liveFolder = FileIdentity.read(from: folder), liveFolder.isDirectory else {
             return nil
         }
@@ -35,7 +40,7 @@ public enum OutputAssociation: Sendable {
         guard liveFolder.matchesRecordedIdentity(recordedFolder) else {
             return nil
         }
-        return dest
+        return (dest, liveDest)
     }
 
     /// Parsed dest path when the last component is `.m4b`. Unused paths may be

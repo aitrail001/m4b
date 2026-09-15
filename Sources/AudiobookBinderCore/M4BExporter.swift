@@ -646,7 +646,8 @@ extension M4BExporter {
     }
 
     /// Dest that existed at export start keeps current overwrite/replace identity.
-    /// Dest that appears after that observation is adopted only when this book owns it.
+    /// Dest that appears after that observation is adopted only when this book
+    /// owns the same object captured in `live`.
     private static func expectedDestinationIdentity(
         dest: URL,
         book: Audiobook,
@@ -657,17 +658,19 @@ extension M4BExporter {
         }
         guard destWasAbsent else { return live }
         guard live != nil || existingRegularFile(dest) else { return nil }
-        guard isOwnedDestination(dest, book: book) else {
+        guard let live, isOwnedAppearedDest(dest, book: book, live: live) else {
             throw BinderError.outputExists(dest)
         }
         return live
     }
 
-    private static func isOwnedDestination(_ dest: URL, book: Audiobook) -> Bool {
-        guard let associated = OutputAssociation.load(inBookFolder: book.folder) else {
+    /// Appeared dest is owned only when `load` validated this same dest object.
+    static func isOwnedAppearedDest(_ dest: URL, book: Audiobook, live: FileIdentity) -> Bool {
+        guard let associated = OutputAssociation.loadVerified(inBookFolder: book.folder) else {
             return false
         }
-        return isSameFileURL(associated, dest)
+        return isSameFileURL(associated.url, dest)
+            && associated.identity.isSameVersion(as: live)
     }
 
     private static func shouldSkipExistingDestination(

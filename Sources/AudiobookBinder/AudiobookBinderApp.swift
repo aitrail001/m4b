@@ -135,18 +135,9 @@ enum CLI {
                 }
                 var anyFailed = false
                 for result in results {
-                    switch result.outcome {
-                    case .created:
-                        print("created\t\(result.url.path)")
-                    case .replaced:
-                        print("replaced\t\(result.url.path)")
-                    case .skippedExisting:
-                        print("skipped\t\(result.url.path)")
-                    case .cancelled:
-                        print("cancelled\t\(result.url.path)")
-                    case .failed(let message):
+                    print(BinderCopy.cliOutcomeLine(url: result.url, outcome: result.outcome))
+                    if case .failed = result.outcome {
                         anyFailed = true
-                        print("failed\t\(result.url.path)\t\(message)")
                     }
                 }
                 Darwin.exit(anyFailed ? 1 : 0)

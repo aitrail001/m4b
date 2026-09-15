@@ -377,10 +377,11 @@ public enum ExportOutcome: Sendable, Equatable {
     case skippedExisting
     case failed(String)
     case cancelled
+    case publishedUnverified(replaced: Bool, warning: String)
 
     public var isPublished: Bool {
         switch self {
-        case .created, .replaced: return true
+        case .created, .replaced, .publishedUnverified: return true
         case .skippedExisting, .failed, .cancelled: return false
         }
     }
@@ -442,6 +443,7 @@ public enum BinderError: Error, LocalizedError, Sendable {
     case cancelled
     case outputExists(URL)
     case missingChapters([URL])
+    case publishedUnverified(String)
 
     public var errorDescription: String? {
         switch self {
@@ -461,6 +463,8 @@ public enum BinderError: Error, LocalizedError, Sendable {
                 return "Missing selected chapter: \(names)"
             }
             return "Missing selected chapters: \(names)"
+        case .publishedUnverified(let message):
+            return message
         }
     }
 }
@@ -498,6 +502,7 @@ public enum BinderCopy {
     public static func exportSummary(_ items: [(title: String, outcome: ExportOutcome)]) -> String {
         var created: [String] = []
         var replaced: [String] = []
+        var unverified: [String] = []
         var skipped: [String] = []
         var failed: [String] = []
         var cancelled: [String] = []
@@ -514,18 +519,13 @@ public enum BinderCopy {
             case .cancelled:
                 cancelled.append(title)
             case .failed(let message):
-                let reason = message.trimmingCharacters(in: .whitespacesAndNewlines)
-                if title.isEmpty {
-                    failed.append(reason)
-                } else if reason.isEmpty {
-                    failed.append(title)
-                } else {
-                    failed.append("\(title) (\(reason))")
-                }
+                failed.append(Self.labeledReason(title: title, reason: message))
+            case .publishedUnverified(_, let warning):
+                unverified.append(Self.labeledReason(title: title, reason: warning))
             }
         }
 
-        if replaced.isEmpty && skipped.isEmpty && failed.isEmpty && cancelled.isEmpty {
+        if replaced.isEmpty && unverified.isEmpty && skipped.isEmpty && failed.isEmpty && cancelled.isEmpty {
             return createdAudiobooks(titles: created)
         }
 
@@ -535,6 +535,9 @@ public enum BinderCopy {
         }
         if !replaced.isEmpty {
             parts.append(countPhrase("Replaced", count: replaced.count, singular: "audiobook", plural: "audiobooks", names: replaced))
+        }
+        if !unverified.isEmpty {
+            parts.append(countPhrase("Unverified", count: unverified.count, singular: "audiobook", plural: "audiobooks", names: unverified))
         }
         if !skipped.isEmpty {
             parts.append(countPhrase("Skipped", count: skipped.count, singular: "existing audiobook", plural: "existing audiobooks", names: skipped))
@@ -550,13 +553,41 @@ public enum BinderCopy {
         }
 
         var summary = parts.joined(separator: " ")
-        if !created.isEmpty || !replaced.isEmpty {
-            let published = created.count + replaced.count
+        if !created.isEmpty || !replaced.isEmpty || !unverified.isEmpty {
+            let published = created.count + replaced.count + unverified.count
             summary += published == 1
                 ? " Verify the .m4b in the editor."
                 : " Verify the .m4b files in the editor."
         }
         return summary
+    }
+
+    public static func cliOutcomeLine(url: URL, outcome: ExportOutcome) -> String {
+        switch outcome {
+        case .created:
+            return "created\t\(url.path)"
+        case .replaced:
+            return "replaced\t\(url.path)"
+        case .skippedExisting:
+            return "skipped\t\(url.path)"
+        case .cancelled:
+            return "cancelled\t\(url.path)"
+        case .failed(let message):
+            return "failed\t\(url.path)\t\(message)"
+        case .publishedUnverified(_, let warning):
+            return "unverified\t\(url.path)\t\(warning)"
+        }
+    }
+
+    private static func labeledReason(title: String, reason: String) -> String {
+        let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.isEmpty {
+            return detail
+        }
+        if detail.isEmpty {
+            return title
+        }
+        return "\(title) (\(detail))"
     }
 
     private static func countPhrase(

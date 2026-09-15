@@ -1562,6 +1562,154 @@ final class AudioExportPlaybackTests: XCTestCase {
         )
     }
 
+    func testExportAllCancelAfterPublishReportsPublishedNotCancelled() async throws {
+        let root = try TestSupport.tempDir("export-cancel-after-publish")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("Book", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book = try makeSilenceBook(folder: bookDir, title: "AfterPublish", author: "A")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPublish = {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+
+        let results = try await exporter.exportAll(books: [book], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].outcome.isPublished)
+        XCTAssertNotEqual(results[0].outcome, .cancelled)
+        switch results[0].outcome {
+        case .created, .publishedUnverified(replaced: false, _):
+            break
+        default:
+            XCTFail("expected created or unverified new dest, got \(results[0].outcome)")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
+        try assertSidecarLoadableOrInvalidated(folder: bookDir, dest: dest)
+        let published = results.filter(\.outcome.isPublished)
+        XCTAssertEqual(published.map(\.url.standardizedFileURL.path), [dest.standardizedFileURL.path])
+    }
+
+    func testExportAllCancelDuringPublishedDestHashReportsPublished() async throws {
+        let root = try TestSupport.tempDir("export-cancel-dest-hash")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("Book", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book = try makeSilenceBook(folder: bookDir, title: "DestHashCancel", author: "A")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+
+        DigestProbe.reset()
+        defer { DigestProbe.reset() }
+
+        let hashedDest = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPublish = {
+            DigestProbe.onChunk = {
+                hashedDest.mark()
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }
+
+        let results = try await exporter.exportAll(books: [book], settings: settings)
+        XCTAssertTrue(hashedDest.isSet, "published dest hash must start after publish")
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].outcome.isPublished)
+        XCTAssertNotEqual(results[0].outcome, .cancelled)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+        try assertSidecarLoadableOrInvalidated(folder: bookDir, dest: dest)
+    }
+
+    func testExportAllOverwriteCancelAfterPublishReplacesPayload() async throws {
+        let dir = try TestSupport.tempDir("export-overwrite-cancel-after-publish")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var book = try makeSilenceBook(folder: dir, title: "OverwriteCancel", author: "A")
+        let dest = dir.appendingPathComponent(book.suggestedFileName)
+        let old = Data("OLD-DEST-PAYLOAD".utf8)
+        try old.write(to: dest)
+        book.existingM4BURL = dest
+        OutputAssociation.record(dest, inBookFolder: dir)
+
+        let settings = ExportSettings(overwrite: true, writeNextToBook: true)
+        XCTAssertTrue(settings.owns(dest, for: book), "existing dest must be owned so overwrite can replace it")
+
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPublish = {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+
+        let results = try await exporter.exportAll(books: [book], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].outcome.isPublished)
+        XCTAssertNotEqual(results[0].outcome, .cancelled)
+        switch results[0].outcome {
+        case .replaced, .publishedUnverified(replaced: true, _):
+            break
+        default:
+            XCTFail("expected replaced or unverified overwrite, got \(results[0].outcome)")
+        }
+        XCTAssertNotEqual(try Data(contentsOf: dest), old)
+        let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
+        try assertSidecarLoadableOrInvalidated(folder: dir, dest: dest)
+    }
+
+    func testExportAllCancelAfterFirstPublishCancelsRemainingBooks() async throws {
+        let root = try TestSupport.tempDir("export-all-cancel-after-first-publish")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book1Dir = root.appendingPathComponent("Book1", isDirectory: true)
+        let book2Dir = root.appendingPathComponent("Book2", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: book1Dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: book2Dir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let book1 = try makeSilenceBook(folder: book1Dir, title: "KeepFirst", author: "A")
+        let book2 = try makeSilenceBook(folder: book2Dir, title: "LeaveSecond", author: "A")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let plan = settings.plannedOutputs(for: [book1, book2])
+        let dest1 = plan[book1.id]!
+        let dest2 = plan[book2.id]!
+
+        let firstPublished = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPublish = {
+            guard !firstPublished.isSet else { return }
+            firstPublished.mark()
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+
+        let results = try await exporter.exportAll(books: [book1, book2], settings: settings)
+        XCTAssertTrue(firstPublished.isSet)
+        XCTAssertEqual(results.count, 2)
+        XCTAssertEqual(results[0].bookID, book1.id)
+        XCTAssertTrue(results[0].outcome.isPublished)
+        XCTAssertNotEqual(results[0].outcome, .cancelled)
+        XCTAssertEqual(results[1].bookID, book2.id)
+        XCTAssertEqual(results[1].outcome, .cancelled)
+        XCTAssertFalse(results[1].outcome.isPublished)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest1.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest2.path))
+
+        let summary = BinderCopy.exportSummary(results: results, books: [book1, book2])
+        XCTAssertTrue(
+            summary.contains("Created") || summary.contains("Replaced") || summary.contains("Unverified"),
+            "mixed summary must mention a published phrase: \(summary)"
+        )
+        XCTAssertTrue(summary.contains("Cancelled"), "mixed summary must mention cancelled: \(summary)")
+        XCTAssertTrue(summary.contains("Verify the .m4b"), "published dest must still ask for a verify: \(summary)")
+    }
+
     func testExportSourcePersistFailureInvalidatesSidecarAndDeniesCleanup() async throws {
         let dir = try TestSupport.tempDir("source-persist-fail")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -1572,16 +1720,19 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
 
         let blocked = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterPublish = {
+            blocked.mark()
+            try? FileManager.default.removeItem(at: sidecar)
+            try? FileManager.default.createDirectory(at: sidecar, withIntermediateDirectories: true)
+        }
         do {
-            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true) { fraction, _ in
-                guard fraction >= 0.92, fraction < 1.0, !blocked.isSet else { return }
-                blocked.mark()
-                try? FileManager.default.removeItem(at: sidecar)
-                try? FileManager.default.createDirectory(at: sidecar, withIntermediateDirectories: true)
-            }
+            try await exporter.export(book: book, to: dest, overwrite: true)
             XCTFail("expected source persist failure after publish")
         } catch let error as BinderError {
-            guard case .exportFailed = error else { return XCTFail("\(error)") }
+            guard case .publishedUnverified = error else { return XCTFail("\(error)") }
+        } catch {
+            XCTFail("\(error)")
         }
 
         XCTAssertTrue(blocked.isSet)
@@ -1598,6 +1749,28 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertFalse(
             SourceCleanup.authorization(book: bound, inspection: inspection, isBuilding: false).allowed
         )
+
+        let allDir = try TestSupport.tempDir("source-persist-fail-all")
+        defer { try? FileManager.default.removeItem(at: allDir) }
+        let book2 = try makeSilenceBook(folder: allDir, title: "PersistFailAll", author: "A")
+        let out = allDir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let sidecar2 = SourceAssociation.sidecarURL(inBookFolder: allDir)
+        var allExporter = M4BExporter(bitrate: 48_000)
+        allExporter.afterPublish = {
+            try? FileManager.default.removeItem(at: sidecar2)
+            try? FileManager.default.createDirectory(at: sidecar2, withIntermediateDirectories: true)
+        }
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let results = try await allExporter.exportAll(books: [book2], settings: settings)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertTrue(results[0].outcome.isPublished)
+        guard case .publishedUnverified(replaced: false, _) = results[0].outcome else {
+            return XCTFail("expected publishedUnverified, got \(results[0].outcome)")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
+        XCTAssertNil(SourceAssociation.load(inBookFolder: allDir))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar2.path))
     }
 
     func testExportFailureBeforePublishLeavesExistingSourceSidecar() async throws {
@@ -1881,6 +2054,23 @@ final class AudioExportPlaybackTests: XCTestCase {
         )
         let mdat = MP4Box.box("mdat", Data(count: MP4AtomIO.ioChunkSize + 64))
         return ftyp + MP4Box.box("moov", MP4Box.box("mvhd", mvhd)) + mdat
+    }
+
+    private func assertSidecarLoadableOrInvalidated(folder: URL, dest: URL) throws {
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: folder)
+        if FileManager.default.fileExists(atPath: sidecar.path) {
+            var isDirectory: ObjCBool = false
+            FileManager.default.fileExists(atPath: sidecar.path, isDirectory: &isDirectory)
+            XCTAssertFalse(isDirectory.boolValue, "source sidecar must be a file or absent")
+            let document = try XCTUnwrap(
+                SourceAssociation.loadDocument(inBookFolder: folder),
+                "existing sidecar must be a loadable provenance record"
+            )
+            let destDigest = try XCTUnwrap(SourceAssociation.sha256Hex(of: dest))
+            XCTAssertEqual(document.destinationSHA256?.lowercased(), destDigest.lowercased())
+        } else {
+            XCTAssertNil(SourceAssociation.load(inBookFolder: folder))
+        }
     }
 
     private func makeSilence(in dir: URL, seconds: Double = 1) throws -> URL {

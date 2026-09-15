@@ -146,6 +146,10 @@ final class NamingAndModelsTests: XCTestCase {
             ]).errorDescription,
             "Missing selected chapters: gone.wav, also.mp3"
         )
+        XCTAssertEqual(
+            BinderError.publishedUnverified("Could not record source provenance").errorDescription,
+            "Could not record source provenance"
+        )
     }
 
     func testAudiobookSuggestedNameMatchesNarrator() {
@@ -246,6 +250,7 @@ final class NamingAndModelsTests: XCTestCase {
             "Created 1 audiobook — A. Replaced 1 audiobook — B. Skipped 1 existing audiobook — C. Failed 1 audiobook — D (disk full). Verify the .m4b files in the editor."
         )
         XCTAssertFalse(ExportOutcome.cancelled.isPublished)
+        XCTAssertTrue(ExportOutcome.publishedUnverified(replaced: false, warning: "late hash").isPublished)
         XCTAssertEqual(
             BinderCopy.exportSummary([
                 ("KeepCreated", .created),
@@ -253,6 +258,41 @@ final class NamingAndModelsTests: XCTestCase {
             ]),
             "Created 1 audiobook — KeepCreated. Cancelled 1 audiobook — CancelSecond. Verify the .m4b in the editor."
         )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([
+                ("KeepFirst", .publishedUnverified(replaced: false, warning: "hash failed")),
+                ("LeaveSecond", .cancelled)
+            ]),
+            "Unverified 1 audiobook — KeepFirst (hash failed). Cancelled 1 audiobook — LeaveSecond. Verify the .m4b in the editor."
+        )
+        XCTAssertEqual(
+            BinderCopy.exportSummary([
+                ("A", .created),
+                ("B", .replaced),
+                ("C", .publishedUnverified(replaced: true, warning: "sidecar write failed"))
+            ]),
+            "Created 1 audiobook — A. Replaced 1 audiobook — B. Unverified 1 audiobook — C (sidecar write failed). Verify the .m4b files in the editor."
+        )
+    }
+
+    func testCLIOutcomeLineMapsPublishedUnverifiedAwayFromCancelled() {
+        let url = URL(fileURLWithPath: "/tmp/out.m4b")
+        XCTAssertEqual(BinderCopy.cliOutcomeLine(url: url, outcome: .created), "created\t/tmp/out.m4b")
+        XCTAssertEqual(BinderCopy.cliOutcomeLine(url: url, outcome: .replaced), "replaced\t/tmp/out.m4b")
+        XCTAssertEqual(BinderCopy.cliOutcomeLine(url: url, outcome: .skippedExisting), "skipped\t/tmp/out.m4b")
+        XCTAssertEqual(BinderCopy.cliOutcomeLine(url: url, outcome: .cancelled), "cancelled\t/tmp/out.m4b")
+        XCTAssertEqual(
+            BinderCopy.cliOutcomeLine(url: url, outcome: .failed("disk full")),
+            "failed\t/tmp/out.m4b\tdisk full"
+        )
+        let unverified = ExportOutcome.publishedUnverified(
+            replaced: false,
+            warning: "Could not record source provenance"
+        )
+        let line = BinderCopy.cliOutcomeLine(url: url, outcome: unverified)
+        XCTAssertEqual(line, "unverified\t/tmp/out.m4b\tCould not record source provenance")
+        XCTAssertFalse(line.hasPrefix("cancelled"))
+        XCTAssertNotEqual(line, BinderCopy.cliOutcomeLine(url: url, outcome: .cancelled))
     }
 
     func testPlannedOutputsDisambiguatesSameTitleAuthorAndSanitizedNames() {

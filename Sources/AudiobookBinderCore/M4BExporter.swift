@@ -6,11 +6,14 @@ public struct M4BExporter: Sendable {
     public var sampleRate: Double
     /// Test seam: runs after source capture and before snapshot/hash-verify.
     package var afterSourceCapture: (@Sendable () -> Void)?
+    /// Test seam: runs after successful publish, before dest hash / provenance.
+    package var afterPublish: (@Sendable () -> Void)?
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
         self.sampleRate = sampleRate
         self.afterSourceCapture = nil
+        self.afterPublish = nil
     }
 
     public static func chaptersReadyForExport(_ chapters: [Chapter]) -> [Chapter] {
@@ -118,29 +121,13 @@ public struct M4BExporter: Sendable {
                 expectedIdentity: expectedIdentity
             )
             OutputAssociation.record(outputURL, inBookFolder: book.folder)
-            guard let destIdentity = FileIdentity.read(from: outputURL), !destIdentity.isDirectory else {
-                SourceAssociation.invalidate(inBookFolder: book.folder)
-                throw BinderError.exportFailed("Could not record published output identity")
-            }
-            guard let publishedDigest = try SourceAssociation.sha256Hex(
-                of: outputURL,
-                cancellation: cancellation
-            ),
-                  !publishedDigest.isEmpty,
-                  publishedDigest.caseInsensitiveCompare(stagingDigest) == .orderedSame
-            else {
-                throw BinderError.exportFailed("Published output does not match encoded file")
-            }
-            guard SourceAssociation.record(
-                captured: captured,
+            afterPublish?()
+            try Self.finalizePublishedOutput(
                 dest: outputURL,
-                destIdentity: destIdentity,
-                destinationSHA256: publishedDigest,
+                captured: captured,
+                stagingDigest: stagingDigest,
                 inBookFolder: book.folder
-            ) else {
-                SourceAssociation.invalidate(inBookFolder: book.folder)
-                throw BinderError.exportFailed("Could not record source provenance")
-            }
+            )
             progress?(1.0, "Finished \(book.title)")
         } onCancel: {
             cancellation.cancel()
@@ -217,6 +204,14 @@ public struct M4BExporter: Sendable {
             } catch let error as BinderError {
                 if case .outputExists = error {
                     results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                } else if case .publishedUnverified(let warning) = error {
+                    results.append(
+                        BookExportResult(
+                            bookID: book.id,
+                            url: dest,
+                            outcome: .publishedUnverified(replaced: existed, warning: warning)
+                        )
+                    )
                 } else {
                     results.append(
                         BookExportResult(
@@ -620,6 +615,70 @@ extension M4BExporter {
         }
         if kind.exists && !overwrite {
             throw BinderError.outputExists(dest)
+        }
+    }
+
+    /// Dest is already committed. Never throw `.cancelled` from this path.
+    /// Every exit persists a loadable source record or explicitly invalidates.
+    private static func finalizePublishedOutput(
+        dest: URL,
+        captured: [SourceAssociation.Entry],
+        stagingDigest: String,
+        inBookFolder folder: URL
+    ) throws {
+        do {
+            try completePublishedProvenance(
+                dest: dest,
+                captured: captured,
+                stagingDigest: stagingDigest,
+                inBookFolder: folder
+            )
+        } catch let error as BinderError {
+            switch error {
+            case .publishedUnverified:
+                throw error
+            case .cancelled:
+                SourceAssociation.invalidate(inBookFolder: folder)
+                throw BinderError.publishedUnverified("Cancelled after the audiobook was written")
+            default:
+                SourceAssociation.invalidate(inBookFolder: folder)
+                throw BinderError.publishedUnverified(error.localizedDescription)
+            }
+        } catch is CancellationError {
+            SourceAssociation.invalidate(inBookFolder: folder)
+            throw BinderError.publishedUnverified("Cancelled after the audiobook was written")
+        } catch {
+            SourceAssociation.invalidate(inBookFolder: folder)
+            throw BinderError.publishedUnverified(error.localizedDescription)
+        }
+    }
+
+    private static func completePublishedProvenance(
+        dest: URL,
+        captured: [SourceAssociation.Entry],
+        stagingDigest: String,
+        inBookFolder folder: URL
+    ) throws {
+        guard let destIdentity = FileIdentity.read(from: dest), !destIdentity.isDirectory else {
+            SourceAssociation.invalidate(inBookFolder: folder)
+            throw BinderError.publishedUnverified("Could not record published output identity")
+        }
+        guard let publishedDigest = try SourceAssociation.sha256Hex(of: dest, cancellation: nil),
+              !publishedDigest.isEmpty,
+              publishedDigest.caseInsensitiveCompare(stagingDigest) == .orderedSame
+        else {
+            SourceAssociation.invalidate(inBookFolder: folder)
+            throw BinderError.publishedUnverified("Published output does not match encoded file")
+        }
+        guard SourceAssociation.record(
+            captured: captured,
+            dest: dest,
+            destIdentity: destIdentity,
+            destinationSHA256: publishedDigest,
+            inBookFolder: folder
+        ) else {
+            SourceAssociation.invalidate(inBookFolder: folder)
+            throw BinderError.publishedUnverified("Could not record source provenance")
         }
     }
 

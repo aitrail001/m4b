@@ -7,6 +7,11 @@ public struct BookScanner: Sendable {
         "files", "media", "music", "sound", "sounds"
     ]
 
+    /// Test seam: each recursive file visit during a book walk. Production callers never set this.
+    nonisolated(unsafe) package static var testingOnRecursiveFile: ((URL) -> Void)?
+    /// Test seam: immediately before `AudioMetadata.loadTags`. Production callers never set this.
+    nonisolated(unsafe) package static var testingBeforeLoadTags: (() -> Void)?
+
     public init() {}
 
     public func scan(
@@ -156,7 +161,9 @@ public struct BookScanner: Sendable {
         var kept: [URL] = []
         for dir in candidateSubdirectories(folder) {
             try await emit(progress, .checking(dir))
-            if !collectAudio(in: dir).isEmpty || !collectM4B(in: dir).isEmpty {
+            let audio = try collectAudioThrowing(in: dir)
+            let m4bs = try collectM4BThrowing(in: dir)
+            if !audio.isEmpty || !m4bs.isEmpty {
                 kept.append(dir)
             }
         }
@@ -185,25 +192,30 @@ public struct BookScanner: Sendable {
 
     public func loadBook(at folder: URL) async throws -> Audiobook {
         try Task.checkCancellation()
-        let audio = collectAudio(in: folder)
+        let audio = try collectAudioThrowing(in: folder)
         if audio.isEmpty {
             return try await loadAlreadyBoundBook(at: folder)
         }
 
         let sorted = sortAudio(audio, relativeTo: folder)
+        Self.testingBeforeLoadTags?()
         let firstTags = await AudioMetadata.loadTags(from: sorted[0], includeArtwork: true)
+        try Task.checkCancellation()
 
         var sampleTitles: [String] = []
         if sorted.count > 1 {
+            Self.testingBeforeLoadTags?()
             let second = await AudioMetadata.loadTags(from: sorted[1], includeArtwork: false)
+            try Task.checkCancellation()
             if let t = firstTags.title { sampleTitles.append(t) }
             if let t = second.title { sampleTitles.append(t) }
         } else if let t = firstTags.title {
             sampleTitles.append(t)
         }
 
-        let opf = loadOPF(in: folder)
-        let ebookHint = loadEbookFilename(in: folder)
+        try Task.checkCancellation()
+        let opf = try loadOPF(in: folder)
+        let ebookHint = try loadEbookFilename(in: folder)
         let folderTitle = TitleCleanup.folderTitle(folder.lastPathComponent)
 
         let title = pickTitle(
@@ -216,7 +228,7 @@ public struct BookScanner: Sendable {
         let narrator = firstTags.composer ?? ""
         let description = firstTags.comment ?? opf?.description ?? ""
 
-        let coverURL = findCover(in: folder)
+        let coverURL = try findCover(in: folder)
         var coverJPEG: Data?
         if let coverURL {
             coverJPEG = CoverJPEG.loadAndNormalize(from: coverURL)
@@ -229,9 +241,12 @@ public struct BookScanner: Sendable {
         var chapters: [Chapter] = []
         chapters.reserveCapacity(sorted.count)
 
+        try Task.checkCancellation()
         try await withThrowingTaskGroup(of: (Int, URL, TimeInterval, Int64, String?, AudioInfo).self) { group in
             for (idx, url) in sorted.enumerated() {
+                try Task.checkCancellation()
                 group.addTask {
+                    try Task.checkCancellation()
                     let info = AudioMetadata.fileInfo(of: url)
                     let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
                     var id3: String?
@@ -270,7 +285,8 @@ public struct BookScanner: Sendable {
         }
         chapters = markSuspectedConcatenations(chapters)
 
-        let leftoverM4B = collectM4B(in: folder).sorted {
+        try Task.checkCancellation()
+        let leftoverM4B = try collectM4BThrowing(in: folder).sorted {
             $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
         }.first
         let associated = OutputAssociation.load(inBookFolder: folder)
@@ -298,21 +314,24 @@ public struct BookScanner: Sendable {
     }
 
     func loadAlreadyBoundBook(at folder: URL) async throws -> Audiobook {
-        let m4bs = collectM4B(in: folder).sorted {
+        try Task.checkCancellation()
+        let m4bs = try collectM4BThrowing(in: folder).sorted {
             $0.lastPathComponent.compare($1.lastPathComponent, options: NaturalSort.options) == .orderedAscending
         }
         guard let m4b = m4bs.first else { throw BinderError.noAudioFiles(folder) }
 
+        Self.testingBeforeLoadTags?()
         let firstTags = await AudioMetadata.loadTags(from: m4b, includeArtwork: true)
-        let opf = loadOPF(in: folder)
-        let ebookHint = loadEbookFilename(in: folder)
+        try Task.checkCancellation()
+        let opf = try loadOPF(in: folder)
+        let ebookHint = try loadEbookFilename(in: folder)
         let folderTitle = TitleCleanup.folderTitle(folder.lastPathComponent)
         let title = pickTitle(tags: firstTags, opf: opf, ebook: ebookHint, folderTitle: folderTitle)
         let author = pickAuthor(tags: firstTags, opf: opf, ebook: ebookHint)
         let narrator = firstTags.composer ?? ""
         let description = firstTags.comment ?? opf?.description ?? ""
 
-        let coverURL = findCover(in: folder)
+        let coverURL = try findCover(in: folder)
         var coverJPEG: Data?
         if let coverURL {
             coverJPEG = CoverJPEG.loadAndNormalize(from: coverURL)
@@ -343,7 +362,27 @@ public struct BookScanner: Sendable {
     }
 
     func collectAudio(in folder: URL) -> [URL] {
-        let all = recursiveFiles(in: folder, skipNames: skippedDirectoryNames)
+        collectAudio(from: folder) { folder, skipNames in
+            recursiveFiles(in: folder, skipNames: skipNames)
+        }
+    }
+
+    private func collectM4BThrowing(in folder: URL) throws -> [URL] {
+        try recursiveFilesThrowing(in: folder, skipNames: skippedDirectoryNames)
+            .filter { $0.pathExtension.lowercased() == "m4b" }
+    }
+
+    private func collectAudioThrowing(in folder: URL) throws -> [URL] {
+        try collectAudio(from: folder) { folder, skipNames in
+            try recursiveFilesThrowing(in: folder, skipNames: skipNames)
+        }
+    }
+
+    private func collectAudio(
+        from folder: URL,
+        files: (URL, Set<String>) throws -> [URL]
+    ) rethrows -> [URL] {
+        let all = try files(folder, skippedDirectoryNames)
         let preferred = all.filter { url in
             audioExtensions.contains(url.pathExtension.lowercased())
             && url.pathExtension.lowercased() != "m4b"
@@ -351,7 +390,7 @@ public struct BookScanner: Sendable {
         if !preferred.isEmpty {
             return preferred
         }
-        return recursiveFiles(in: folder, skipNames: ["ebook", "ebooks"])
+        return try files(folder, ["ebook", "ebooks"])
             .filter { audioExtensions.contains($0.pathExtension.lowercased()) && $0.pathExtension.lowercased() != "m4b" }
     }
 
@@ -434,6 +473,22 @@ public struct BookScanner: Sendable {
     }
 
     private func recursiveFiles(in folder: URL, skipNames: Set<String> = []) -> [URL] {
+        do {
+            return try recursiveFiles(in: folder, skipNames: skipNames, honoringCancellation: false)
+        } catch {
+            return []
+        }
+    }
+
+    private func recursiveFilesThrowing(in folder: URL, skipNames: Set<String> = []) throws -> [URL] {
+        try recursiveFiles(in: folder, skipNames: skipNames, honoringCancellation: true)
+    }
+
+    private func recursiveFiles(
+        in folder: URL,
+        skipNames: Set<String>,
+        honoringCancellation: Bool
+    ) throws -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
@@ -442,6 +497,10 @@ public struct BookScanner: Sendable {
 
         var files: [URL] = []
         for case let url as URL in enumerator {
+            Self.testingOnRecursiveFile?(url)
+            if honoringCancellation {
+                try Task.checkCancellation()
+            }
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
             if values?.isDirectory == true {
                 if skipNames.contains(url.lastPathComponent.lowercased()) {
@@ -460,8 +519,8 @@ public struct BookScanner: Sendable {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
-    private func loadOPF(in folder: URL) -> OPFMetadata? {
-        let files = recursiveFiles(in: folder)
+    private func loadOPF(in folder: URL) throws -> OPFMetadata? {
+        let files = try recursiveFilesThrowing(in: folder)
         if let opf = files.first(where: { $0.pathExtension.lowercased() == "opf" }) {
             return OPFParser.load(from: opf)
         }
@@ -471,15 +530,15 @@ public struct BookScanner: Sendable {
         return nil
     }
 
-    private func loadEbookFilename(in folder: URL) -> (title: String?, author: String?)? {
-        let files = recursiveFiles(in: folder)
+    private func loadEbookFilename(in folder: URL) throws -> (title: String?, author: String?)? {
+        let files = try recursiveFilesThrowing(in: folder)
         let ebook = files.first(where: { ebookExtensions.contains($0.pathExtension.lowercased()) })
         guard let ebook else { return nil }
         return TitleCleanup.fromEbookFilename(ebook.lastPathComponent)
     }
 
-    private func findCover(in folder: URL) -> URL? {
-        let files = recursiveFiles(in: folder).filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+    private func findCover(in folder: URL) throws -> URL? {
+        let files = try recursiveFilesThrowing(in: folder).filter { imageExtensions.contains($0.pathExtension.lowercased()) }
         if files.isEmpty { return nil }
         let namedCover = files.first { $0.deletingPathExtension().lastPathComponent.lowercased() == "cover" }
         if let namedCover { return namedCover }

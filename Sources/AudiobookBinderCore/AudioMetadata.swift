@@ -136,9 +136,11 @@ public enum AudioMetadata {
 
     public static func loadTags(from url: URL, includeArtwork: Bool = true) async -> TrackTags {
         var tags = TrackTags(duration: fileInfo(of: url).duration)
+        if Task.isCancelled { return tags }
         let asset = AVURLAsset(url: url)
         do {
             let metadata = try await asset.load(.metadata)
+            if Task.isCancelled { return tags }
             tags.title = await firstString(metadata, identifiers: [
                 .commonIdentifierTitle, .id3MetadataTitleDescription, .iTunesMetadataSongName
             ])
@@ -154,6 +156,7 @@ public enum AudioMetadata {
             tags.comment = await firstString(metadata, identifiers: [
                 .commonIdentifierDescription, .id3MetadataComments, .iTunesMetadataDescription
             ])
+            if Task.isCancelled { return tags }
             if let track = await firstNumber(
                 metadata,
                 identifiers: [.id3MetadataTrackNumber, .iTunesMetadataTrackNumber]
@@ -163,9 +166,11 @@ public enum AudioMetadata {
             if includeArtwork {
                 tags.artwork = await firstArtwork(metadata)
                 if tags.artwork == nil {
+                    if Task.isCancelled { return tags }
                     tags.artwork = await firstArtwork(try await asset.load(.commonMetadata))
                 }
             }
+            if Task.isCancelled { return tags }
             let tracks = try await asset.loadTracks(withMediaType: .audio)
             if let track = tracks.first {
                 let desc = try await track.load(.formatDescriptions)
@@ -178,7 +183,10 @@ public enum AudioMetadata {
             if precise.isNumeric, precise.seconds > 0 {
                 tags.duration = precise.seconds
             }
+        } catch is CancellationError {
+            return tags
         } catch {
+            if Task.isCancelled { return tags }
             // Keep AudioToolbox duration even if metadata load fails.
         }
         return tags
@@ -189,6 +197,7 @@ public enum AudioMetadata {
         identifiers: [AVMetadataIdentifier]
     ) async -> String? {
         for id in identifiers {
+            if Task.isCancelled { return nil }
             guard let item = items.first(where: { $0.identifier == id }) else { continue }
             guard let value = try? await item.load(.stringValue)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -204,6 +213,7 @@ public enum AudioMetadata {
         identifiers: [AVMetadataIdentifier]
     ) async -> Int? {
         for id in identifiers {
+            if Task.isCancelled { return nil }
             guard let item = items.first(where: { $0.identifier == id }) else { continue }
             if let n = try? await item.load(.numberValue), n.intValue > 0 {
                 return n.intValue
@@ -218,6 +228,7 @@ public enum AudioMetadata {
 
     private static func firstArtwork(_ items: [AVMetadataItem]) async -> Data? {
         for item in items {
+            if Task.isCancelled { return nil }
             let isArt = item.identifier == .commonIdentifierArtwork
                 || item.identifier == .iTunesMetadataCoverArt
                 || item.commonKey == .commonKeyArtwork

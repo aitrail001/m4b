@@ -556,6 +556,45 @@ final class ScannerTests: XCTestCase {
         }
     }
 
+    func testCancelledRecursiveCollectThrowsCancellationError() async throws {
+        let root = try TestSupport.tempDir("cancel-recursive-collect")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = root.appendingPathComponent("Book", isDirectory: true)
+        try TestSupport.writeMP3(in: book, book: "mp3", file: "01.mp3")
+        try TestSupport.writeMP3(in: book, book: "mp3", file: "02.mp3")
+        try TestSupport.writeMP3(in: book, book: "CD1", file: "01.mp3")
+        try TestSupport.writeMP3(in: book, book: "CD2", file: "01.mp3")
+
+        var visits = 0
+        BookScanner.testingOnRecursiveFile = { _ in
+            visits += 1
+            if visits == 1 {
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }
+        defer { BookScanner.testingOnRecursiveFile = nil }
+
+        await assertCancellationError {
+            try await BookScanner().loadBook(at: book)
+        }
+    }
+
+    func testCancelledLoadTagsAwaitThrowsCancellationError() async throws {
+        let root = try TestSupport.tempDir("cancel-load-tags")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try TestSupport.writeMP3(in: root, book: "BookA")
+        let book = root.appendingPathComponent("BookA", isDirectory: true)
+
+        BookScanner.testingBeforeLoadTags = {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        defer { BookScanner.testingBeforeLoadTags = nil }
+
+        await assertCancellationError {
+            try await BookScanner().loadBook(at: book)
+        }
+    }
+
     private func assertCancellationError(
         _ body: () async throws -> some Any,
         file: StaticString = #filePath,

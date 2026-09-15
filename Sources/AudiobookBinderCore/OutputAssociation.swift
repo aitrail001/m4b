@@ -12,7 +12,7 @@ public enum OutputAssociation: Sendable {
     static let maxSidecarBytes = 16 * 1024
     static let maxPathLength = BoundedFileRead.maxPathLength
     static let maxPathIndexBytes = 256 * 1024
-    static let maxAuthorityScan = 512
+    static let maxAuthorityScan = 100_000
     static let pathIndexFileName = "path-index.json"
 
     /// Trusted dest only. Folder JSON, path-only, old-format, missing, or
@@ -159,7 +159,10 @@ public enum OutputAssociation: Sendable {
                let document = lookupAuthorityDocument(for: folder, liveFolder: live) {
                 return document.associationID
             }
-            return loadPathIndex().associationID(for: folderPathKey(folder))
+            if case .loaded(let index) = pathIndexState() {
+                return index.associationID(for: folderPathKey(folder))
+            }
+            return nil
         }
     }
 
@@ -167,9 +170,151 @@ public enum OutputAssociation: Sendable {
     /// Does not remove other keys that already point at `associationID`.
     package static func plantPathIndexHint(_ associationID: UUID, for folder: URL) {
         AuthorityStore.withLock {
-            var index = loadPathIndex()
+            var index: PathIndex
+            switch pathIndexState() {
+            case .unusable:
+                return
+            case .missing:
+                index = PathIndex()
+            case .loaded(let loaded):
+                index = loaded
+            }
             index.plant(associationID, for: folderPathKey(folder))
-            persistPathIndex(index)
+            _ = persistPathIndex(index)
+        }
+    }
+
+    package static func pathIndexByteCount() -> Int? {
+        AuthorityStore.withLock {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: pathIndexURL().path)
+            return (attrs?[.size] as? NSNumber)?.intValue
+        }
+    }
+
+    package static func isPathIndexLoadable() -> Bool {
+        AuthorityStore.withLock {
+            if case .loaded = pathIndexState() { return true }
+            return false
+        }
+    }
+
+    package static func writePathIndexJSON(_ data: Data) {
+        AuthorityStore.withLock {
+            let url = pathIndexURL()
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Pretty-printed index at the largest size that still fits `maxPathIndexBytes`.
+    /// Includes `reserved` path → UUID entries (keys standardized like production).
+    package static func writeLargestLoadablePathIndex(including reserved: [String: UUID]) -> Int? {
+        AuthorityStore.withLock {
+            var paths: [String: String] = [:]
+            for (path, id) in reserved {
+                paths[folderPathKey(path: path)] = id.uuidString
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            func encoded(_ paths: [String: String]) -> Data? {
+                try? encoder.encode(PathIndex(paths: paths))
+            }
+            func filler(_ count: Int) -> [String: String] {
+                var trial = paths
+                for i in 0..<count {
+                    let hex = String(format: "%012x", i)
+                    trial["/f/\(i)"] = "ffffffff-0000-4000-8000-\(hex)"
+                }
+                return trial
+            }
+            var low = 0
+            var high = 20_000
+            while low < high {
+                let mid = (low + high + 1) / 2
+                if let data = encoded(filler(mid)), data.count <= maxPathIndexBytes {
+                    low = mid
+                } else {
+                    high = mid - 1
+                }
+            }
+            paths = filler(low)
+            guard let data = encoded(paths), data.count <= maxPathIndexBytes else { return nil }
+            let url = pathIndexURL()
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try data.write(to: url, options: .atomic)
+            } catch {
+                return nil
+            }
+            return data.count
+        }
+    }
+
+    package static func padPathIndexToExactLimit() -> Int? {
+        AuthorityStore.withLock {
+            let url = pathIndexURL()
+            guard let current = BoundedFileRead.read(from: url, maxBytes: maxPathIndexBytes) else {
+                return nil
+            }
+            var padded = current
+            if padded.count < maxPathIndexBytes {
+                padded.append(
+                    Data(repeating: UInt8(ascii: "\n"), count: maxPathIndexBytes - padded.count)
+                )
+            }
+            do {
+                try padded.write(to: url, options: .atomic)
+            } catch {
+                return nil
+            }
+            return padded.count
+        }
+    }
+
+    package static func encodedByteCountIfInsertingPath(_ path: String) -> Int? {
+        AuthorityStore.withLock {
+            guard case .loaded(var index) = pathIndexState() else { return nil }
+            index.set(UUID(), for: folderPathKey(path: path), replacing: nil)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            return (try? encoder.encode(index))?.count
+        }
+    }
+
+    /// UUID-named documents that do not match `matching`. Names sort first so a
+    /// later recorded UUID is outside a 512-file prefix after a sorted listing.
+    package static func plantSyntheticAuthorityDocuments(count: Int) {
+        AuthorityStore.withLock {
+            let dir = AuthorityDirectory.url()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .secondsSince1970
+            for i in 0..<count {
+                let hex = String(format: "%012x", i)
+                guard let id = UUID(uuidString: "00000000-0000-4000-8000-\(hex)") else { continue }
+                let dummyIdentity = FileIdentity(
+                    fileSize: Int64(i + 1),
+                    modificationDate: nil,
+                    fileResourceIdentifier: Data("r6-02-synth-\(i)".utf8),
+                    isDirectory: true
+                )
+                let document = Document(
+                    associationID: id,
+                    destination: "/tmp/r6-02-synth-\(i).m4b",
+                    destinationIdentity: nil,
+                    bookFolderIdentity: dummyIdentity,
+                    bookFolderPath: "/tmp/r6-02-synth-\(i)"
+                )
+                guard let data = try? encoder.encode(document) else { continue }
+                try? data.write(to: authorityURL(for: id), options: .atomic)
+            }
         }
     }
 
@@ -216,12 +361,13 @@ public enum OutputAssociation: Sendable {
 
     private static func existingAssociationID(for folder: URL, folderIdentity: FileIdentity) -> UUID? {
         AuthorityStore.withLock {
-            let index = loadPathIndex()
-            let key = folderPathKey(folder)
-            if let id = index.associationID(for: key),
-               let document = decodeAuthorityDocument(id: id),
-               documentMatchesLiveFolder(document, liveFolder: folderIdentity) {
-                return id
+            if case .loaded(let index) = pathIndexState() {
+                let key = folderPathKey(folder)
+                if let id = index.associationID(for: key),
+                   let document = decodeAuthorityDocument(id: id),
+                   documentMatchesLiveFolder(document, liveFolder: folderIdentity) {
+                    return id
+                }
             }
             return scanAuthority(matching: folderIdentity)?.associationID
         }
@@ -233,16 +379,16 @@ public enum OutputAssociation: Sendable {
         }
     }
 
-    /// Path index first. On a miss, scan a bounded number of documents by
-    /// semantic folder identity and refresh the index. Callers still verify
-    /// live folder / dest identities.
+    /// Path index first when it is loadable. On a miss, scan UUID documents by
+    /// folder identity. Refresh the index only when it is missing or already
+    /// loadable and the new encoding stays within `maxPathIndexBytes`.
     private static func lookupAuthorityDocument(
         for folder: URL?,
         liveFolder: FileIdentity
     ) -> Document? {
-        if let folder {
+        let state = pathIndexState()
+        if let folder, case .loaded(let index) = state {
             let key = folderPathKey(folder)
-            let index = loadPathIndex()
             if let id = index.associationID(for: key),
                let document = decodeAuthorityDocument(id: id),
                documentMatchesLiveFolder(document, liveFolder: liveFolder) {
@@ -250,10 +396,21 @@ public enum OutputAssociation: Sendable {
             }
         }
         guard let document = scanAuthority(matching: liveFolder) else { return nil }
+        if case .unusable = state {
+            return document
+        }
         if let folder, let id = document.associationID {
-            var index = loadPathIndex()
+            var index: PathIndex
+            switch state {
+            case .missing:
+                index = PathIndex()
+            case .loaded(let loaded):
+                index = loaded
+            case .unusable:
+                return document
+            }
             index.set(id, for: folderPathKey(folder), replacing: document.bookFolderPath)
-            persistPathIndex(index)
+            _ = persistPathIndex(index)
         }
         return document
     }
@@ -287,20 +444,30 @@ public enum OutputAssociation: Sendable {
             removeAuthority(id)
             return false
         }
-        var index = loadPathIndex()
-        if let folderPath = document.bookFolderPath, !folderPath.isEmpty {
-            index.set(id, for: folderPathKey(path: folderPath), replacing: nil)
+        switch pathIndexState() {
+        case .unusable:
+            return false
+        case .missing:
+            var index = PathIndex()
+            if let folderPath = document.bookFolderPath, !folderPath.isEmpty {
+                index.set(id, for: folderPathKey(path: folderPath), replacing: nil)
+            }
+            return persistPathIndex(index)
+        case .loaded(var index):
+            if let folderPath = document.bookFolderPath, !folderPath.isEmpty {
+                index.set(id, for: folderPathKey(path: folderPath), replacing: nil)
+            }
+            return persistPathIndex(index)
         }
-        persistPathIndex(index)
-        return true
     }
 
     private static func invalidateAuthority(inBookFolder folder: URL) {
         AuthorityStore.withLock {
-            var index = loadPathIndex()
+            let state = pathIndexState()
             var ids = Set<UUID>()
             let liveIdentity = FileIdentity.read(from: folder).flatMap { $0.isDirectory ? $0 : nil }
-            if let liveIdentity,
+            if case .loaded(let index) = state,
+               let liveIdentity,
                let id = index.associationID(for: folderPathKey(folder)),
                let document = decodeAuthorityDocument(id: id),
                documentMatchesLiveFolder(document, liveFolder: liveIdentity) {
@@ -313,9 +480,24 @@ public enum OutputAssociation: Sendable {
             }
             for id in ids {
                 removeAuthority(id)
-                index.remove(associationID: id)
             }
-            persistPathIndex(index)
+            switch state {
+            case .unusable:
+                break
+            case .missing:
+                if !ids.isEmpty {
+                    var index = PathIndex()
+                    for id in ids {
+                        index.remove(associationID: id)
+                    }
+                    _ = persistPathIndex(index)
+                }
+            case .loaded(var index):
+                for id in ids {
+                    index.remove(associationID: id)
+                }
+                _ = persistPathIndex(index)
+            }
         }
     }
 
@@ -359,15 +541,18 @@ public enum OutputAssociation: Sendable {
         ) else {
             return nil
         }
+        let uuidFiles = files.filter { file in
+            file.pathExtension.lowercased() == "json"
+                && UUID(uuidString: file.deletingPathExtension().lastPathComponent) != nil
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         var scanned = 0
         var match: Document?
-        for file in files {
-            guard file.pathExtension.lowercased() == "json" else { continue }
-            let name = file.deletingPathExtension().lastPathComponent
-            guard let id = UUID(uuidString: name) else { continue }
+        for file in uuidFiles {
             scanned += 1
             if scanned > maxAuthorityScan { break }
-            guard let document = decodeAuthorityDocument(from: file, expectedID: id),
+            let name = file.deletingPathExtension().lastPathComponent
+            guard let id = UUID(uuidString: name),
+                  let document = decodeAuthorityDocument(from: file, expectedID: id),
                   let recorded = document.bookFolderIdentity,
                   folderIdentity.matchesRecordedIdentity(recorded)
             else {
@@ -379,26 +564,52 @@ public enum OutputAssociation: Sendable {
         return match
     }
 
-    private static func loadPathIndex() -> PathIndex {
-        let url = pathIndexURL()
-        guard let data = BoundedFileRead.read(from: url, maxBytes: maxPathIndexBytes) else {
-            return PathIndex()
-        }
-        return (try? JSONDecoder().decode(PathIndex.self, from: data)) ?? PathIndex()
+    private enum PathIndexState {
+        case missing
+        case loaded(PathIndex)
+        case unusable
     }
 
-    private static func persistPathIndex(_ index: PathIndex) {
+    private static func pathIndexState() -> PathIndexState {
         let url = pathIndexURL()
-        let dir = url.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        } catch {
-            return
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return .missing
         }
+        if isDirectory.boolValue {
+            return .unusable
+        }
+        guard let data = BoundedFileRead.read(from: url, maxBytes: maxPathIndexBytes) else {
+            return .unusable
+        }
+        guard let index = try? JSONDecoder().decode(PathIndex.self, from: data) else {
+            return .unusable
+        }
+        return .loaded(index)
+    }
+
+    @discardableResult
+    private static func persistPathIndex(_ index: PathIndex) -> Bool {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(index) else { return }
-        try? data.write(to: url, options: .atomic)
+        guard let data = try? encoder.encode(index) else { return false }
+        guard data.count <= maxPathIndexBytes else { return false }
+        let url = pathIndexURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+        } catch {
+            return false
+        }
+        guard let readBack = BoundedFileRead.read(from: url, maxBytes: maxPathIndexBytes),
+              (try? JSONDecoder().decode(PathIndex.self, from: readBack)) != nil
+        else {
+            return false
+        }
+        return true
     }
 
     private struct Document: Codable {

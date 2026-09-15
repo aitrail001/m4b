@@ -1011,6 +1011,204 @@ final class NamingAndModelsTests: XCTestCase {
         }
     }
 
+    func testPathIndexJustUnderAndAtLimitRemainsLoadable() throws {
+        try withIsolatedAuthorityStore { store in
+            let root = try TestSupport.tempDir("r6-02-index-limit-loadable")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let folderA = root.appendingPathComponent("FolderA", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: folderA, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let destA = out.appendingPathComponent("Same - Ann - A.m4b")
+            let payloadA = Data("OWNED-A-LIMIT".utf8)
+            try payloadA.write(to: destA)
+            OutputAssociation.record(destA, inBookFolder: folderA)
+            let idA = try XCTUnwrap(OutputAssociation.recordedAssociationID(inBookFolder: folderA))
+
+            let under = try XCTUnwrap(
+                OutputAssociation.writeLargestLoadablePathIndex(
+                    including: [folderA.standardizedFileURL.path: idA]
+                )
+            )
+            XCTAssertLessThanOrEqual(under, OutputAssociation.maxPathIndexBytes)
+            XCTAssertTrue(OutputAssociation.isPathIndexLoadable())
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+
+            let exact = try XCTUnwrap(OutputAssociation.padPathIndexToExactLimit())
+            XCTAssertEqual(exact, OutputAssociation.maxPathIndexBytes)
+            XCTAssertTrue(OutputAssociation.isPathIndexLoadable())
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            _ = store
+        }
+    }
+
+    func testRecordDoesNotWriteOverLimitPathIndex() throws {
+        try withIsolatedAuthorityStore { store in
+            let root = try TestSupport.tempDir("r6-02-index-over-limit")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let folderA = root.appendingPathComponent("FolderA", isDirectory: true)
+            let folderB = root.appendingPathComponent("FolderB", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: folderA, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: folderB, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let destA = out.appendingPathComponent("Same - Ann - A.m4b")
+            let destB = out.appendingPathComponent("Same - Ann - B.m4b")
+            let payloadA = Data("OWNED-A-KEEP".utf8)
+            let payloadB = Data("OWNED-B-NEW".utf8)
+            try payloadA.write(to: destA)
+            try payloadB.write(to: destB)
+
+            OutputAssociation.record(destA, inBookFolder: folderA)
+            let idA = try XCTUnwrap(OutputAssociation.recordedAssociationID(inBookFolder: folderA))
+            let under = try XCTUnwrap(
+                OutputAssociation.writeLargestLoadablePathIndex(
+                    including: [folderA.standardizedFileURL.path: idA]
+                )
+            )
+            XCTAssertLessThanOrEqual(under, OutputAssociation.maxPathIndexBytes)
+            let projected = try XCTUnwrap(
+                OutputAssociation.encodedByteCountIfInsertingPath(folderB.standardizedFileURL.path)
+            )
+            XCTAssertGreaterThan(
+                projected,
+                OutputAssociation.maxPathIndexBytes,
+                "Near-limit fixture must be tight enough that one more record exceeds"
+            )
+
+            let indexURL = store.appendingPathComponent(OutputAssociation.pathIndexFileName)
+            let before = try Data(contentsOf: indexURL)
+            XCTAssertTrue(OutputAssociation.isPathIndexLoadable())
+
+            OutputAssociation.record(destB, inBookFolder: folderB)
+
+            let after = try Data(contentsOf: indexURL)
+            XCTAssertEqual(after, before, "Over-limit persist must leave the previous index bytes untouched")
+            XCTAssertTrue(OutputAssociation.isPathIndexLoadable())
+            XCTAssertLessThanOrEqual(
+                try XCTUnwrap(OutputAssociation.pathIndexByteCount()),
+                OutputAssociation.maxPathIndexBytes
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderB)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+            XCTAssertGreaterThanOrEqual(OutputAssociation.authorityDocumentCount(), 2)
+        }
+    }
+
+    func testUnusablePathIndexIsNotReplacedByOneRecordRepair() throws {
+        try withIsolatedAuthorityStore { store in
+            let root = try TestSupport.tempDir("r6-02-unusable-index")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let folderA = root.appendingPathComponent("FolderA", isDirectory: true)
+            let folderB = root.appendingPathComponent("FolderB", isDirectory: true)
+            let folderC = root.appendingPathComponent("FolderC", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: folderA, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: folderB, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: folderC, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let destA = out.appendingPathComponent("Same - Ann - A.m4b")
+            let destB = out.appendingPathComponent("Same - Ann - B.m4b")
+            let payloadA = Data("OWNED-A-UNUSABLE".utf8)
+            let payloadB = Data("OWNED-B-UNUSABLE".utf8)
+            try payloadA.write(to: destA)
+            try payloadB.write(to: destB)
+
+            OutputAssociation.record(destA, inBookFolder: folderA)
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+
+            var oversized = Data("{\"paths\":{".utf8)
+            oversized.append(Data(repeating: UInt8(ascii: "x"), count: OutputAssociation.maxPathIndexBytes + 64))
+            oversized.append(contentsOf: "}}".utf8)
+            XCTAssertGreaterThan(oversized.count, OutputAssociation.maxPathIndexBytes)
+            OutputAssociation.writePathIndexJSON(oversized)
+            XCTAssertFalse(OutputAssociation.isPathIndexLoadable())
+            let plantedCount = try XCTUnwrap(OutputAssociation.pathIndexByteCount())
+            XCTAssertGreaterThan(plantedCount, OutputAssociation.maxPathIndexBytes)
+
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertFalse(OutputAssociation.isPathIndexLoadable())
+            XCTAssertEqual(OutputAssociation.pathIndexByteCount(), plantedCount)
+
+            OutputAssociation.record(destB, inBookFolder: folderB)
+            XCTAssertFalse(OutputAssociation.isPathIndexLoadable())
+            XCTAssertEqual(OutputAssociation.pathIndexByteCount(), plantedCount)
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderB)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+
+            try TestSupport.writeStructuredOutputSidecar(destA, in: folderC)
+            XCTAssertNil(OutputAssociation.load(inBookFolder: folderC))
+            let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+            let bookC = TestSupport.dummyBook(folder: folderC.path, title: "Same", author: "Ann")
+            XCTAssertFalse(settings.owns(destA, for: bookC))
+            _ = store
+        }
+    }
+
+    func testAuthorityScanFindsRecordBeyond512Prefix() throws {
+        try withIsolatedAuthorityStore { _ in
+            let root = try TestSupport.tempDir("r6-02-scan-beyond-512")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let folder = root.appendingPathComponent("FolderReal", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            OutputAssociation.plantSyntheticAuthorityDocuments(count: 512)
+            let dest = out.appendingPathComponent("Same - Ann.m4b")
+            let payload = Data("OWNED-BEYOND-512".utf8)
+            try payload.write(to: dest)
+            OutputAssociation.record(dest, inBookFolder: folder)
+            let id = try XCTUnwrap(OutputAssociation.recordedAssociationID(inBookFolder: folder))
+            XCTAssertGreaterThan(
+                id.uuidString,
+                "00000000-0000-4000-8000-0000000001ff",
+                "Real document must sort after the 512 synthetic prefix"
+            )
+            XCTAssertGreaterThan(OutputAssociation.authorityDocumentCount(), 512)
+            OutputAssociation.writePathIndexJSON(Data("{\"paths\":{}}\n".utf8))
+
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folder)?.standardizedFileURL.path,
+                dest.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: dest), payload)
+        }
+    }
+
     func testImportedSidecarNotesTxtIsNotOwned() throws {
         let root = try TestSupport.tempDir("imported-notes-txt")
         defer { try? FileManager.default.removeItem(at: root) }

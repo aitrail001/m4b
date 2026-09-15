@@ -817,6 +817,200 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertFalse(settings.owns(dest, for: book))
     }
 
+    func testCaseDistinctFoldersKeepIndependentAuthorityRecords() throws {
+        try withIsolatedAuthorityStore { _ in
+            let fixture = try caseDistinctFixtureRoot()
+            defer { fixture.cleanup() }
+
+            let library = fixture.root.appendingPathComponent("Library", isDirectory: true)
+            let edition = library.appendingPathComponent("Edition", isDirectory: true)
+            let editionLower = library.appendingPathComponent("edition", isDirectory: true)
+            let out = fixture.root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: edition, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: editionLower, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let editionIdentity = try XCTUnwrap(FileIdentity.read(from: edition))
+            let lowerIdentity = try XCTUnwrap(FileIdentity.read(from: editionLower))
+            XCTAssertFalse(
+                editionIdentity.matchesRecordedIdentity(lowerIdentity),
+                "Edition and edition must be distinct filesystem objects"
+            )
+
+            let destA = out.appendingPathComponent("Same - Ann - Edition.m4b")
+            let destB = out.appendingPathComponent("Same - Ann - paperback.m4b")
+            let payloadA = Data("OWNED-EDITION".utf8)
+            let payloadB = Data("OWNED-edition".utf8)
+            try payloadA.write(to: destA)
+            try payloadB.write(to: destB)
+
+            OutputAssociation.record(destA, inBookFolder: edition)
+            OutputAssociation.record(destB, inBookFolder: editionLower)
+
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: edition)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: editionLower)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 2)
+
+            let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+            let bookA = TestSupport.dummyBook(folder: edition.path, title: "Same", author: "Ann")
+            let bookB = TestSupport.dummyBook(folder: editionLower.path, title: "Same", author: "Ann")
+            XCTAssertTrue(settings.owns(destA, for: bookA))
+            XCTAssertFalse(settings.owns(destB, for: bookA))
+            XCTAssertTrue(settings.owns(destB, for: bookB))
+            XCTAssertFalse(settings.owns(destA, for: bookB))
+
+            OutputAssociation.record(out.appendingPathComponent("missing.m4b"), inBookFolder: edition)
+            XCTAssertNil(OutputAssociation.load(inBookFolder: edition))
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: editionLower)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 1)
+
+            OutputAssociation.record(destA, inBookFolder: edition)
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: edition)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: editionLower)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 2)
+
+            OutputAssociation.record(destB, inBookFolder: editionLower)
+            OutputAssociation.record(destA, inBookFolder: edition)
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: edition)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: editionLower)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 2)
+
+            OutputAssociation.record(destA, inBookFolder: edition)
+            OutputAssociation.record(destB, inBookFolder: editionLower)
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: edition)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: editionLower)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            XCTAssertEqual(try Data(contentsOf: destB), payloadB)
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 2)
+            XCTAssertTrue(settings.owns(destA, for: bookA))
+            XCTAssertFalse(settings.owns(destB, for: bookA))
+            XCTAssertTrue(settings.owns(destB, for: bookB))
+            XCTAssertFalse(settings.owns(destA, for: bookB))
+        }
+    }
+
+    func testPathIndexHintForDifferentIdentityDoesNotOverwriteAuthority() throws {
+        try withIsolatedAuthorityStore { _ in
+            let root = try TestSupport.tempDir("r6-01-stale-hint")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let folderA = root.appendingPathComponent("FolderA", isDirectory: true)
+            let folderB = root.appendingPathComponent("FolderB", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: folderA, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: folderB, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let destA = out.appendingPathComponent("Same - Ann - A.m4b")
+            let destB = out.appendingPathComponent("Same - Ann - B.m4b")
+            let payloadA = Data("OWNED-A".utf8)
+            let payloadB = Data("OWNED-B".utf8)
+            try payloadA.write(to: destA)
+            try payloadB.write(to: destB)
+
+            OutputAssociation.record(destA, inBookFolder: folderA)
+            let idA = try XCTUnwrap(OutputAssociation.recordedAssociationID(inBookFolder: folderA))
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 1)
+
+            OutputAssociation.plantPathIndexHint(idA, for: folderB)
+            OutputAssociation.record(destB, inBookFolder: folderB)
+
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderA)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: folderB)?.standardizedFileURL.path,
+                destB.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: destA), payloadA)
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 2)
+        }
+    }
+
+    func testCaseVariantPathOfSameFolderReusesAuthoritySafely() throws {
+        try withIsolatedAuthorityStore { _ in
+            let root = try TestSupport.tempDir("r6-01-case-variant")
+            defer { try? FileManager.default.removeItem(at: root) }
+            if try volumeIsCaseSensitive(at: root) {
+                throw XCTSkip("Fixture volume is case-sensitive; cannot spell the same folder two ways")
+            }
+
+            let bookDir = root.appendingPathComponent("Edition", isDirectory: true)
+            let out = root.appendingPathComponent("out", isDirectory: true)
+            try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+            let dest = out.appendingPathComponent("Same - Ann.m4b")
+            let payload = Data("OWNED-VARIANT".utf8)
+            try payload.write(to: dest)
+            OutputAssociation.record(dest, inBookFolder: bookDir)
+
+            let variant = root.appendingPathComponent("edition", isDirectory: true)
+            let recorded = try XCTUnwrap(FileIdentity.read(from: bookDir))
+            let variantIdentity = try XCTUnwrap(FileIdentity.read(from: variant))
+            XCTAssertTrue(
+                variantIdentity.matchesRecordedIdentity(recorded),
+                "Alternate capitalization must resolve to the same folder object"
+            )
+
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: variant)?.standardizedFileURL.path,
+                dest.standardizedFileURL.path
+            )
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 1)
+
+            OutputAssociation.record(dest, inBookFolder: variant)
+            XCTAssertEqual(OutputAssociation.authorityDocumentCount(), 1)
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: bookDir)?.standardizedFileURL.path,
+                dest.standardizedFileURL.path
+            )
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: variant)?.standardizedFileURL.path,
+                dest.standardizedFileURL.path
+            )
+            XCTAssertEqual(try Data(contentsOf: dest), payload)
+
+            let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+            let book = TestSupport.dummyBook(folder: bookDir.path, title: "Same", author: "Ann")
+            let bookVariant = TestSupport.dummyBook(folder: variant.path, title: "Same", author: "Ann")
+            XCTAssertTrue(settings.owns(dest, for: book))
+            XCTAssertTrue(settings.owns(dest, for: bookVariant))
+        }
+    }
+
     func testImportedSidecarNotesTxtIsNotOwned() throws {
         let root = try TestSupport.tempDir("imported-notes-txt")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1347,6 +1541,126 @@ final class NamingAndModelsTests: XCTestCase {
                 line: line
             )
         }
+    }
+
+    private func withIsolatedAuthorityStore(_ body: (URL) throws -> Void) throws {
+        let store = try TestSupport.tempDir("r6-01-authority")
+        let previous = OutputAssociation.authorityDirectoryOverride
+        OutputAssociation.authorityDirectoryOverride = store
+        defer {
+            OutputAssociation.authorityDirectoryOverride = previous
+            try? FileManager.default.removeItem(at: store)
+        }
+        try body(store)
+    }
+
+    /// `CaseFoldProbe` vs `casefoldprobe` on the same parent: if they are the
+    /// same object, the volume is case-insensitive.
+    private func volumeIsCaseSensitive(at directory: URL) throws -> Bool {
+        let probe = directory.appendingPathComponent("CaseFoldProbe", isDirectory: true)
+        try FileManager.default.createDirectory(at: probe, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: probe) }
+        let folded = directory.appendingPathComponent("casefoldprobe", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folded.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return true
+        }
+        let probeIdentity = try XCTUnwrap(FileIdentity.read(from: probe))
+        let foldedIdentity = try XCTUnwrap(FileIdentity.read(from: folded))
+        return !probeIdentity.matchesRecordedIdentity(foldedIdentity)
+    }
+
+    private struct CaseDistinctFixture {
+        let root: URL
+        let cleanup: () -> Void
+    }
+
+    private func caseDistinctFixtureRoot() throws -> CaseDistinctFixture {
+        let native = try TestSupport.tempDir("r6-01-case-distinct")
+        if try volumeIsCaseSensitive(at: native) {
+            return CaseDistinctFixture(root: native) {
+                try? FileManager.default.removeItem(at: native)
+            }
+        }
+        try? FileManager.default.removeItem(at: native)
+        return try attachCaseSensitiveVolume()
+    }
+
+    private func attachCaseSensitiveVolume() throws -> CaseDistinctFixture {
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let volname = "m4bCS\(token.prefix(8))"
+        let dmg = FileManager.default.temporaryDirectory
+            .appendingPathComponent("m4b-cs-\(token).dmg")
+        let mountPoint = FileManager.default.temporaryDirectory
+            .appendingPathComponent("m4b-cs-mnt-\(token)", isDirectory: true)
+        try FileManager.default.createDirectory(at: mountPoint, withIntermediateDirectories: true)
+
+        func cleanupImage() {
+            _ = try? runHDIUtil(["detach", mountPoint.path, "-force"])
+            try? FileManager.default.removeItem(at: dmg)
+            try? FileManager.default.removeItem(at: mountPoint)
+        }
+
+        do {
+            let created = try runHDIUtil([
+                "create",
+                "-size", "16m",
+                "-fs", "Case-sensitive APFS",
+                "-volname", volname,
+                "-ov",
+                dmg.path
+            ])
+            if created.status != 0 {
+                let retry = try runHDIUtil([
+                    "create",
+                    "-size", "16m",
+                    "-fs", "APFSX",
+                    "-volname", volname,
+                    "-ov",
+                    dmg.path
+                ])
+                guard retry.status == 0 else {
+                    throw XCTSkip(
+                        "Could not create a case-sensitive APFS disk image: \(created.output) \(retry.output)"
+                    )
+                }
+            }
+            let attached = try runHDIUtil([
+                "attach",
+                "-nobrowse",
+                "-mountpoint", mountPoint.path,
+                dmg.path
+            ])
+            guard attached.status == 0 else {
+                throw XCTSkip(
+                    "Could not attach a case-sensitive APFS disk image: \(attached.output)"
+                )
+            }
+            guard try volumeIsCaseSensitive(at: mountPoint) else {
+                throw XCTSkip("Attached disk image is not case-sensitive")
+            }
+        } catch {
+            cleanupImage()
+            throw error
+        }
+
+        return CaseDistinctFixture(root: mountPoint, cleanup: cleanupImage)
+    }
+
+    private func runHDIUtil(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return (process.terminationStatus, output)
     }
 }
 

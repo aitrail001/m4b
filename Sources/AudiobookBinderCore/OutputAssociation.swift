@@ -136,6 +136,43 @@ public enum OutputAssociation: Sendable {
         try? FileManager.default.removeItem(at: sidecar)
     }
 
+    /// UUID-named authority JSON files, excluding `path-index.json`.
+    package static func authorityDocumentCount() -> Int {
+        AuthorityStore.withLock {
+            let dir = AuthorityDirectory.url()
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil
+            ) else {
+                return 0
+            }
+            return files.filter { file in
+                file.pathExtension.lowercased() == "json"
+                    && UUID(uuidString: file.deletingPathExtension().lastPathComponent) != nil
+            }.count
+        }
+    }
+
+    package static func recordedAssociationID(inBookFolder folder: URL) -> UUID? {
+        AuthorityStore.withLock {
+            if let live = FileIdentity.read(from: folder), live.isDirectory,
+               let document = lookupAuthorityDocument(for: folder, liveFolder: live) {
+                return document.associationID
+            }
+            return loadPathIndex().associationID(for: folderPathKey(folder))
+        }
+    }
+
+    /// Plants a path-index hint without rewriting authority documents.
+    /// Does not remove other keys that already point at `associationID`.
+    package static func plantPathIndexHint(_ associationID: UUID, for folder: URL) {
+        AuthorityStore.withLock {
+            var index = loadPathIndex()
+            index.plant(associationID, for: folderPathKey(folder))
+            persistPathIndex(index)
+        }
+    }
+
     /// Test helper: swap the stored folder identifier archive without
     /// changing lookup keys or dest bytes.
     package static func replaceStoredBookFolderResourceIdentifier(
@@ -157,11 +194,16 @@ public enum OutputAssociation: Sendable {
     }
 
     private static func folderPathKey(_ folder: URL) -> String {
-        folder.standardizedFileURL.path.lowercased()
+        folder.standardizedFileURL.path
     }
 
     private static func folderPathKey(path: String) -> String {
-        URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path.lowercased()
+        URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+    }
+
+    private static func documentMatchesLiveFolder(_ document: Document, liveFolder: FileIdentity) -> Bool {
+        guard let recorded = document.bookFolderIdentity else { return false }
+        return liveFolder.matchesRecordedIdentity(recorded)
     }
 
     private static func authorityURL(for associationID: UUID) -> URL {
@@ -176,7 +218,9 @@ public enum OutputAssociation: Sendable {
         AuthorityStore.withLock {
             let index = loadPathIndex()
             let key = folderPathKey(folder)
-            if let id = index.associationID(for: key), decodeAuthorityDocument(id: id) != nil {
+            if let id = index.associationID(for: key),
+               let document = decodeAuthorityDocument(id: id),
+               documentMatchesLiveFolder(document, liveFolder: folderIdentity) {
                 return id
             }
             return scanAuthority(matching: folderIdentity)?.associationID
@@ -200,7 +244,8 @@ public enum OutputAssociation: Sendable {
             let key = folderPathKey(folder)
             let index = loadPathIndex()
             if let id = index.associationID(for: key),
-               let document = decodeAuthorityDocument(id: id) {
+               let document = decodeAuthorityDocument(id: id),
+               documentMatchesLiveFolder(document, liveFolder: liveFolder) {
                 return document
             }
         }
@@ -254,11 +299,15 @@ public enum OutputAssociation: Sendable {
         AuthorityStore.withLock {
             var index = loadPathIndex()
             var ids = Set<UUID>()
-            if let id = index.associationID(for: folderPathKey(folder)) {
+            let liveIdentity = FileIdentity.read(from: folder).flatMap { $0.isDirectory ? $0 : nil }
+            if let liveIdentity,
+               let id = index.associationID(for: folderPathKey(folder)),
+               let document = decodeAuthorityDocument(id: id),
+               documentMatchesLiveFolder(document, liveFolder: liveIdentity) {
                 ids.insert(id)
             }
-            if let identity = FileIdentity.read(from: folder),
-               let found = scanAuthority(matching: identity),
+            if let liveIdentity,
+               let found = scanAuthority(matching: liveIdentity),
                let id = found.associationID {
                 ids.insert(id)
             }
@@ -378,6 +427,10 @@ public enum OutputAssociation: Sendable {
         mutating func remove(associationID id: UUID) {
             let value = id.uuidString
             paths = paths.filter { $0.value.caseInsensitiveCompare(value) != .orderedSame }
+        }
+
+        mutating func plant(_ id: UUID, for key: String) {
+            paths[key] = id.uuidString
         }
     }
 }

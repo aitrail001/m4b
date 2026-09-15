@@ -68,6 +68,39 @@ ALLOW_DIRTY_RELEASE=1 require_clean_release_worktree "$REPO" \
 
 rm -f "$REPO/extra.txt"
 
+# C9: stamp the HEAD captured before tests; refuse if HEAD moved.
+captured_head="$(git -C "$REPO" rev-parse HEAD)"
+stamp_release_tests_ok_if_head_unchanged "$REPO" "$captured_head" \
+  || fail "matching captured HEAD must stamp"
+stamped="$(tr -d '[:space:]' < "$(release_tests_ok_stamp_path "$REPO")")"
+[[ "$stamped" == "$captured_head" ]] \
+  || fail "matching captured HEAD must write the captured SHA, not a fresh rev-parse"
+release_tests_ok_recorded "$REPO" "$captured_head" \
+  || fail "matching stamp must be recorded for the captured SHA"
+
+print -r -- 'moved-head' > "$REPO/moved-head.txt"
+git -C "$REPO" add moved-head.txt
+git -C "$REPO" commit -qm 'move HEAD after capture'
+live_head="$(git -C "$REPO" rev-parse HEAD)"
+[[ "$live_head" != "$captured_head" ]] || fail "fixture must move HEAD after capture"
+
+if stamp_release_tests_ok_if_head_unchanged "$REPO" "$captured_head"; then
+  fail "mismatched HEAD must refuse to stamp"
+fi
+stamped="$(tr -d '[:space:]' < "$(release_tests_ok_stamp_path "$REPO")")"
+[[ "$stamped" != "$live_head" ]] \
+  || fail "mismatched HEAD must not write the live HEAD into the stamp"
+[[ "$stamped" == "$captured_head" ]] \
+  || fail "mismatched HEAD must leave the existing stamp unchanged"
+
+rm -f "$(release_tests_ok_stamp_path "$REPO")"
+if stamp_release_tests_ok_if_head_unchanged "$REPO" "$captured_head"; then
+  fail "mismatched HEAD must refuse when no stamp exists"
+fi
+if [[ -f "$(release_tests_ok_stamp_path "$REPO")" ]]; then
+  fail "mismatched HEAD must not create a stamp"
+fi
+
 # Notary credentials: fail closed when missing; accept the conventional env vars.
 (
   unset NOTARYTOOL_PROFILE APPLE_ID APPLE_TEAM_ID NOTARY_PASSWORD
@@ -546,6 +579,22 @@ fi
 
 # make release is sequential: clean, then tests, then production DMG (dry-run only).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEST_PLAN="$(make -C "$REPO_ROOT" -n test)"
+if print -r -- "$TEST_PLAN" | grep -q 'git rev-parse HEAD > *dist/.release-tests-ok'; then
+  fail "make test must not stamp a fresh HEAD after tests"
+fi
+print -r -- "$TEST_PLAN" | grep -q 'stamp-release-tests-ok\|stamp_release_tests_ok_if_head_unchanged' \
+  || fail "make -n test must stamp via stamp_release_tests_ok_if_head_unchanged"
+case "$TEST_PLAN" in
+  *'git rev-parse HEAD'*'swift test'*) ;;
+  *) fail "make -n test must capture HEAD before swift test" ;;
+esac
+case "$TEST_PLAN" in
+  *'swift test'*'AudiobookBinderSelfTest'*'stamp-release-tests-ok'*) ;;
+  *'swift test'*'AudiobookBinderSelfTest'*'stamp_release_tests_ok_if_head_unchanged'*) ;;
+  *) fail "make -n test must stamp the captured SHA after both test commands" ;;
+esac
+
 BUILD_PLAN="$(make -C "$REPO_ROOT" -n build)"
 print -r -- "$BUILD_PLAN" | grep -q 'swift build -c release' \
   || fail "make -n build must run swift build -c release"

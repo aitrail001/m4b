@@ -174,6 +174,22 @@ require_release_tests_ok() {
   return 1
 }
 
+# Stamp the SHA captured before tests. Refuse if HEAD moved; never write live HEAD.
+stamp_release_tests_ok_if_head_unchanged() {
+  local root="${1:-.}"
+  local captured_head="${2-}"
+  local live
+  live="$(git -C "$root" rev-parse HEAD)" || {
+    print -r -- "Refusing to stamp test-ok: cannot read HEAD." >&2
+    return 1
+  }
+  if [[ -z "$captured_head" || "$live" != "$captured_head" ]]; then
+    print -r -- "Refusing to stamp test-ok: HEAD moved during tests (captured ${captured_head:-empty}, now $live)." >&2
+    return 1
+  fi
+  write_release_tests_ok_stamp "$root" "$captured_head"
+}
+
 release_provenance_path() {
   local root="${1:-.}"
   local version="${2-}"

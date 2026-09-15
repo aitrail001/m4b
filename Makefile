@@ -3,10 +3,7 @@
 all: app
 
 test:
-	swift test
-	swift run AudiobookBinderSelfTest
-	mkdir -p dist
-	git rev-parse HEAD > dist/.release-tests-ok
+	tested=$$(git rev-parse HEAD) && swift test && swift run AudiobookBinderSelfTest && ./scripts/stamp-release-tests-ok.sh "$$tested"
 
 build:
 	./scripts/write-build-intent.sh

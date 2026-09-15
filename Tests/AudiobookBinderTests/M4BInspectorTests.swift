@@ -1047,6 +1047,90 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(SourceAssociation.load(inBookFolder: fixture.dir)?.count, 2)
     }
 
+    func testCleanupAuthorizationAllowsWhenNeverExportedExtraChapterIsListed() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let extra = fixture.dir.appendingPathComponent("whole-book.mp3")
+        try Data(count: 16).write(to: extra)
+        var book = fixture.book
+        book.chapters.append(
+            TestSupport.dummyChapter(index: 3, url: extra, duration: 30, included: false)
+        )
+        XCTAssertFalse(
+            ChapterCompare.summary(
+                original: book.chapters,
+                bound: M4BInspector.playableChapters(from: fixture.inspection),
+                boundDuration: fixture.inspection.duration
+            ).allMatch,
+            "never-exported extra must not be part of the bound chapter list"
+        )
+
+        let auth = SourceCleanup.authorization(
+            book: book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(auth.allowed)
+        XCTAssertEqual(auth.sources.map(\.lastPathComponent), ["01.mp3", "02.mp3"])
+        XCTAssertFalse(auth.sources.contains { $0.lastPathComponent == "whole-book.mp3" })
+        XCTAssertEqual(SourceAssociation.load(inBookFolder: fixture.dir)?.count, 2)
+    }
+
+    func testCleanupAuthorizationFailsWhenRecordedChapterDurationMismatchesBound() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let extra = fixture.dir.appendingPathComponent("whole-book.mp3")
+        try Data(count: 16).write(to: extra)
+        var book = fixture.book
+        book.chapters[1].duration = 99
+        book.chapters.append(
+            TestSupport.dummyChapter(index: 3, url: extra, duration: 30, included: false)
+        )
+        XCTAssertFalse(
+            ChapterCompare.summary(
+                original: Array(book.chapters.prefix(2)),
+                bound: M4BInspector.playableChapters(from: fixture.inspection),
+                boundDuration: fixture.inspection.duration
+            ).allMatch,
+            "recorded 02.mp3 duration must not match the bound chapter"
+        )
+
+        let auth = SourceCleanup.authorization(
+            book: book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+        XCTAssertEqual(auth.reason, "Original chapters do not match the .m4b.")
+        XCTAssertEqual(auth.sources.map(\.lastPathComponent), ["01.mp3", "02.mp3"])
+    }
+
+    func testCleanupAuthorizationAllowsWhenRecordedChapterDeselectedAfterExport() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        var book = fixture.book
+        book.chapters[1].included = false
+        XCTAssertEqual(book.includedChapters.map(\.url.lastPathComponent), ["01.mp3"])
+        XCTAssertTrue(
+            ChapterCompare.summary(
+                original: book.chapters,
+                bound: M4BInspector.playableChapters(from: fixture.inspection),
+                boundDuration: fixture.inspection.duration
+            ).allMatch
+        )
+
+        let auth = SourceCleanup.authorization(
+            book: book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(auth.allowed, "deselected-after-export chapters remain in provenance")
+        XCTAssertEqual(auth.sources.map(\.lastPathComponent), ["01.mp3", "02.mp3"])
+    }
+
     func testSourceFilesToRemoveIntersectsManifestAndSkipsDirectory() throws {
         let fixture = try CleanupFixture.make()
         defer { fixture.tearDown() }

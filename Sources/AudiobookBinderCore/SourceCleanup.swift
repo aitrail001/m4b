@@ -86,10 +86,11 @@ public enum SourceCleanup {
             return deny(sources, "Bound .m4b changed since it was inspected.")
         }
 
-        if !bookOmitsRecordedExportedSource(book) {
+        let document = SourceAssociation.loadDocument(inBookFolder: book.folder)
+        if let document, !bookOmitsRecordedExportedSource(book, document: document) {
             let boundChapters = M4BInspector.playableChapters(from: inspection)
             let summary = ChapterCompare.summary(
-                original: book.chapters,
+                original: chaptersRepresentedInExport(book, document: document),
                 bound: boundChapters,
                 boundDuration: inspection.duration
             )
@@ -100,7 +101,8 @@ public enum SourceCleanup {
         if let sourceReason = verifyRecordedSources(
             book: book,
             dest: dest,
-            alreadyMoved: alreadyMoved
+            alreadyMoved: alreadyMoved,
+            document: document
         ) {
             return deny(sources, sourceReason)
         }
@@ -238,9 +240,10 @@ public enum SourceCleanup {
     private static func verifyRecordedSources(
         book: Audiobook,
         dest: URL,
-        alreadyMoved: [URL]
+        alreadyMoved: [URL],
+        document: SourceAssociation.Document?
     ) -> String? {
-        guard let document = SourceAssociation.loadDocument(inBookFolder: book.folder) else {
+        guard let document else {
             return "Cannot verify sources: missing export provenance."
         }
         if let reason = verifyRecordedDestination(dest: dest, document: document) {
@@ -260,16 +263,29 @@ public enum SourceCleanup {
 
     /// True when a recorded exported source is no longer on `book.chapters`
     /// (prior partial cleanup). Dest aliases in the manifest do not count.
-    private static func bookOmitsRecordedExportedSource(_ book: Audiobook) -> Bool {
-        guard let document = SourceAssociation.loadDocument(inBookFolder: book.folder) else {
-            return false
-        }
-        return document.sources.contains { entry in
+    private static func bookOmitsRecordedExportedSource(
+        _ book: Audiobook,
+        document: SourceAssociation.Document
+    ) -> Bool {
+        document.sources.contains { entry in
             let url = entry.url(relativeTo: book.folder)
             if let dest = book.existingM4BURL, refersToSameFile(url, dest) {
                 return false
             }
             return !isListedChapter(url, on: book)
+        }
+    }
+
+    /// Chapters still listed that were actually bound, by sidecar provenance.
+    /// Deselected-after-export files stay in; never-exported extras do not.
+    private static func chaptersRepresentedInExport(
+        _ book: Audiobook,
+        document: SourceAssociation.Document
+    ) -> [Chapter] {
+        book.chapters.filter { chapter in
+            document.sources.contains { entry in
+                refersToSameFile(entry.url(relativeTo: book.folder), chapter.url)
+            }
         }
     }
 

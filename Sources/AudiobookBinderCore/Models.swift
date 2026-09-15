@@ -84,8 +84,12 @@ public struct Chapter: Identifiable, Hashable, Sendable {
     public var fileSize: Int64
     public var audioInfo: AudioInfo
     public var included: Bool
+    /// Why this chapter was auto-deselected, if it was. Nil when included.
+    public var exclusionReason: String?
     /// Start time inside `url` when this chapter is a range of a single .m4b.
     public var startOffset: TimeInterval
+    /// Bound chapter from an inspected .m4b — a time range inside a container, including start == 0.
+    public var isEmbedded: Bool
 
     public init(
         id: UUID = UUID(),
@@ -96,7 +100,9 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         fileSize: Int64,
         audioInfo: AudioInfo = AudioInfo(),
         included: Bool = true,
-        startOffset: TimeInterval = 0
+        exclusionReason: String? = nil,
+        startOffset: TimeInterval = 0,
+        isEmbedded: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -106,10 +112,10 @@ public struct Chapter: Identifiable, Hashable, Sendable {
         self.fileSize = fileSize
         self.audioInfo = audioInfo
         self.included = included
+        self.exclusionReason = exclusionReason
         self.startOffset = startOffset
+        self.isEmbedded = isEmbedded
     }
-
-    public var isEmbedded: Bool { startOffset > 0.01 }
 }
 
 public struct Audiobook: Identifiable, Hashable, Sendable {
@@ -228,6 +234,169 @@ public struct ExportSettings: Sendable, Equatable {
     public func outputURL(for book: Audiobook) -> URL {
         resolvedOutputDirectory(for: book).appendingPathComponent(book.suggestedFileName)
     }
+
+    /// Unique destination per book. Same title/author from different folders, and
+    /// names that collide after `suggestedFileName` sanitization, get distinct paths.
+    /// Honors an app-issued output association dest, an unused reserved
+    /// `existingM4BURL` name, or an unused in-folder sidecar path hint.
+    /// An existing file is owned only when a live app-issued record still matches.
+    public func plannedOutputs(for books: [Audiobook]) -> [UUID: URL] {
+        var reserved = Set<String>()
+        var owned: [UUID: URL] = [:]
+        owned.reserveCapacity(books.count)
+        for book in books {
+            guard let dest = ownedDestination(for: book) else { continue }
+            let key = Self.destinationKey(dest)
+            guard !reserved.contains(key) else { continue }
+            reserved.insert(key)
+            owned[book.id] = dest
+        }
+
+        var plan: [UUID: URL] = [:]
+        plan.reserveCapacity(books.count)
+        for book in books {
+            if let dest = owned[book.id] {
+                plan[book.id] = dest
+            } else {
+                plan[book.id] = uniqueOutputURL(for: book, reserved: &reserved)
+            }
+        }
+        return plan
+    }
+
+    func owns(_ url: URL, for book: Audiobook) -> Bool {
+        guard let dest = ownedDestination(for: book) else { return false }
+        return Self.destinationKey(dest) == Self.destinationKey(url)
+    }
+
+    private func ownedDestination(for book: Audiobook) -> URL? {
+        let dir = resolvedOutputDirectory(for: book).standardizedFileURL
+        if let dest = acceptableDestination(
+            OutputAssociation.load(inBookFolder: book.folder),
+            book: book,
+            directory: dir
+        ) {
+            return dest
+        }
+        if let dest = acceptableDestination(book.existingM4BURL, book: book, directory: dir),
+           !OutputAssociation.isExistingRegularFile(dest) {
+            return dest
+        }
+        if let hint = OutputAssociation.destinationHint(inBookFolder: book.folder),
+           let dest = acceptableDestination(hint, book: book, directory: dir),
+           !FileManager.default.fileExists(atPath: dest.path) {
+            return dest
+        }
+        return nil
+    }
+
+    private func acceptableDestination(_ candidate: URL?, book: Audiobook, directory: URL) -> URL? {
+        guard let candidate else { return nil }
+        let dest = candidate.standardizedFileURL
+        guard isInOutputDirectory(dest, directory: directory) else { return nil }
+        guard Self.destinationMatchesCurrentNaming(dest.lastPathComponent, book: book) else { return nil }
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: dest.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return nil
+        }
+        return dest
+    }
+
+    private func isInOutputDirectory(_ file: URL, directory: URL) -> Bool {
+        Self.destinationKey(file.deletingLastPathComponent()) == Self.destinationKey(directory)
+    }
+
+    private static func destinationMatchesCurrentNaming(_ name: String, book: Audiobook) -> Bool {
+        guard (name as NSString).pathExtension.lowercased() == "m4b" else { return false }
+        let stem = (book.suggestedFileName as NSString).deletingPathExtension.lowercased()
+        let destStem = (name as NSString).deletingPathExtension.lowercased()
+        if destStem == stem { return true }
+        if destStem.hasPrefix(stem + " - ") { return true }
+        if destStem.hasPrefix(stem + " ") { return true }
+        return false
+    }
+
+    private func uniqueOutputURL(for book: Audiobook, reserved: inout Set<String>) -> URL {
+        let dir = resolvedOutputDirectory(for: book).standardizedFileURL
+        let primary = book.suggestedFileName
+        if let url = claim(dir.appendingPathComponent(primary), reserved: &reserved) {
+            return url
+        }
+
+        let stem = (primary as NSString).deletingPathExtension
+        let folder = Self.sanitizedPathComponent(book.folder.lastPathComponent)
+        if !folder.isEmpty {
+            if let url = claim(dir.appendingPathComponent("\(stem) - \(folder).m4b"), reserved: &reserved) {
+                return url
+            }
+            var n = 2
+            while n < 10_000 {
+                if let url = claim(dir.appendingPathComponent("\(stem) - \(folder) \(n).m4b"), reserved: &reserved) {
+                    return url
+                }
+                n += 1
+            }
+        } else {
+            var n = 2
+            while n < 10_000 {
+                if let url = claim(dir.appendingPathComponent("\(stem) \(n).m4b"), reserved: &reserved) {
+                    return url
+                }
+                n += 1
+            }
+        }
+        return dir.appendingPathComponent("\(stem) - \(UUID().uuidString).m4b")
+    }
+
+    private func claim(_ url: URL, reserved: inout Set<String>) -> URL? {
+        let key = Self.destinationKey(url)
+        guard !reserved.contains(key) else { return nil }
+        if FileManager.default.fileExists(atPath: url.path) {
+            reserved.insert(key)
+            return nil
+        }
+        reserved.insert(key)
+        return url
+    }
+
+    private static func destinationKey(_ url: URL) -> String {
+        url.standardizedFileURL.path.lowercased()
+    }
+
+    private static func sanitizedPathComponent(_ name: String) -> String {
+        name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: " -")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+public enum ExportOutcome: Sendable, Equatable {
+    case created
+    case replaced
+    case skippedExisting
+    case failed(String)
+    case cancelled
+    case publishedUnverified(replaced: Bool, warning: String)
+
+    public var isPublished: Bool {
+        switch self {
+        case .created, .replaced, .publishedUnverified: return true
+        case .skippedExisting, .failed, .cancelled: return false
+        }
+    }
+}
+
+public struct BookExportResult: Sendable, Equatable {
+    public var bookID: UUID
+    public var url: URL
+    public var outcome: ExportOutcome
+
+    public init(bookID: UUID, url: URL, outcome: ExportOutcome) {
+        self.bookID = bookID
+        self.url = url
+        self.outcome = outcome
+    }
 }
 
 public struct JobProgress: Sendable, Equatable {
@@ -273,6 +442,8 @@ public enum BinderError: Error, LocalizedError, Sendable {
     case exportFailed(String)
     case cancelled
     case outputExists(URL)
+    case missingChapters([URL])
+    case publishedUnverified(String)
 
     public var errorDescription: String? {
         switch self {
@@ -286,6 +457,14 @@ public enum BinderError: Error, LocalizedError, Sendable {
             return "Cancelled"
         case .outputExists(let url):
             return "Already exists: \(url.lastPathComponent)"
+        case .missingChapters(let urls):
+            let names = urls.map(\.lastPathComponent).joined(separator: ", ")
+            if urls.count == 1 {
+                return "Missing selected chapter: \(names)"
+            }
+            return "Missing selected chapters: \(names)"
+        case .publishedUnverified(let message):
+            return message
         }
     }
 }
@@ -318,5 +497,125 @@ public enum BinderCopy {
         default:
             return "Created \(names.count) audiobooks — \(names.joined(separator: ", ")). Verify the .m4b files in the editor."
         }
+    }
+
+    public static func exportSummary(_ items: [(title: String, outcome: ExportOutcome)]) -> String {
+        var created: [String] = []
+        var replaced: [String] = []
+        var unverified: [String] = []
+        var skipped: [String] = []
+        var failed: [String] = []
+        var cancelled: [String] = []
+
+        for item in items {
+            let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch item.outcome {
+            case .created:
+                created.append(title)
+            case .replaced:
+                replaced.append(title)
+            case .skippedExisting:
+                skipped.append(title)
+            case .cancelled:
+                cancelled.append(title)
+            case .failed(let message):
+                failed.append(Self.labeledReason(title: title, reason: message))
+            case .publishedUnverified(_, let warning):
+                unverified.append(Self.labeledReason(title: title, reason: warning))
+            }
+        }
+
+        if replaced.isEmpty && unverified.isEmpty && skipped.isEmpty && failed.isEmpty && cancelled.isEmpty {
+            return createdAudiobooks(titles: created)
+        }
+
+        var parts: [String] = []
+        if !created.isEmpty {
+            parts.append(countPhrase("Created", count: created.count, singular: "audiobook", plural: "audiobooks", names: created))
+        }
+        if !replaced.isEmpty {
+            parts.append(countPhrase("Replaced", count: replaced.count, singular: "audiobook", plural: "audiobooks", names: replaced))
+        }
+        if !unverified.isEmpty {
+            parts.append(countPhrase("Unverified", count: unverified.count, singular: "audiobook", plural: "audiobooks", names: unverified))
+        }
+        if !skipped.isEmpty {
+            parts.append(countPhrase("Skipped", count: skipped.count, singular: "existing audiobook", plural: "existing audiobooks", names: skipped))
+        }
+        if !failed.isEmpty {
+            parts.append(countPhrase("Failed", count: failed.count, singular: "audiobook", plural: "audiobooks", names: failed))
+        }
+        if !cancelled.isEmpty {
+            parts.append(countPhrase("Cancelled", count: cancelled.count, singular: "audiobook", plural: "audiobooks", names: cancelled))
+        }
+        if parts.isEmpty {
+            return createdAudiobooks(titles: [])
+        }
+
+        var summary = parts.joined(separator: " ")
+        if !created.isEmpty || !replaced.isEmpty || !unverified.isEmpty {
+            let published = created.count + replaced.count + unverified.count
+            summary += published == 1
+                ? " Verify the .m4b in the editor."
+                : " Verify the .m4b files in the editor."
+        }
+        return summary
+    }
+
+    public static func cliOutcomeLine(url: URL, outcome: ExportOutcome) -> String {
+        switch outcome {
+        case .created:
+            return "created\t\(url.path)"
+        case .replaced:
+            return "replaced\t\(url.path)"
+        case .skippedExisting:
+            return "skipped\t\(url.path)"
+        case .cancelled:
+            return "cancelled\t\(url.path)"
+        case .failed(let message):
+            return "failed\t\(url.path)\t\(message)"
+        case .publishedUnverified(_, let warning):
+            return "unverified\t\(url.path)\t\(warning)"
+        }
+    }
+
+    public static func cliReportsFailure(_ outcome: ExportOutcome) -> Bool {
+        switch outcome {
+        case .failed, .publishedUnverified:
+            return true
+        case .created, .replaced, .skippedExisting, .cancelled:
+            return false
+        }
+    }
+
+    private static func labeledReason(title: String, reason: String) -> String {
+        let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.isEmpty {
+            return detail
+        }
+        if detail.isEmpty {
+            return title
+        }
+        return "\(title) (\(detail))"
+    }
+
+    private static func countPhrase(
+        _ verb: String,
+        count: Int,
+        singular: String,
+        plural: String,
+        names: [String]
+    ) -> String {
+        let noun = count == 1 ? singular : plural
+        let labeled = names.filter { !$0.isEmpty }
+        if labeled.isEmpty {
+            return "\(verb) \(count) \(noun)."
+        }
+        return "\(verb) \(count) \(noun) — \(labeled.joined(separator: ", "))."
+    }
+
+    public static func exportSummary(results: [BookExportResult], books: [Audiobook]) -> String {
+        let titles = Dictionary(uniqueKeysWithValues: books.map { ($0.id, $0.title) })
+        return exportSummary(results.map { (titles[$0.bookID] ?? "", $0.outcome) })
     }
 }

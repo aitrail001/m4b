@@ -29,8 +29,8 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .binderOpenURLs)) { note in
-            if let urls = note.object as? [URL], let first = urls.first {
-                appState.scan(first)
+            if let urls = note.object as? [URL], let url = urls.last {
+                appState.scan(url)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -66,12 +66,19 @@ struct ContentView: View {
             Spacer()
             Button("Open Folder…") { appState.openFolder() }
                 .buttonStyle(BinderButtonStyle())
-                .disabled(appState.isScanning || appState.isBuilding)
+                .disabled(appState.isScanning || appState.isBuilding || appState.isCleaningUp)
             Button(appState.isBuilding ? "Building…" : "Build \(appState.selectedCount) Selected") {
                 appState.buildSelected()
             }
             .buttonStyle(BinderButtonStyle(prominent: true))
-            .disabled(appState.selectedCount == 0 || appState.isBuilding || appState.isScanning)
+            .disabled(
+                appState.selectedCount == 0
+                    || !JobGate.canStartBuild(
+                        isScanning: appState.isScanning,
+                        isBuilding: appState.isBuilding,
+                        isCleaningUp: appState.isCleaningUp
+                    )
+            )
         }
         .padding(.horizontal, 22)
         .padding(.top, 16)
@@ -255,7 +262,7 @@ struct ContentView: View {
 
     private var statusBar: some View {
         HStack(spacing: 12) {
-            if appState.isScanning || appState.isBuilding {
+            if appState.isScanning || appState.isBuilding || appState.isCleaningUp {
                 ProgressView()
                     .controlSize(.small)
             }
@@ -302,20 +309,17 @@ struct ContentView: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        var handled = false
-        for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                var isDir: ObjCBool = false
-                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-                let folder = isDir.boolValue ? url : url.deletingLastPathComponent()
-                Task { @MainActor in
-                    appState.scan(folder)
-                }
+        guard let provider = providers.last else { return false }
+        _ = provider.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            let folder = isDir.boolValue ? url : url.deletingLastPathComponent()
+            Task { @MainActor in
+                appState.scan(folder)
             }
-            handled = true
         }
-        return handled
+        return true
     }
 }
 
@@ -529,9 +533,27 @@ struct ChaptersCompareSection: View {
     @State private var fileChapter: Chapter?
     @State private var inspecting = false
     @State private var confirmCleanup = false
-    @State private var cleanupError: String?
+    @State private var cleanupAuth: SourceCleanupAuthorization?
 
     private var m4bURL: URL? { appState.boundURL(for: book) }
+    private var inspectTaskID: String {
+        guard let url = m4bURL else { return book.id.uuidString }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(book.id.uuidString)|\(url.path)|\(size)|\(mtime)"
+    }
+    private var cleanupVerifyTaskID: String {
+        guard let inspection, book.canCleanupSources else {
+            return "idle|\(book.id.uuidString)"
+        }
+        let destGen = m4bURL.flatMap { SourceCleanup.destGeneration(of: $0) } ?? ""
+        return SourceCleanup.verificationCacheKey(
+            book: book,
+            inspection: inspection,
+            destGeneration: destGen
+        )
+    }
     private var showOriginal: Bool { !book.chapters.isEmpty }
     private var showBound: Bool { m4bURL != nil }
     private var rows: [ChapterCompareRow] {
@@ -569,23 +591,27 @@ struct ChaptersCompareSection: View {
                 )
             }
 
-            if let cleanupError {
+            if let cleanupError = appState.cleanupError {
                 Text(cleanupError)
                     .font(.system(size: 12))
                     .foregroundStyle(Color.red.opacity(0.85))
             }
-            if book.canCleanupSources, let inspection {
-                cleanupControls(inspection: inspection)
+            if book.canCleanupSources {
+                cleanupControls()
             }
         }
-        .task(id: m4bURL) {
+        .task(id: inspectTaskID) {
             guard m4bURL != nil else {
                 inspection = nil
                 boundChapters = []
                 fileChapter = nil
+                cleanupAuth = nil
                 return
             }
             await inspect()
+        }
+        .task(id: cleanupVerifyTaskID) {
+            await verifyCleanupAuthorization()
         }
         .confirmationDialog(
             "Move original audio files to Trash?",
@@ -828,20 +854,22 @@ struct ChaptersCompareSection: View {
     }
 
     @ViewBuilder
-    private func cleanupControls(inspection: M4BInspection) -> some View {
-        let files = M4BInspector.sourceFilesToRemove(from: book)
-        let summary = ChapterCompare.summary(
-            original: book.chapters,
-            bound: boundChapters,
-            boundDuration: inspection.duration
-        )
-        if !files.isEmpty, summary.allMatch {
-            Button("Move \(files.count) original audio files to Trash") {
+    private func cleanupControls() -> some View {
+        switch SourceCleanup.controlsState(
+            canCleanupSources: book.canCleanupSources,
+            isBuilding: appState.isBuilding,
+            cached: cleanupAuth,
+            isCleaningUp: appState.isCleaningUp
+        ) {
+        case .allowed(let count):
+            Button("Move \(count) original audio files to Trash") {
                 confirmCleanup = true
             }
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(BinderTheme.leather)
+        case .hidden, .pending:
+            EmptyView()
         }
     }
 
@@ -852,10 +880,21 @@ struct ChaptersCompareSection: View {
     }
 
     private func inspect() async {
-        guard let m4bURL else { return }
+        guard let requested = m4bURL else { return }
+        let bookID = book.id
+        let requestedGeneration = SourceCleanup.destGeneration(of: requested)
         inspecting = true
-        cleanupError = nil
-        let result = await M4BInspector.inspect(m4bURL)
+        appState.cleanupError = nil
+        let result = await M4BInspector.inspect(requested, bookID: bookID)
+        defer { inspecting = false }
+        guard !Task.isCancelled else { return }
+        guard SourceCleanup.shouldCommitInspection(
+            result,
+            bookID: book.id,
+            requestedURL: requested,
+            currentURL: appState.boundURL(for: book),
+            requestedGeneration: requestedGeneration
+        ) else { return }
         inspection = result
         boundChapters = M4BInspector.playableChapters(from: result)
         fileChapter = Chapter(
@@ -865,21 +904,37 @@ struct ChaptersCompareSection: View {
             duration: result.duration,
             fileSize: result.fileSize
         )
-        inspecting = false
+    }
+
+    private func verifyCleanupAuthorization() async {
+        cleanupAuth = nil
+        guard let inspection, book.canCleanupSources else { return }
+        let bookSnapshot = book
+        let inspectionSnapshot = inspection
+        let token = EncodeCancellation()
+        let result = await withTaskCancellationHandler {
+            await Task.detached(priority: .utility) {
+                SourceCleanup.authorization(
+                    book: bookSnapshot,
+                    inspection: inspectionSnapshot,
+                    isBuilding: false,
+                    cancellation: token
+                )
+            }.value
+        } onCancel: {
+            token.cancel()
+        }
+        guard !Task.isCancelled, !token.isCancelled else { return }
+        if result.reason?.localizedCaseInsensitiveContains("cancel") == true { return }
+        cleanupAuth = result
     }
 
     private func performCleanup() {
         guard let inspection else { return }
-        let files = M4BInspector.sourceFilesToRemove(from: book)
-        do {
-            for url in files {
-                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-            }
-            appState.applyCleanup(to: book.id, inspection: inspection)
-            cleanupError = nil
-        } catch {
-            cleanupError = error.localizedDescription
-        }
+        let bookSnapshot = book
+        let inspectionSnapshot = inspection
+        appState.startCleanup(book: bookSnapshot, inspection: inspectionSnapshot)
+        cleanupAuth = nil
     }
 }
 
@@ -934,9 +989,8 @@ struct CoverView: View {
 
     var body: some View {
         Group {
-            if let data, let image = NSImage(data: data) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-            } else if let url, let image = NSImage(contentsOf: url) {
+            if let data = CoverDisplay.imageData(jpeg: data, url: url),
+               let image = NSImage(data: data) {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
                 ZStack {

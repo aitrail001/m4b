@@ -1,0 +1,41 @@
+import Foundation
+
+/// Mutually exclusive library jobs. A scan and a build cannot start together.
+/// A new scan is allowed while another scan is running (it cancels the previous).
+/// Cleanup excludes scan, build, and a second cleanup.
+public enum JobGate {
+    public static let cannotBuildWhileScanning = "Cannot build while a scan is running."
+    public static let cannotScanWhileBuilding = "Cannot scan while a build is running."
+    public static let cannotScanWhileCleaningUp = "Cannot scan while source cleanup is running."
+    public static let cannotBuildWhileCleaningUp = "Cannot build while source cleanup is running."
+    public static let cannotCleanupWhileScanning = "Cannot trash sources while a scan is running."
+    public static let cannotCleanupWhileBuilding = "Cannot trash sources while a build is running."
+    public static let cannotCleanupWhileCleaningUp = "Cannot trash sources while cleanup is already running."
+
+    public static func canStartBuild(
+        isScanning: Bool,
+        isBuilding: Bool = false,
+        isCleaningUp: Bool = false
+    ) -> Bool {
+        !isScanning && !isBuilding && !isCleaningUp
+    }
+
+    /// `isScanning` is accepted so callers can pass current flags. It does not
+    /// block: a newer scan supersedes an in-flight one. Cleanup does block.
+    public static func canStartScan(
+        isBuilding: Bool,
+        isScanning: Bool = false,
+        isCleaningUp: Bool = false
+    ) -> Bool {
+        _ = isScanning
+        return !isBuilding && !isCleaningUp
+    }
+
+    public static func canStartCleanup(
+        isScanning: Bool,
+        isBuilding: Bool,
+        isCleaningUp: Bool
+    ) -> Bool {
+        !isScanning && !isBuilding && !isCleaningUp
+    }
+}

@@ -6,12 +6,55 @@ public struct M4BInspection: Sendable, Equatable {
     public var duration: TimeInterval
     public var chapters: [ChapterMark]
     public var fileSize: Int64
+    public var modificationDate: Date?
+    public var fileResourceIdentifier: Data?
+    public var bookID: UUID?
+    /// False when dest identity changed while metadata was being read.
+    public var identityVerified: Bool
+    public var identityGeneration: String?
 
-    public init(url: URL, duration: TimeInterval, chapters: [ChapterMark], fileSize: Int64) {
+    public init(
+        url: URL,
+        duration: TimeInterval,
+        chapters: [ChapterMark],
+        fileSize: Int64,
+        modificationDate: Date? = nil,
+        fileResourceIdentifier: Data? = nil,
+        bookID: UUID? = nil,
+        identityVerified: Bool = true,
+        identityGeneration: String? = nil
+    ) {
         self.url = url
         self.duration = duration
         self.chapters = chapters
         self.fileSize = fileSize
+        self.modificationDate = modificationDate
+        self.fileResourceIdentifier = fileResourceIdentifier
+        self.bookID = bookID
+        self.identityVerified = identityVerified
+        self.identityGeneration = identityGeneration
+    }
+
+    /// Snapshot dest identity at inspect time so cleanup can detect replace/delete.
+    public static func capturingIdentity(
+        url: URL,
+        duration: TimeInterval,
+        chapters: [ChapterMark],
+        bookID: UUID? = nil
+    ) -> M4BInspection {
+        let identity = FileIdentity.read(from: url)
+        let verified = identity.map { !$0.isDirectory } ?? false
+        return M4BInspection(
+            url: url,
+            duration: duration,
+            chapters: chapters,
+            fileSize: identity?.fileSize ?? 0,
+            modificationDate: identity?.modificationDate,
+            fileResourceIdentifier: identity?.fileResourceIdentifier,
+            bookID: bookID,
+            identityVerified: verified,
+            identityGeneration: identity?.generationToken()
+        )
     }
 }
 
@@ -27,16 +70,27 @@ public enum M4BInspector {
     }
 
     public static func sourceFilesToRemove(from book: Audiobook) -> [URL] {
-        let m4bPath = book.existingM4BURL?.resolvingSymlinksInPath().path
+        guard let entries = SourceAssociation.load(inBookFolder: book.folder) else {
+            return []
+        }
+        let dest = book.existingM4BURL
         var seen = Set<String>()
         var urls: [URL] = []
         for chapter in book.chapters {
-            let path = chapter.url.resolvingSymlinksInPath().path
-            if path == m4bPath { continue }
-            if chapter.url.pathExtension.lowercased() == "m4b" { continue }
-            guard FileManager.default.fileExists(atPath: path) else { continue }
-            if seen.insert(path).inserted {
-                urls.append(chapter.url)
+            let url = chapter.url
+            if let dest, M4BExporter.isSameFileURL(url, dest) { continue }
+            if url.pathExtension.lowercased() == "m4b" { continue }
+            guard entries.contains(where: { M4BExporter.isSameFileURL($0.url(relativeTo: book.folder), url) }) else {
+                continue
+            }
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                continue
+            }
+            let key = url.resolvingSymlinksInPath().standardizedFileURL.path
+            if seen.insert(key).inserted {
+                urls.append(url)
             }
         }
         return urls
@@ -56,14 +110,22 @@ public enum M4BInspector {
                 title: mark.title.isEmpty ? "Chapter \(index + 1)" : mark.title,
                 duration: mark.duration,
                 fileSize: inspection.fileSize,
-                startOffset: mark.start
+                startOffset: mark.start,
+                isEmbedded: true
             )
         }
     }
 
-    public static func inspect(_ url: URL) async -> M4BInspection {
+    public static func inspect(
+        _ url: URL,
+        bookID: UUID? = nil,
+        identityBarrier: (@Sendable (URL) async -> Void)? = nil
+    ) async -> M4BInspection {
+        guard let opening = FileIdentity.read(from: url), !opening.isDirectory else {
+            return rejectedInspection(url: url, bookID: bookID)
+        }
+
         let info = AudioMetadata.fileInfo(of: url)
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) } ?? 0
         var chapters = await avChapters(url)
         if chapters.isEmpty {
             chapters = neroChapters(in: url, duration: info.duration)
@@ -71,7 +133,41 @@ public enum M4BInspector {
         if chapters.isEmpty, info.duration > 0 {
             chapters = [ChapterMark(start: 0, duration: info.duration, title: "Audiobook")]
         }
-        return M4BInspection(url: url, duration: info.duration, chapters: chapters, fileSize: size)
+        if let identityBarrier {
+            await identityBarrier(url)
+        }
+
+        guard let closing = FileIdentity.read(from: url),
+              opening.isSameVersion(as: closing)
+        else {
+            return rejectedInspection(url: url, bookID: bookID)
+        }
+
+        return M4BInspection(
+            url: url,
+            duration: info.duration,
+            chapters: chapters,
+            fileSize: opening.fileSize,
+            modificationDate: opening.modificationDate,
+            fileResourceIdentifier: opening.fileResourceIdentifier,
+            bookID: bookID,
+            identityVerified: true,
+            identityGeneration: opening.generationToken()
+        )
+    }
+
+    private static func rejectedInspection(url: URL, bookID: UUID?) -> M4BInspection {
+        M4BInspection(
+            url: url,
+            duration: 0,
+            chapters: [],
+            fileSize: 0,
+            modificationDate: nil,
+            fileResourceIdentifier: nil,
+            bookID: bookID,
+            identityVerified: false,
+            identityGeneration: nil
+        )
     }
 
     private static func avChapters(_ url: URL) async -> [ChapterMark] {
@@ -81,66 +177,61 @@ public enum M4BInspector {
             let languages = locales.map(\.identifier)
             guard !languages.isEmpty else { return [] }
             let groups = try await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: languages)
-            return groups.enumerated().compactMap { index, group in
+            var marks: [ChapterMark] = []
+            for (index, group) in groups.enumerated() {
                 let seconds = group.timeRange.start.seconds
                 let duration = group.timeRange.duration.seconds
-                guard seconds.isFinite, duration.isFinite else { return nil }
-                let title = group.items.first(where: { $0.commonKey == .commonKeyTitle })?.stringValue
-                    ?? "Chapter \(index + 1)"
-                return ChapterMark(start: max(0, seconds), duration: max(0, duration), title: title)
+                guard seconds.isFinite, duration.isFinite else { continue }
+                let title: String
+                if let item = group.items.first(where: { $0.commonKey == .commonKeyTitle }),
+                   let loaded = try? await item.load(.stringValue),
+                   !loaded.isEmpty {
+                    title = loaded
+                } else {
+                    title = "Chapter \(index + 1)"
+                }
+                marks.append(ChapterMark(start: max(0, seconds), duration: max(0, duration), title: title))
             }
+            return marks
         } catch {
             return []
         }
     }
 
     static func neroChapters(in url: URL, duration: TimeInterval) -> [ChapterMark] {
-        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return [] }
-        guard let chpl = findAtom(data, type: "chpl") else { return [] }
-        let payloadStart = Int(chpl.payloadOffset)
-        let payloadEnd = Int(chpl.end)
-        guard payloadStart + 8 <= payloadEnd, payloadEnd <= data.count else { return [] }
-        var offset = payloadStart + 4
-        let count = Int(MP4AtomIO.readU32(data, offset))
-        offset += 4
-        var starts: [(TimeInterval, String)] = []
-        for _ in 0..<count {
-            guard offset + 9 <= payloadEnd else { break }
-            let start100ns = MP4AtomIO.readU64(data, offset)
-            offset += 8
-            let titleLen = Int(data[offset])
-            offset += 1
-            guard offset + titleLen <= payloadEnd else { break }
-            let title = String(data: data[offset..<(offset + titleLen)], encoding: .utf8) ?? "Chapter"
-            offset += titleLen
-            starts.append((Double(start100ns) / 10_000_000.0, title))
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let fileSize: UInt64
+        do {
+            fileSize = try handle.seekToEnd()
+        } catch {
+            return []
         }
-        guard !starts.isEmpty else { return [] }
+        guard let chpl = MP4AtomIO.findAtom(type: "chpl", in: handle, fileSize: fileSize),
+              let data = try? MP4AtomIO.readAtom(
+                chpl,
+                from: handle,
+                maxBytes: MP4AtomIO.maxChapterAtomBytes
+              )
+        else { return [] }
+        guard let payloadStart = Int(exactly: chpl.headerSize),
+              let payloadSize = Int(exactly: chpl.payloadSize),
+              payloadStart >= 0,
+              payloadStart <= data.count,
+              data.count - payloadStart >= payloadSize,
+              payloadSize >= 5
+        else { return [] }
+        let parsed = MP4AudiobookTagger.parseChpl(
+            data.subdata(in: payloadStart..<(payloadStart + payloadSize))
+        )
+        guard !parsed.isEmpty else { return [] }
         var marks: [ChapterMark] = []
-        for i in starts.indices {
-            let start = starts[i].0
-            let end = i + 1 < starts.count ? starts[i + 1].0 : max(duration, start)
-            marks.append(ChapterMark(start: start, duration: max(0, end - start), title: starts[i].1))
+        for i in parsed.indices {
+            let start = parsed[i].start
+            let end = i + 1 < parsed.count ? parsed[i + 1].start : max(duration, start)
+            marks.append(ChapterMark(start: start, duration: max(0, end - start), title: parsed[i].title))
         }
         return marks
-    }
-
-    private static func findAtom(_ data: Data, type: String) -> MP4AtomHeader? {
-        var stack = MP4AtomIO.parseHeaders(data, range: 0..<data.count)
-        var i = 0
-        while i < stack.count {
-            let atom = stack[i]
-            if atom.type == type { return atom }
-            if MP4AtomIO.containers.contains(atom.type) {
-                let start = Int(atom.payloadOffset)
-                let end = Int(atom.end)
-                if start < end, end <= data.count {
-                    stack.append(contentsOf: MP4AtomIO.parseHeaders(data, range: start..<end))
-                }
-            }
-            i += 1
-        }
-        return nil
     }
 }
 

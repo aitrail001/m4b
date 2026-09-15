@@ -774,6 +774,36 @@ final class M4BInspectorTests: XCTestCase {
         )
     }
 
+    func testShouldCommitInspectionAcceptsAlternateResourceIdentifierArchive() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let live = try XCTUnwrap(FileIdentity.read(from: fixture.dest))
+        let originalRID = try XCTUnwrap(live.fileResourceIdentifier)
+        let alternate = try XCTUnwrap(FileIdentity.alternateResourceIdentifierArchive(originalRID))
+        XCTAssertNotEqual(alternate, originalRID)
+        let swapped = live.replacingResourceIdentifier(alternate)
+        XCTAssertTrue(live.isSameVersion(as: swapped))
+        XCTAssertTrue(swapped.matches(fixture.inspection))
+
+        var inspection = fixture.inspection
+        inspection.fileResourceIdentifier = alternate
+        inspection.identityGeneration = (swapped.generationToken()) + "|alt-archive"
+        let requested = try XCTUnwrap(SourceCleanup.destGeneration(of: fixture.dest))
+        XCTAssertNotEqual(inspection.identityGeneration, requested)
+        XCTAssertNotEqual(inspection.identityGeneration, live.generationToken())
+
+        XCTAssertTrue(
+            SourceCleanup.shouldCommitInspection(
+                inspection,
+                bookID: fixture.book.id,
+                requestedURL: fixture.dest,
+                currentURL: fixture.dest,
+                requestedGeneration: requested
+            )
+        )
+    }
+
     func testCleanupReconcileKeepsRemainingChaptersAfterPartialTrash() throws {
         let fixture = try CleanupFixture.make()
         defer { fixture.tearDown() }

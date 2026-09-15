@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 /// Persists the published .m4b path beside the source book folder so rebuilds
@@ -12,6 +11,9 @@ public enum OutputAssociation: Sendable {
     public static let fileName = ".audiobookbinder-output"
     static let maxSidecarBytes = 16 * 1024
     static let maxPathLength = BoundedFileRead.maxPathLength
+    static let maxPathIndexBytes = 256 * 1024
+    static let maxAuthorityScan = 512
+    static let pathIndexFileName = "path-index.json"
 
     /// Trusted dest only. Folder JSON, path-only, old-format, missing, or
     /// mismatched identities do not grant ownership of an existing file.
@@ -19,7 +21,7 @@ public enum OutputAssociation: Sendable {
         guard let liveFolder = FileIdentity.read(from: folder), liveFolder.isDirectory else {
             return nil
         }
-        guard let document = readAuthority(for: liveFolder) else { return nil }
+        guard let document = readAuthority(for: folder, liveFolder: liveFolder) else { return nil }
         let dest = resolve(document.destination, relativeTo: folder)
         guard hasM4BExtension(dest), isExistingRegularFile(dest) else { return nil }
         guard let recordedDest = document.destinationIdentity,
@@ -58,9 +60,11 @@ public enum OutputAssociation: Sendable {
             return
         }
         let document = Document(
+            associationID: existingAssociationID(for: folder, folderIdentity: folderIdentity) ?? UUID(),
             destination: dest.path,
             destinationIdentity: destIdentity,
-            bookFolderIdentity: folderIdentity
+            bookFolderIdentity: folderIdentity,
+            bookFolderPath: folder.standardizedFileURL.path
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -77,7 +81,7 @@ public enum OutputAssociation: Sendable {
             invalidateAuthority(inBookFolder: folder)
             return
         }
-        writeAuthority(document, folderIdentity: folderIdentity)
+        writeAuthority(document)
     }
 
     public static func isExistingRegularFile(_ url: URL) -> Bool {
@@ -132,31 +136,210 @@ public enum OutputAssociation: Sendable {
         try? FileManager.default.removeItem(at: sidecar)
     }
 
-    private static func authorityKey(for folderIdentity: FileIdentity) -> String? {
-        guard let rid = folderIdentity.fileResourceIdentifier, !rid.isEmpty else { return nil }
-        return SHA256.hash(data: rid).map { String(format: "%02x", $0) }.joined()
+    /// Test helper: swap the stored folder identifier archive without
+    /// changing lookup keys or dest bytes.
+    package static func replaceStoredBookFolderResourceIdentifier(
+        inBookFolder folder: URL,
+        with archive: Data
+    ) -> Bool {
+        AuthorityStore.withLock {
+            guard let liveFolder = FileIdentity.read(from: folder), liveFolder.isDirectory else {
+                return false
+            }
+            guard var document = lookupAuthorityDocument(for: folder, liveFolder: liveFolder),
+                  var folderIdentity = document.bookFolderIdentity else {
+                return false
+            }
+            folderIdentity.fileResourceIdentifier = archive
+            document.bookFolderIdentity = folderIdentity
+            return persistAuthorityDocument(document)
+        }
     }
 
-    private static func authorityURL(for folderIdentity: FileIdentity) -> URL? {
-        guard let key = authorityKey(for: folderIdentity) else { return nil }
-        return AuthorityDirectory.url().appendingPathComponent("\(key).json")
+    private static func folderPathKey(_ folder: URL) -> String {
+        folder.standardizedFileURL.path.lowercased()
     }
 
-    private static func readAuthority(for folderIdentity: FileIdentity) -> Document? {
-        guard let url = authorityURL(for: folderIdentity),
-              let data = BoundedFileRead.read(from: url, maxBytes: maxSidecarBytes) else {
+    private static func folderPathKey(path: String) -> String {
+        URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path.lowercased()
+    }
+
+    private static func authorityURL(for associationID: UUID) -> URL {
+        AuthorityDirectory.url().appendingPathComponent("\(associationID.uuidString).json")
+    }
+
+    private static func pathIndexURL() -> URL {
+        AuthorityDirectory.url().appendingPathComponent(pathIndexFileName)
+    }
+
+    private static func existingAssociationID(for folder: URL, folderIdentity: FileIdentity) -> UUID? {
+        AuthorityStore.withLock {
+            let index = loadPathIndex()
+            let key = folderPathKey(folder)
+            if let id = index.associationID(for: key), decodeAuthorityDocument(id: id) != nil {
+                return id
+            }
+            return scanAuthority(matching: folderIdentity)?.associationID
+        }
+    }
+
+    private static func readAuthority(for folder: URL, liveFolder: FileIdentity) -> Document? {
+        AuthorityStore.withLock {
+            lookupAuthorityDocument(for: folder, liveFolder: liveFolder)
+        }
+    }
+
+    /// Path index first. On a miss, scan a bounded number of documents by
+    /// semantic folder identity and refresh the index. Callers still verify
+    /// live folder / dest identities.
+    private static func lookupAuthorityDocument(
+        for folder: URL?,
+        liveFolder: FileIdentity
+    ) -> Document? {
+        if let folder {
+            let key = folderPathKey(folder)
+            let index = loadPathIndex()
+            if let id = index.associationID(for: key),
+               let document = decodeAuthorityDocument(id: id) {
+                return document
+            }
+        }
+        guard let document = scanAuthority(matching: liveFolder) else { return nil }
+        if let folder, let id = document.associationID {
+            var index = loadPathIndex()
+            index.set(id, for: folderPathKey(folder), replacing: document.bookFolderPath)
+            persistPathIndex(index)
+        }
+        return document
+    }
+
+    private static func writeAuthority(_ document: Document) {
+        AuthorityStore.withLock {
+            _ = persistAuthorityDocument(document)
+        }
+    }
+
+    @discardableResult
+    private static func persistAuthorityDocument(_ document: Document) -> Bool {
+        guard let id = document.associationID else { return false }
+        let url = authorityURL(for: id)
+        let dir = url.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .secondsSince1970
+        guard let data = try? encoder.encode(document) else {
+            removeAuthority(id)
+            return false
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            removeAuthority(id)
+            return false
+        }
+        var index = loadPathIndex()
+        if let folderPath = document.bookFolderPath, !folderPath.isEmpty {
+            index.set(id, for: folderPathKey(path: folderPath), replacing: nil)
+        }
+        persistPathIndex(index)
+        return true
+    }
+
+    private static func invalidateAuthority(inBookFolder folder: URL) {
+        AuthorityStore.withLock {
+            var index = loadPathIndex()
+            var ids = Set<UUID>()
+            if let id = index.associationID(for: folderPathKey(folder)) {
+                ids.insert(id)
+            }
+            if let identity = FileIdentity.read(from: folder),
+               let found = scanAuthority(matching: identity),
+               let id = found.associationID {
+                ids.insert(id)
+            }
+            for id in ids {
+                removeAuthority(id)
+                index.remove(associationID: id)
+            }
+            persistPathIndex(index)
+        }
+    }
+
+    private static func removeAuthority(_ id: UUID) {
+        try? FileManager.default.removeItem(at: authorityURL(for: id))
+    }
+
+    private static func decodeAuthorityDocument(id: UUID) -> Document? {
+        decodeAuthorityDocument(from: authorityURL(for: id), expectedID: id)
+    }
+
+    private static func decodeAuthorityDocument(from url: URL, expectedID: UUID? = nil) -> Document? {
+        guard let data = BoundedFileRead.read(from: url, maxBytes: maxSidecarBytes) else {
             return nil
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
-        guard let document = try? decoder.decode(Document.self, from: data) else { return nil }
+        guard var document = try? decoder.decode(Document.self, from: data) else { return nil }
+        if document.associationID == nil {
+            let name = url.deletingPathExtension().lastPathComponent
+            document.associationID = UUID(uuidString: name)
+        }
+        if let expectedID {
+            guard document.associationID == expectedID else { return nil }
+        }
         let path = document.destination.trimmingCharacters(in: .whitespacesAndNewlines)
         guard BoundedFileRead.isAllowedPath(path, maxLength: maxPathLength) else { return nil }
+        if let folderPath = document.bookFolderPath, !folderPath.isEmpty {
+            guard BoundedFileRead.isAllowedPath(folderPath, maxLength: maxPathLength) else {
+                return nil
+            }
+        }
         return document
     }
 
-    private static func writeAuthority(_ document: Document, folderIdentity: FileIdentity) {
-        guard let url = authorityURL(for: folderIdentity) else { return }
+    private static func scanAuthority(matching folderIdentity: FileIdentity) -> Document? {
+        let dir = AuthorityDirectory.url()
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ) else {
+            return nil
+        }
+        var scanned = 0
+        var match: Document?
+        for file in files {
+            guard file.pathExtension.lowercased() == "json" else { continue }
+            let name = file.deletingPathExtension().lastPathComponent
+            guard let id = UUID(uuidString: name) else { continue }
+            scanned += 1
+            if scanned > maxAuthorityScan { break }
+            guard let document = decodeAuthorityDocument(from: file, expectedID: id),
+                  let recorded = document.bookFolderIdentity,
+                  folderIdentity.matchesRecordedIdentity(recorded)
+            else {
+                continue
+            }
+            if match != nil { return nil }
+            match = document
+        }
+        return match
+    }
+
+    private static func loadPathIndex() -> PathIndex {
+        let url = pathIndexURL()
+        guard let data = BoundedFileRead.read(from: url, maxBytes: maxPathIndexBytes) else {
+            return PathIndex()
+        }
+        return (try? JSONDecoder().decode(PathIndex.self, from: data)) ?? PathIndex()
+    }
+
+    private static func persistPathIndex(_ index: PathIndex) {
+        let url = pathIndexURL()
         let dir = url.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -165,28 +348,47 @@ public enum OutputAssociation: Sendable {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .secondsSince1970
-        guard let data = try? encoder.encode(document) else {
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        do {
-            try data.write(to: url, options: .atomic)
-        } catch {
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-
-    private static func invalidateAuthority(inBookFolder folder: URL) {
-        guard let identity = FileIdentity.read(from: folder) else { return }
-        guard let url = authorityURL(for: identity) else { return }
-        try? FileManager.default.removeItem(at: url)
+        guard let data = try? encoder.encode(index) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private struct Document: Codable {
+        var associationID: UUID?
         var destination: String
         var destinationIdentity: FileIdentity?
         var bookFolderIdentity: FileIdentity?
+        var bookFolderPath: String?
+    }
+
+    private struct PathIndex: Codable {
+        var paths: [String: String] = [:]
+
+        func associationID(for key: String) -> UUID? {
+            paths[key].flatMap(UUID.init(uuidString:))
+        }
+
+        mutating func set(_ id: UUID, for key: String, replacing oldPath: String?) {
+            remove(associationID: id)
+            if let oldPath, !oldPath.isEmpty {
+                paths.removeValue(forKey: folderPathKey(path: oldPath))
+            }
+            paths[key] = id.uuidString
+        }
+
+        mutating func remove(associationID id: UUID) {
+            let value = id.uuidString
+            paths = paths.filter { $0.value.caseInsensitiveCompare(value) != .orderedSame }
+        }
+    }
+}
+
+private enum AuthorityStore {
+    private static let lock = NSLock()
+
+    static func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
     }
 }
 

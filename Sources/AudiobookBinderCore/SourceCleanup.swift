@@ -201,9 +201,21 @@ public enum SourceCleanup {
             return false
         }
         if let requestedGeneration {
-            guard inspection.identityGeneration == requestedGeneration,
-                  destGeneration(of: currentURL) == requestedGeneration
-            else {
+            guard let live = FileIdentity.read(from: currentURL), !live.isDirectory else {
+                return false
+            }
+            let snapshot = FileIdentity(
+                fileSize: inspection.fileSize,
+                modificationDate: inspection.modificationDate,
+                fileResourceIdentifier: inspection.fileResourceIdentifier,
+                isDirectory: false
+            )
+            let tokensAgree = inspection.identityGeneration == requestedGeneration
+                && live.generationToken() == requestedGeneration
+            let sameVersion = live.isSameVersion(as: snapshot) && live.matches(inspection)
+            // Token strings may differ when NSKeyedArchiver emits another
+            // encoding of the same resource-identifier object.
+            guard tokensAgree || sameVersion else {
                 return false
             }
         }
@@ -380,8 +392,48 @@ struct FileIdentity: Equatable, Sendable, Codable {
 
     func generationToken() -> String {
         let mtime = modificationDate.map { String($0.timeIntervalSince1970) } ?? ""
-        let rid = fileResourceIdentifier?.base64EncodedString() ?? ""
-        return "\(fileSize)|\(mtime)|\(rid)"
+        return "\(fileSize)|\(mtime)|\(canonicalResourceIdentifierToken())"
+    }
+
+    /// Stable across NSKeyedArchiver encodings of the same identifier object.
+    /// Still changes when the file object itself is replaced, so dest digest
+    /// is re-checked after a same-size restored-mtime swap.
+    private func canonicalResourceIdentifierToken() -> String {
+        guard let data = fileResourceIdentifier, !data.isEmpty else { return "" }
+        if let object = Self.decodeResourceID(data) as? NSData {
+            return (object as Data).base64EncodedString()
+        }
+        return data.base64EncodedString()
+    }
+
+    package func replacingResourceIdentifier(_ archive: Data) -> FileIdentity {
+        var copy = self
+        copy.fileResourceIdentifier = archive
+        return copy
+    }
+
+    /// Another NSKeyedArchiver blob for the same decoded identifier object.
+    package static func alternateResourceIdentifierArchive(_ data: Data) -> Data? {
+        guard let object = decodeResourceID(data) else { return nil }
+
+        func accepts(_ candidate: Data?) -> Data? {
+            guard let candidate, candidate != data,
+                  let decoded = decodeResourceID(candidate),
+                  decoded.isEqual(object)
+            else {
+                return nil
+            }
+            return candidate
+        }
+
+        if let encoded = accepts(encodeObject(object)) { return encoded }
+        if let encoded = accepts(encodeObject(object, requiringSecureCoding: true)) {
+            return encoded
+        }
+        for _ in 0..<64 {
+            if let encoded = accepts(encodeObject(object)) { return encoded }
+        }
+        return accepts(tweakKeyedArchive(data))
     }
 
     func isSameVersion(as other: FileIdentity) -> Bool {
@@ -400,8 +452,8 @@ struct FileIdentity: Equatable, Sendable, Codable {
             return true
         case let (expected?, live?):
             if expected == live { return true }
-            guard let savedObject = decodeResourceID(expected),
-                  let liveObject = decodeResourceID(live) else {
+            guard let savedObject = Self.decodeResourceID(expected),
+                  let liveObject = Self.decodeResourceID(live) else {
                 return false
             }
             return savedObject.isEqual(liveObject)
@@ -437,8 +489,8 @@ struct FileIdentity: Equatable, Sendable, Codable {
         }
         if let expected = inspection.fileResourceIdentifier, !expected.isEmpty {
             guard let live = fileResourceIdentifier, !live.isEmpty else { return false }
-            if let savedObject = decodeResourceID(expected),
-               let liveObject = decodeResourceID(live) {
+            if let savedObject = Self.decodeResourceID(expected),
+               let liveObject = Self.decodeResourceID(live) {
                 guard savedObject.isEqual(liveObject) else { return false }
             }
         }
@@ -460,8 +512,8 @@ struct FileIdentity: Equatable, Sendable, Codable {
               let liveID = fileResourceIdentifier, !liveID.isEmpty else {
             return false
         }
-        guard let savedObject = decodeResourceID(expectedID),
-              let liveObject = decodeResourceID(liveID) else {
+        guard let savedObject = Self.decodeResourceID(expectedID),
+              let liveObject = Self.decodeResourceID(liveID) else {
             return false
         }
         return savedObject.isEqual(liveObject)
@@ -473,8 +525,8 @@ struct FileIdentity: Equatable, Sendable, Codable {
             return false
         }
         if expected == live { return true }
-        guard let savedObject = decodeResourceID(expected),
-              let liveObject = decodeResourceID(live) else {
+        guard let savedObject = Self.decodeResourceID(expected),
+              let liveObject = Self.decodeResourceID(live) else {
             return false
         }
         return savedObject.isEqual(liveObject)
@@ -484,10 +536,37 @@ struct FileIdentity: Equatable, Sendable, Codable {
         _ id: (any NSCopying & NSSecureCoding & NSObjectProtocol)?
     ) -> Data? {
         guard let id else { return nil }
-        return try? NSKeyedArchiver.archivedData(withRootObject: id, requiringSecureCoding: false)
+        return encodeObject(id)
     }
 
-    private func decodeResourceID(_ data: Data) -> NSObject? {
+    private static func encodeObject(
+        _ object: Any,
+        requiringSecureCoding: Bool = false
+    ) -> Data? {
+        try? NSKeyedArchiver.archivedData(
+            withRootObject: object,
+            requiringSecureCoding: requiringSecureCoding
+        )
+    }
+
+    private static func decodeResourceID(_ data: Data) -> NSObject? {
         try? NSKeyedUnarchiver.unarchivedObject(ofClasses: [NSObject.self], from: data) as? NSObject
+    }
+
+    private static func tweakKeyedArchive(_ data: Data) -> Data? {
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        guard var plist = try? PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: &format
+        ) as? [String: Any] else {
+            return nil
+        }
+        plist["__abb_alt_archive"] = "1"
+        return try? PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: format,
+            options: 0
+        )
     }
 }

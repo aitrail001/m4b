@@ -678,6 +678,145 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertNotNil(OutputAssociation.load(inBookFolder: bookDir))
     }
 
+    func testAuthorityLoadSurvivesAlternateResourceIdentifierArchive() throws {
+        let root = try TestSupport.tempDir("authority-alt-archive")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let dest = out.appendingPathComponent("Same - Ann.m4b")
+        let payload = Data("OWNED-A".utf8)
+        try payload.write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: bookDir)
+
+        let folderIdentity = try XCTUnwrap(FileIdentity.read(from: bookDir))
+        let originalRID = try XCTUnwrap(folderIdentity.fileResourceIdentifier)
+        let alternate = try XCTUnwrap(FileIdentity.alternateResourceIdentifierArchive(originalRID))
+        XCTAssertNotEqual(alternate, originalRID)
+        XCTAssertTrue(folderIdentity.replacingResourceIdentifier(alternate).matchesRecordedIdentity(folderIdentity))
+
+        XCTAssertTrue(
+            OutputAssociation.replaceStoredBookFolderResourceIdentifier(inBookFolder: bookDir, with: alternate)
+        )
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: bookDir)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+        let book = TestSupport.dummyBook(folder: bookDir.path, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        XCTAssertTrue(settings.owns(dest, for: book))
+        XCTAssertEqual(try Data(contentsOf: dest), payload)
+    }
+
+    func testAuthorityLoadResolvesByPathAfterReread() throws {
+        let root = try TestSupport.tempDir("authority-reread")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let dest = out.appendingPathComponent("Same - Ann.m4b")
+        try Data("OWNED-A".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: bookDir)
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: bookDir)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: bookDir)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path,
+            "A second load from the same store must resolve by path index"
+        )
+        let book = TestSupport.dummyBook(folder: bookDir.path, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        XCTAssertTrue(settings.owns(dest, for: book))
+    }
+
+    func testAuthorityLoadResolvesRenamedFolderViaIdentityScan() throws {
+        let root = try TestSupport.tempDir("authority-rename")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let dest = out.appendingPathComponent("Same - Ann.m4b")
+        try Data("OWNED-A".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: bookDir)
+
+        let renamed = root.appendingPathComponent("BookA2", isDirectory: true)
+        try FileManager.default.moveItem(at: bookDir, to: renamed)
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: renamed)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path,
+            "Rename on the same volume resolves via identity scan and refreshes the path index"
+        )
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: renamed)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
+
+        let other = root.appendingPathComponent("BookC", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        XCTAssertNil(OutputAssociation.load(inBookFolder: other))
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let bookRenamed = TestSupport.dummyBook(folder: renamed.path, title: "Same", author: "Ann")
+        let bookC = TestSupport.dummyBook(folder: other.path, title: "Same", author: "Ann")
+        XCTAssertTrue(settings.owns(dest, for: bookRenamed))
+        XCTAssertFalse(settings.owns(dest, for: bookC))
+    }
+
+    func testAuthorityDoesNotGrantOtherFolderOrForgedSidecar() throws {
+        let root = try TestSupport.tempDir("authority-other-folder")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let editionA = root.appendingPathComponent("EditionA", isDirectory: true)
+        let editionB = root.appendingPathComponent("EditionB", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: editionA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: editionB, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let destA = out.appendingPathComponent("Same - Ann.m4b")
+        let payload = Data("OWNED-A".utf8)
+        try payload.write(to: destA)
+        OutputAssociation.record(destA, inBookFolder: editionA)
+        try TestSupport.writeStructuredOutputSidecar(destA, in: editionB)
+
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: editionA)?.standardizedFileURL.path,
+            destA.standardizedFileURL.path
+        )
+        XCTAssertNil(OutputAssociation.load(inBookFolder: editionB))
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let bookA = TestSupport.dummyBook(folder: editionA.path, title: "Same", author: "Ann")
+        let bookB = TestSupport.dummyBook(folder: editionB.path, title: "Same", author: "Ann")
+        XCTAssertTrue(settings.owns(destA, for: bookA))
+        XCTAssertFalse(settings.owns(destA, for: bookB))
+        XCTAssertEqual(try Data(contentsOf: destA), payload)
+    }
+
+    func testAuthorityLoadRejectsReplacedDestination() throws {
+        let root = try TestSupport.tempDir("authority-replaced-dest")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        let dest = out.appendingPathComponent("Same - Ann.m4b")
+        try Data("OWNED-A".utf8).write(to: dest)
+        OutputAssociation.record(dest, inBookFolder: bookDir)
+        try Data("REPLACED-DEST".utf8).write(to: dest)
+
+        XCTAssertNil(OutputAssociation.load(inBookFolder: bookDir))
+        let book = TestSupport.dummyBook(folder: bookDir.path, title: "Same", author: "Ann")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        XCTAssertFalse(settings.owns(dest, for: book))
+    }
+
     func testImportedSidecarNotesTxtIsNotOwned() throws {
         let root = try TestSupport.tempDir("imported-notes-txt")
         defer { try? FileManager.default.removeItem(at: root) }

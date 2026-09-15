@@ -211,6 +211,57 @@ build_origin_path() {
   print -r -- "${1:-.}/.build/release/AudiobookBinder.origin.json"
 }
 
+# Written before `swift build -c release`. The origin writer uses this to
+# prove the compile interval (commit + dirty) did not change mid-build.
+build_intent_path() {
+  print -r -- "${1:-.}/.build/release/AudiobookBinder.intent.json"
+}
+
+# Missing or anything other than JSON false is dirty. Old records are not clean.
+json_record_is_dirty() {
+  local file="${1-}"
+  local val
+  val="$(provenance_json_field "$file" dirty)" || return 0
+  [[ "$val" != "false" ]]
+}
+
+worktree_is_dirty() {
+  local root="${1:-.}"
+  git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  [[ -n "$(git -C "$root" status --porcelain)" ]]
+}
+
+write_build_intent() {
+  local root="${1:-.}"
+  local commit="${2-}"
+  if [[ -z "$commit" ]]; then
+    commit="$(git -C "$root" rev-parse HEAD)" || {
+      print -r -- "Cannot write build intent: missing commit." >&2
+      return 1
+    }
+  fi
+  local dirty="false" dest
+  if worktree_is_dirty "$root"; then
+    dirty="true"
+  fi
+  dest="$(build_intent_path "$root")"
+  mkdir -p "${dest:h}"
+  python3 - "$dest" "$commit" "$dirty" <<'PY'
+import json, sys
+path, commit, dirty = sys.argv[1:4]
+with open(path, "w") as fh:
+    json.dump(
+        {
+            "commit": commit,
+            "dirty": dirty == "true",
+        },
+        fh,
+        indent=2,
+    )
+    fh.write("\n")
+PY
+}
+
 write_build_origin() {
   local root="${1:-.}"
   local commit="${2-}"
@@ -227,12 +278,36 @@ write_build_origin() {
     return 1
   fi
   sha="$(file_sha256 "$exe")" || return 1
-  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
+
+  # dirty if the intent was dirty, the tree is dirty now, the intent commit
+  # moved, or there is no intent (cannot prove the compile interval).
+  local intent
+  intent="$(build_intent_path "$root")"
+  if [[ ! -f "$intent" ]]; then
+    dirty="true"
+  else
+    local i_commit i_dirty
+    i_commit="$(provenance_json_field "$intent" commit)" || i_commit=""
+    i_dirty="$(provenance_json_field "$intent" dirty)" || i_dirty=""
+    if [[ "$i_dirty" != "false" || -z "$i_commit" || "$i_commit" != "$commit" ]]; then
       dirty="true"
     fi
   fi
+  if worktree_is_dirty "$root"; then
+    dirty="true"
+  fi
+
   dest="$(build_origin_path "$root")"
+  # Do not relabel leftover bytes as clean after a dirty compile.
+  if [[ -f "$dest" ]]; then
+    local prev_sha prev_dirty
+    prev_sha="$(provenance_json_field "$dest" executable_sha256)" || prev_sha=""
+    prev_dirty="$(provenance_json_field "$dest" dirty)" || prev_dirty=""
+    if [[ -n "$prev_sha" && "$prev_sha" == "$sha" && "$prev_dirty" != "false" ]]; then
+      dirty="true"
+    fi
+  fi
+
   mkdir -p "${dest:h}"
   python3 - "$dest" "$commit" "$sha" "$dirty" <<'PY'
 import json, sys
@@ -293,6 +368,20 @@ require_build_origin() {
   return 0
 }
 
+# Production / notarization: same commit+hash checks, but refuse dirty or
+# legacy origins that omit dirty. Local `make app` keeps using require_build_origin.
+require_clean_build_origin() {
+  require_build_origin "$@" || return 1
+  local root="${1:-.}"
+  local origin
+  origin="$(build_origin_path "$root")"
+  if json_record_is_dirty "$origin"; then
+    print -r -- "Build origin is dirty or missing a dirty field. Rebuild from a clean checkout." >&2
+    return 1
+  fi
+  return 0
+}
+
 app_plist_version() {
   local app="${1-}"
   local plist="$app/Contents/Info.plist"
@@ -312,21 +401,29 @@ write_packaged_app_receipt() {
     print -r -- "Cannot write app receipt: missing commit." >&2
     return 1
   fi
-  local version sha dest exe
+  local version sha dest exe dirty="true" origin o_dirty
   version="$(app_plist_version "$app")" || return 1
   exe="$app/Contents/MacOS/AudiobookBinder"
   sha="$(file_sha256 "$exe")" || return 1
+  origin="$(build_origin_path "$root")"
+  if [[ -f "$origin" ]]; then
+    o_dirty="$(provenance_json_field "$origin" dirty)" || o_dirty=""
+    if [[ "$o_dirty" == "false" ]]; then
+      dirty="false"
+    fi
+  fi
   dest="$(packaged_app_receipt_path "$root")"
   mkdir -p "${dest:h}"
-  python3 - "$dest" "$commit" "$version" "$sha" <<'PY'
+  python3 - "$dest" "$commit" "$version" "$sha" "$dirty" <<'PY'
 import json, sys
-path, commit, version, sha = sys.argv[1:5]
+path, commit, version, sha, dirty = sys.argv[1:6]
 with open(path, "w") as fh:
     json.dump(
         {
             "commit": commit,
             "version": version,
             "executable_sha256": sha,
+            "dirty": dirty == "true",
         },
         fh,
         indent=2,
@@ -379,6 +476,10 @@ require_packaged_app_origin() {
   live_sha="$(file_sha256 "$exe")" || return 1
   if [[ -z "$r_sha" || "$r_sha" != "$live_sha" ]]; then
     print -r -- "Packaged app executable SHA-256 does not match receipt. Refusing a swapped or rebuilt binary." >&2
+    return 1
+  fi
+  if json_record_is_dirty "$receipt"; then
+    print -r -- "Packaged app receipt is dirty or missing a dirty field. Refusing to notarize a dirty-origin app." >&2
     return 1
   fi
   return 0
@@ -437,12 +538,29 @@ write_release_provenance() {
     tests_ok="true"
     tests_ok_source="stamp"
   fi
+  local dirty="${8-}"
+  if [[ -z "$dirty" ]]; then
+    local receipt
+    receipt="$(packaged_app_receipt_path "$root")"
+    if [[ -f "$receipt" ]]; then
+      dirty="$(provenance_json_field "$receipt" dirty)" || dirty=""
+    else
+      local origin
+      origin="$(build_origin_path "$root")"
+      if [[ -f "$origin" ]]; then
+        dirty="$(provenance_json_field "$origin" dirty)" || dirty=""
+      fi
+    fi
+  fi
+  if [[ "$dirty" != "false" ]]; then
+    dirty="true"
+  fi
   local dest
   dest="$(release_provenance_path "$root" "$version")"
   mkdir -p "${dest:h}"
-  python3 - "$dest" "$head" "$version" "$sha" "$tests_ok" "$app_commit" "$app_version" "$tests_ok_source" "$app_sha256" <<'PY'
+  python3 - "$dest" "$head" "$version" "$sha" "$tests_ok" "$app_commit" "$app_version" "$tests_ok_source" "$app_sha256" "$dirty" <<'PY'
 import json, sys
-path, commit, version, sha, tests_ok, app_commit, app_version, tests_ok_source, app_sha256 = sys.argv[1:10]
+path, commit, version, sha, tests_ok, app_commit, app_version, tests_ok_source, app_sha256, dirty = sys.argv[1:11]
 obj = {
     "commit": commit,
     "version": version,
@@ -451,6 +569,7 @@ obj = {
     "app_commit": app_commit,
     "app_version": app_version,
     "tests_ok_source": tests_ok_source,
+    "dirty": dirty == "true",
 }
 if app_sha256:
     obj["app_sha256"] = app_sha256
@@ -515,6 +634,10 @@ require_release_provenance() {
   fi
   if [[ "$p_tests" != "true" ]]; then
     print -r -- "Provenance is missing a test-ok record. Run: make test && make production-dmg" >&2
+    return 1
+  fi
+  if json_record_is_dirty "$provenance_file"; then
+    print -r -- "Provenance is dirty or missing a dirty field. Refusing to upload a dirty-origin DMG." >&2
     return 1
   fi
   return 0

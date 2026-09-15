@@ -9,6 +9,7 @@ test:
 	git rev-parse HEAD > dist/.release-tests-ok
 
 build:
+	./scripts/write-build-intent.sh
 	swift build -c release
 	./scripts/write-build-origin.sh
 

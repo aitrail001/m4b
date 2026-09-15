@@ -21,6 +21,7 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 if [[ "$PRODUCTION" == "1" ]]; then
+  require_clean_build_origin "$ROOT" "$PACKAGED_COMMIT"
   require_packaged_app_origin "$ROOT" "$PACKAGED_COMMIT" "$VERSION"
   if [[ -z "$IDENTITY" ]]; then
     if security find-identity -v -p codesigning 2>/dev/null | grep -q 'Developer ID Application'; then

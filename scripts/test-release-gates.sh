@@ -49,7 +49,8 @@ git -C "$REPO" init -q --template=
 git -C "$REPO" config user.email 'release-gate@example.com'
 git -C "$REPO" config user.name 'Release Gate'
 print -r -- 'ok' > "$REPO/README"
-git -C "$REPO" add README
+print -r -- $'.build/\ndist/' > "$REPO/.gitignore"
+git -C "$REPO" add README .gitignore
 git -C "$REPO" commit -qm 'init'
 
 (
@@ -64,6 +65,8 @@ fi
 
 ALLOW_DIRTY_RELEASE=1 require_clean_release_worktree "$REPO" \
   || fail "ALLOW_DIRTY_RELEASE=1 must allow a dirty worktree"
+
+rm -f "$REPO/extra.txt"
 
 # Notary credentials: fail closed when missing; accept the conventional env vars.
 (
@@ -198,7 +201,7 @@ VER='1.2.3'
 APP_SHA='deadbeefcafebabe'
 write_release_tests_ok_stamp "$PROV" "$HEAD"
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
-  "$HEAD" "$VER" "$APP_SHA"
+  "$HEAD" "$VER" "$APP_SHA" "false"
 PROV_FILE="$(release_provenance_path "$PROV" "$VER")"
 
 require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
@@ -214,12 +217,12 @@ got="$(provenance_json_field "$PROV_FILE" tests_ok_source)"
 (
   export RELEASE_TESTS_OK=1
   write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
-    "$HEAD" "$VER" "$APP_SHA"
+    "$HEAD" "$VER" "$APP_SHA" "false"
 )
 got="$(provenance_json_field "$PROV_FILE" tests_ok_source)"
 [[ "$got" == "override" ]] || fail "RELEASE_TESTS_OK=1 must record tests_ok_source=override, not stamp"
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
-  "$HEAD" "$VER" "$APP_SHA"
+  "$HEAD" "$VER" "$APP_SHA" "false"
 
 if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" '9.9.9' "$PROV"; then
   fail "provenance version mismatch must fail"
@@ -238,7 +241,7 @@ if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg
   fail "stale provenance commit must fail"
 fi
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
-  "$HEAD" "$VER" "$APP_SHA"
+  "$HEAD" "$VER" "$APP_SHA" "false"
 
 print -r -- 'other-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
 if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
@@ -262,7 +265,7 @@ if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg
   fail "provenance without app_commit/app_version must fail"
 fi
 write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
-  "$HEAD" "$VER" "$APP_SHA"
+  "$HEAD" "$VER" "$APP_SHA" "false"
 
 rm -f "$(release_tests_ok_stamp_path "$PROV")"
 (
@@ -315,6 +318,11 @@ if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
   fail "executable sha256 mismatch vs receipt must fail"
 fi
 
+mkdir -p "$PROV/.build/release"
+print -r -- 'fixture-exe' > "$PROV/.build/release/AudiobookBinder"
+chmod +x "$PROV/.build/release/AudiobookBinder"
+write_build_intent "$PROV" "$HEAD"
+write_build_origin "$PROV" "$HEAD"
 install_fixture_app "$PROV" "$VER"
 write_packaged_app_receipt "$PROV" "$HEAD"
 require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
@@ -350,6 +358,7 @@ fi
 # Origin for A + FROM-A, required HEAD B. A freshly written packaged receipt
 # for B (hash of binary A) must not make compile-origin OK.
 install_fixture_release_binary "$PROV" 'FROM-A'
+write_build_intent "$PROV" "$COMMIT_A"
 write_build_origin "$PROV" "$COMMIT_A"
 install_fixture_app "$PROV" "$VER" 'FROM-A'
 write_packaged_app_receipt "$PROV" "$COMMIT_B"
@@ -417,6 +426,7 @@ fi
 
 # Clean matching compile-origin + packaged-app origin still passes.
 install_fixture_release_binary "$PROV" 'FROM-B'
+write_build_intent "$PROV" "$HEAD"
 write_build_origin "$PROV" "$HEAD"
 require_build_origin "$PROV" "$HEAD" \
   || fail "clean compile-origin path must pass"
@@ -427,17 +437,130 @@ require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
 [[ "$(release_sentinel "$PROV")" == "FROM-B" ]] \
   || fail "clean compile+package path must keep the FROM-B sentinel"
 
+# R5-04: dirty compile origin is ok for local packaging, not for production.
+# Fixture matrix (sentinel exe + JSON, no codesign/notary):
+#   clean_matching     → require_build_origin + production checks pass
+#   dirty_matching     → require_build_origin may pass; production fails
+#   old_commit         → rejected (covered above)
+#   changed_executable → rejected (covered above)
+#   missing_origin     → rejected (covered above)
+rm -f "$ORIGIN_FILE" "$(build_intent_path "$PROV")"
+install_fixture_release_binary "$PROV" 'FROM-CLEAN'
+write_build_intent "$PROV" "$HEAD"
+write_build_origin "$PROV" "$HEAD"
+got="$(provenance_json_field "$ORIGIN_FILE" dirty)"
+[[ "$got" == "false" ]] || fail "clean_matching origin must record dirty=false"
+require_build_origin "$PROV" "$HEAD" \
+  || fail "clean_matching require_build_origin must pass"
+require_clean_build_origin "$PROV" "$HEAD" \
+  || fail "clean_matching production origin check must pass"
+install_fixture_app "$PROV" "$VER" 'FROM-CLEAN'
+write_packaged_app_receipt "$PROV" "$HEAD"
+got="$(provenance_json_field "$(packaged_app_receipt_path "$PROV")" dirty)"
+[[ "$got" == "false" ]] || fail "clean_matching receipt must copy dirty=false"
+require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
+  || fail "clean_matching packaged-app origin must pass"
+write_release_tests_ok_stamp "$PROV" "$HEAD"
+print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA" "false"
+PROV_FILE="$(release_provenance_path "$PROV" "$VER")"
+got="$(provenance_json_field "$PROV_FILE" dirty)"
+[[ "$got" == "false" ]] || fail "clean_matching provenance must record dirty=false"
+require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
+  || fail "clean_matching release provenance must pass"
+
+install_fixture_release_binary "$PROV" 'FROM-DIRTY'
+print -r -- 'dirty-compile' > "$PROV/dirty-compile.txt"
+write_build_intent "$PROV" "$HEAD"
+write_build_origin "$PROV" "$HEAD"
+got="$(provenance_json_field "$ORIGIN_FILE" dirty)"
+[[ "$got" == "true" ]] || fail "dirty_matching origin must record dirty=true"
+require_build_origin "$PROV" "$HEAD" \
+  || fail "dirty_matching require_build_origin may still pass for local packaging"
+if require_clean_build_origin "$PROV" "$HEAD"; then
+  fail "dirty_matching production origin check must fail"
+fi
+install_fixture_app "$PROV" "$VER" 'FROM-DIRTY'
+write_packaged_app_receipt "$PROV" "$HEAD"
+got="$(provenance_json_field "$(packaged_app_receipt_path "$PROV")" dirty)"
+[[ "$got" == "true" ]] || fail "dirty_matching receipt must copy dirty=true from origin"
+if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
+  fail "dirty_matching packaged-app origin must fail production"
+fi
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA"
+got="$(provenance_json_field "$PROV_FILE" dirty)"
+[[ "$got" == "true" ]] || fail "dirty_matching provenance must record dirty=true"
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "dirty_matching release provenance must fail production"
+fi
+
+# Restore the tree to clean HEAD without changing exe bytes, then rewrite origin.
+rm -f "$PROV/dirty-compile.txt"
+write_build_intent "$PROV" "$HEAD"
+write_build_origin "$PROV" "$HEAD"
+got="$(provenance_json_field "$ORIGIN_FILE" dirty)"
+[[ "$got" == "true" ]] || fail "rewrite origin after clean restore must keep dirty=true for the same exe"
+require_build_origin "$PROV" "$HEAD" \
+  || fail "rewritten dirty-origin binary must still pass require_build_origin"
+if require_clean_build_origin "$PROV" "$HEAD"; then
+  fail "rewritten dirty-origin binary must still fail production"
+fi
+[[ "$(release_sentinel "$PROV")" == "FROM-DIRTY" ]] \
+  || fail "origin rewrite must not change leftover exe bytes"
+
+# Receipt without a dirty field is not a clean production receipt.
+install_fixture_release_binary "$PROV" 'FROM-CLEAN'
+rm -f "$ORIGIN_FILE" "$(build_intent_path "$PROV")"
+write_build_intent "$PROV" "$HEAD"
+write_build_origin "$PROV" "$HEAD"
+install_fixture_app "$PROV" "$VER" 'FROM-CLEAN'
+write_packaged_app_receipt "$PROV" "$HEAD"
+python3 - "$(packaged_app_receipt_path "$PROV")" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+obj.pop("dirty", None)
+with open(path, "w") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
+  fail "receipt without dirty field must fail production"
+fi
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA" "false"
+python3 - "$PROV_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+obj.pop("dirty", None)
+with open(path, "w") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "provenance without dirty field must fail production"
+fi
+
 # make release is sequential: clean, then tests, then production DMG (dry-run only).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_PLAN="$(make -C "$REPO_ROOT" -n build)"
 print -r -- "$BUILD_PLAN" | grep -q 'swift build -c release' \
   || fail "make -n build must run swift build -c release"
+print -r -- "$BUILD_PLAN" | grep -q 'write-build-intent\|write_build_intent' \
+  || fail "make -n build must write compile intent before swift build"
 print -r -- "$BUILD_PLAN" | grep -q 'write-build-origin\|write_build_origin' \
   || fail "make -n build must write compile origin after swift build"
+intent_n="$(print -r -- "$BUILD_PLAN" | grep -n 'write-build-intent\|write_build_intent' | head -1 | cut -d: -f1)"
 swift_n="$(print -r -- "$BUILD_PLAN" | grep -n 'swift build -c release' | head -1 | cut -d: -f1)"
 origin_write_n="$(print -r -- "$BUILD_PLAN" | grep -n 'write-build-origin\|write_build_origin' | head -1 | cut -d: -f1)"
-[[ -n "$swift_n" && -n "$origin_write_n" ]] \
-  || fail "make -n build must list swift build and the origin writer"
+[[ -n "$intent_n" && -n "$swift_n" && -n "$origin_write_n" ]] \
+  || fail "make -n build must list intent, swift build, and the origin writer"
+if (( intent_n >= swift_n )); then
+  fail "make -n build must write compile intent before swift build"
+fi
 if (( swift_n >= origin_write_n )); then
   fail "make -n build must write compile origin after swift build"
 fi
@@ -445,16 +568,36 @@ fi
 APP_PLAN="$(make -C "$REPO_ROOT" -n app)"
 print -r -- "$APP_PLAN" | grep -q 'swift build -c release' \
   || fail "make -n app must build before packaging"
+print -r -- "$APP_PLAN" | grep -q 'write-build-intent\|write_build_intent' \
+  || fail "make -n app must write compile intent before swift build"
 print -r -- "$APP_PLAN" | grep -q 'write-build-origin\|write_build_origin' \
   || fail "make -n app must write compile origin after swift build"
 print -r -- "$APP_PLAN" | grep -q 'package-app.sh' \
   || fail "make -n app must invoke package-app.sh"
+app_intent_n="$(print -r -- "$APP_PLAN" | grep -n 'write-build-intent\|write_build_intent' | head -1 | cut -d: -f1)"
 app_swift_n="$(print -r -- "$APP_PLAN" | grep -n 'swift build -c release' | head -1 | cut -d: -f1)"
 app_origin_n="$(print -r -- "$APP_PLAN" | grep -n 'write-build-origin\|write_build_origin' | head -1 | cut -d: -f1)"
 app_pkg_n="$(print -r -- "$APP_PLAN" | grep -n 'package-app.sh' | head -1 | cut -d: -f1)"
-if (( app_swift_n >= app_origin_n || app_origin_n >= app_pkg_n )); then
-  fail "make -n app must run swift build, then write origin, then package-app.sh"
+if (( app_intent_n >= app_swift_n || app_swift_n >= app_origin_n || app_origin_n >= app_pkg_n )); then
+  fail "make -n app must write intent, then swift build, then origin, then package-app.sh"
 fi
+
+dmg_script="$SCRIPT_DIR/package-dmg.sh"
+grep -q 'require_packaged_app_origin' "$dmg_script" \
+  || fail "package-dmg.sh must call require_packaged_app_origin"
+grep -q 'require_clean_build_origin' "$dmg_script" \
+  || fail "package-dmg.sh PRODUCTION path must refuse a dirty compile origin"
+dmg_origin_n="$(grep -n 'require_packaged_app_origin' "$dmg_script" | head -1 | cut -d: -f1)"
+dmg_clean_n="$(grep -n 'require_clean_build_origin' "$dmg_script" | head -1 | cut -d: -f1)"
+dmg_sign_n="$(grep -n 'Signing \$APP' "$dmg_script" | head -1 | cut -d: -f1)"
+[[ -n "$dmg_origin_n" && -n "$dmg_clean_n" && -n "$dmg_sign_n" ]] \
+  || fail "package-dmg.sh must gate origin/receipt before signing"
+if (( dmg_origin_n >= dmg_sign_n || dmg_clean_n >= dmg_sign_n )); then
+  fail "package-dmg.sh PRODUCTION must refuse dirty origin/receipt before signing"
+fi
+awk '/^require_packaged_app_origin\(\)/,/^}/' "$SCRIPT_DIR/release-gates.sh" \
+  | grep -q dirty \
+  || fail "require_packaged_app_origin must read dirty"
 
 PLAN="$(make -C "$REPO_ROOT" -n release)"
 print -r -- "$PLAN" | grep -q 'require-clean-release' \

@@ -1,5 +1,6 @@
 #!/bin/zsh
 # Record compile origin after `swift build -c release` (`make build`).
+# Reads the pre-compile intent; never downgrades same-hash dirty→clean.
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"

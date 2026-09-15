@@ -145,9 +145,9 @@ public enum SourceCleanup {
         return SourceCleanupAuthorization(allowed: true, sources: sources)
     }
 
-    /// One bulk verification, then dest revalidation before each deletion.
+    /// One bulk verification, then dest revalidation before each hold.
     /// The source is renamed onto a same-directory hold, that held object is
-    /// verified, and only then is the hold trashed.
+    /// verified, dest is rechecked, and only then is the hold trashed.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -204,6 +204,16 @@ public enum SourceCleanup {
                 return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
             }
             testingBeforeTrashHeld?(next, hold)
+            if let reason = destStillAuthorized(
+                dest: dest,
+                book: book,
+                inspection: inspection,
+                isBuilding: isBuilding,
+                document: document
+            ) {
+                restoreHeldSource(from: hold, to: next)
+                return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
+            }
             do {
                 try FileManager.default.trashItem(at: hold, resultingItemURL: nil)
                 moved.append(next)
@@ -357,7 +367,7 @@ public enum SourceCleanup {
         book.chapters.contains { refersToSameFile($0.url, url) }
     }
 
-    /// Cheap dest/inspection guards, then dest digest before every deletion.
+    /// Cheap dest/inspection guards, then dest digest before hold and before trash.
     private static func destStillAuthorized(
         dest: URL,
         book: Audiobook,

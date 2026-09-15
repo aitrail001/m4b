@@ -1698,6 +1698,65 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalB)
     }
 
+    func testCleanupPerformRestoresOriginalWhenDestUnauthorizedAfterHeldVerify() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalDest = try Data(contentsOf: fixture.dest)
+        let originalSourceA = try Data(contentsOf: fixture.sourceA)
+        let originalSourceB = try Data(contentsOf: fixture.sourceB)
+        let edited = Data(repeating: 0xBE, count: originalDest.count)
+        XCTAssertEqual(edited.count, originalDest.count)
+        XCTAssertNotEqual(edited, originalDest)
+
+        let destTokenBefore = try XCTUnwrap(SourceCleanup.destGeneration(of: fixture.dest))
+        let mutatedDest = StartedFlag()
+        SourceCleanup.testingBeforeTrashHeld = { original, held in
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: original.path),
+                "source must still be on the hold when dest is mutated"
+            )
+            guard SourceCleanup.refersToSameFile(original, fixture.sourceA) else { return }
+            do {
+                try self.overwriteInPlaceKeepingMtime(at: fixture.dest, with: edited)
+                mutatedDest.mark()
+            } catch {
+                XCTFail("in-place dest overwrite failed: \(error)")
+            }
+        }
+        defer {
+            SourceCleanup.testingBeforeTrashHeld = nil
+            SourceCleanup.testingAfterHold = nil
+        }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(mutatedDest.isSet, "hook must mutate dest after hold+verify and before trash")
+        XCTAssertEqual(
+            SourceCleanup.destGeneration(of: fixture.dest),
+            destTokenBefore,
+            "same-size restored mtime must keep the dest generation token"
+        )
+        XCTAssertFalse(result.didFinish)
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.remaining.isEmpty)
+        XCTAssertNotNil(result.error)
+        XCTAssertEqual(try Data(contentsOf: fixture.dest), edited)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), originalSourceA)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalSourceB)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.dest.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: fixture.sourceA.path),
+            "failed dest recheck must restore the held source to the original path"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
     func testCleanupDeniedWhenDestDigestMissing() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }
@@ -1928,20 +1987,20 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(measured6.didFinish)
         XCTAssertGreaterThanOrEqual(
             measured3.destCalls,
-            1 + 3,
-            "dest SHA-256 must run at authorization and before each deletion"
+            1 + 2 * 3,
+            "dest SHA-256 must run at authorization, before each hold, and before each trash"
         )
         XCTAssertGreaterThanOrEqual(
             measured6.destCalls,
-            1 + 6,
-            "dest SHA-256 must run at authorization and before each deletion"
+            1 + 2 * 6,
+            "dest SHA-256 must run at authorization, before each hold, and before each trash"
         )
         XCTAssertGreaterThan(measured6.destCalls, measured3.destCalls)
         XCTAssertEqual(measured3.calls - measured3.destCalls, 2 * 3, "source hashing stays linear in N")
         XCTAssertEqual(measured6.calls - measured6.destCalls, 2 * 6, "source hashing stays linear in N")
 
-        XCTAssertLessThanOrEqual(measured3.calls, 3 * 3 + 2)
-        XCTAssertLessThanOrEqual(measured6.calls, 3 * 6 + 2)
+        XCTAssertLessThanOrEqual(measured3.calls, 4 * 3 + 2)
+        XCTAssertLessThanOrEqual(measured6.calls, 4 * 6 + 2)
         XCTAssertLessThan(
             measured6.calls,
             27,

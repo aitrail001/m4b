@@ -41,6 +41,14 @@ public enum SourceCleanup {
     /// revalidation and trash. Production callers never set this.
     nonisolated(unsafe) package static var testingBeforeEachDeletion: (() -> Void)?
 
+    /// Test seam: after the source has been renamed onto the private hold,
+    /// before the held file is verified. Production callers never set this.
+    nonisolated(unsafe) package static var testingAfterHold: ((_ original: URL, _ held: URL) -> Void)?
+
+    /// Test seam: after the held file has been verified, before it is trashed.
+    /// Production callers never set this.
+    nonisolated(unsafe) package static var testingBeforeTrashHeld: ((_ original: URL, _ held: URL) -> Void)?
+
     /// View-body helper: cached/pending/cheap guards only. Does not hash.
     public static func controlsState(
         canCleanupSources: Bool,
@@ -137,8 +145,9 @@ public enum SourceCleanup {
         return SourceCleanupAuthorization(allowed: true, sources: sources)
     }
 
-    /// One bulk verification, then a last-moment check of dest digest and the
-    /// file about to be trashed. Dest is re-hashed before every deletion.
+    /// One bulk verification, then dest revalidation before each deletion.
+    /// The source is renamed onto a same-directory hold, that held object is
+    /// verified, and only then is the hold trashed.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -173,19 +182,34 @@ public enum SourceCleanup {
                 return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
             }
             let next = remaining[0]
+            let hold: URL
+            do {
+                hold = try moveSourceToPrivateHold(next)
+            } catch {
+                return SourceCleanupResult(
+                    moved: moved,
+                    remaining: remaining,
+                    error: error.localizedDescription
+                )
+            }
+            testingAfterHold?(next, hold)
             if let reason = verifySingleRecordedSource(
-                next,
+                original: next,
+                held: hold,
                 dest: dest,
                 bookFolder: book.folder,
                 document: document
             ) {
+                restoreHeldSource(from: hold, to: next)
                 return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
             }
+            testingBeforeTrashHeld?(next, hold)
             do {
-                try FileManager.default.trashItem(at: next, resultingItemURL: nil)
+                try FileManager.default.trashItem(at: hold, resultingItemURL: nil)
                 moved.append(next)
                 remaining.removeAll { refersToSameFile($0, next) }
             } catch {
+                restoreHeldSource(from: hold, to: next)
                 return SourceCleanupResult(
                     moved: moved,
                     remaining: remaining,
@@ -362,21 +386,40 @@ public enum SourceCleanup {
         return verifyRecordedDestination(dest: dest, document: document)
     }
 
+    /// Same-directory rename to a short hidden name (`.{uuid}`) so NAME_MAX
+    /// cannot clip a long basename. Never copy off-volume.
+    private static func moveSourceToPrivateHold(_ source: URL) throws -> URL {
+        let hold = source.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString)")
+        try FileManager.default.moveItem(at: source, to: hold)
+        return hold
+    }
+
+    /// Best effort: put the held object back only when the original path is vacant.
+    private static func restoreHeldSource(from hold: URL, to original: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: hold.path) else { return }
+        if fm.fileExists(atPath: original.path) { return }
+        try? fm.moveItem(at: hold, to: original)
+    }
+
+    /// Match the sidecar entry by the original path, then identity-check the hold.
     private static func verifySingleRecordedSource(
-        _ url: URL,
+        original: URL,
+        held: URL,
         dest: URL,
         bookFolder: URL,
         document: SourceAssociation.Document
     ) -> String? {
-        if refersToSameFile(url, dest) {
+        if refersToSameFile(original, dest) {
             return "Cannot verify sources: missing export provenance."
         }
         guard let entry = document.sources.first(where: {
-            refersToSameFile($0.url(relativeTo: bookFolder), url)
+            refersToSameFile($0.url(relativeTo: bookFolder), original)
         }) else {
             return "Cannot verify sources: missing export provenance."
         }
-        return verifyLiveSource(url: url, entry: entry)
+        return verifyLiveSource(url: held, entry: entry)
     }
 
     private static func verifyRecordedDestination(

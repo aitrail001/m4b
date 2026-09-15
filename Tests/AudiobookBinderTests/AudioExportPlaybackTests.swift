@@ -1593,6 +1593,111 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
     }
 
+    func testCleanupPerformTrashesHeldVerifiedSourceNotReplacementAtOriginalPath() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalA = try Data(contentsOf: fixture.sourceA)
+        let originalDigest = sha256Hex(originalA)
+        let planted = Data(repeating: 0xAB, count: 24)
+        XCTAssertNotEqual(planted, originalA)
+
+        let plantedAfterVerify = StartedFlag()
+        SourceCleanup.testingBeforeTrashHeld = { original, held in
+            XCTAssertEqual(
+                held.deletingLastPathComponent().standardizedFileURL.path,
+                original.deletingLastPathComponent().standardizedFileURL.path
+            )
+            XCTAssertTrue(held.lastPathComponent.hasPrefix("."))
+            XCTAssertFalse(held.lastPathComponent.hasPrefix(".\(original.lastPathComponent)"))
+            XCTAssertNotEqual(held.lastPathComponent, original.lastPathComponent)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: original.path),
+                "hold must leave the original path vacant so a replacement can appear"
+            )
+            guard SourceCleanup.refersToSameFile(original, fixture.sourceA) else { return }
+            do {
+                try planted.write(to: original)
+                plantedAfterVerify.mark()
+            } catch {
+                XCTFail("planting replacement at original path failed: \(error)")
+            }
+        }
+        defer {
+            SourceCleanup.testingBeforeTrashHeld = nil
+            SourceCleanup.testingAfterHold = nil
+        }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(plantedAfterVerify.isSet, "hook must plant after hold+verify and before trash")
+        XCTAssertTrue(result.didFinish)
+        XCTAssertNil(result.error)
+        XCTAssertTrue(result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) })
+        XCTAssertTrue(result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), planted)
+        XCTAssertNotEqual(sha256Hex(try Data(contentsOf: fixture.sourceA)), originalDigest)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.sourceB.path),
+            "the verified original with no replacement must be gone"
+        )
+    }
+
+    func testCleanupPerformRestoresOriginalWhenHeldSourceVerifyFails() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalB = try Data(contentsOf: fixture.sourceB)
+        let mutatedHold = StartedFlag()
+        SourceCleanup.testingAfterHold = { original, held in
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: original.path),
+                "source must be off the original path before held verify"
+            )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+            XCTAssertEqual(
+                held.deletingLastPathComponent().standardizedFileURL.path,
+                original.deletingLastPathComponent().standardizedFileURL.path
+            )
+            XCTAssertTrue(held.lastPathComponent.hasPrefix("."))
+            XCTAssertFalse(held.lastPathComponent.hasPrefix(".\(original.lastPathComponent)"))
+            do {
+                try Data(repeating: 0xFF, count: 16).write(to: held)
+                mutatedHold.mark()
+            } catch {
+                XCTFail("mutating held source failed: \(error)")
+            }
+        }
+        defer {
+            SourceCleanup.testingAfterHold = nil
+            SourceCleanup.testingBeforeTrashHeld = nil
+        }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(mutatedHold.isSet, "hook must mutate the held file before verify")
+        XCTAssertFalse(result.didFinish)
+        XCTAssertTrue(result.moved.isEmpty)
+        XCTAssertFalse(result.remaining.isEmpty)
+        XCTAssertNotNil(result.error)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: fixture.sourceA.path),
+            "failed held verify must restore the original path"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalB)
+    }
+
     func testCleanupDeniedWhenDestDigestMissing() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }

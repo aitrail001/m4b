@@ -177,14 +177,22 @@ public enum M4BInspector {
             let languages = locales.map(\.identifier)
             guard !languages.isEmpty else { return [] }
             let groups = try await asset.loadChapterMetadataGroups(bestMatchingPreferredLanguages: languages)
-            return groups.enumerated().compactMap { index, group in
+            var marks: [ChapterMark] = []
+            for (index, group) in groups.enumerated() {
                 let seconds = group.timeRange.start.seconds
                 let duration = group.timeRange.duration.seconds
-                guard seconds.isFinite, duration.isFinite else { return nil }
-                let title = group.items.first(where: { $0.commonKey == .commonKeyTitle })?.stringValue
-                    ?? "Chapter \(index + 1)"
-                return ChapterMark(start: max(0, seconds), duration: max(0, duration), title: title)
+                guard seconds.isFinite, duration.isFinite else { continue }
+                let title: String
+                if let item = group.items.first(where: { $0.commonKey == .commonKeyTitle }),
+                   let loaded = try? await item.load(.stringValue),
+                   !loaded.isEmpty {
+                    title = loaded
+                } else {
+                    title = "Chapter \(index + 1)"
+                }
+                marks.append(ChapterMark(start: max(0, seconds), duration: max(0, duration), title: title))
             }
+            return marks
         } catch {
             return []
         }

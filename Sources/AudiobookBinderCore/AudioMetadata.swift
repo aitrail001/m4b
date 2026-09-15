@@ -139,28 +139,31 @@ public enum AudioMetadata {
         let asset = AVURLAsset(url: url)
         do {
             let metadata = try await asset.load(.metadata)
-            tags.title = firstString(metadata, identifiers: [
+            tags.title = await firstString(metadata, identifiers: [
                 .commonIdentifierTitle, .id3MetadataTitleDescription, .iTunesMetadataSongName
             ])
-            tags.album = firstString(metadata, identifiers: [
+            tags.album = await firstString(metadata, identifiers: [
                 .commonIdentifierAlbumName, .id3MetadataAlbumTitle, .iTunesMetadataAlbum
             ])
-            tags.artist = firstString(metadata, identifiers: [
+            tags.artist = await firstString(metadata, identifiers: [
                 .commonIdentifierArtist, .id3MetadataLeadPerformer, .iTunesMetadataArtist
             ])
-            tags.composer = firstString(metadata, identifiers: [
+            tags.composer = await firstString(metadata, identifiers: [
                 .id3MetadataComposer, .iTunesMetadataComposer, .commonIdentifierCreator
             ])
-            tags.comment = firstString(metadata, identifiers: [
+            tags.comment = await firstString(metadata, identifiers: [
                 .commonIdentifierDescription, .id3MetadataComments, .iTunesMetadataDescription
             ])
-            if let track = firstNumber(metadata, identifiers: [.id3MetadataTrackNumber, .iTunesMetadataTrackNumber]) {
+            if let track = await firstNumber(
+                metadata,
+                identifiers: [.id3MetadataTrackNumber, .iTunesMetadataTrackNumber]
+            ) {
                 tags.trackNumber = track
             }
             if includeArtwork {
-                tags.artwork = firstArtwork(metadata)
+                tags.artwork = await firstArtwork(metadata)
                 if tags.artwork == nil {
-                    tags.artwork = firstArtwork(try await asset.load(.commonMetadata))
+                    tags.artwork = await firstArtwork(try await asset.load(.commonMetadata))
                 }
             }
             let tracks = try await asset.loadTracks(withMediaType: .audio)
@@ -181,22 +184,31 @@ public enum AudioMetadata {
         return tags
     }
 
-    private static func firstString(_ items: [AVMetadataItem], identifiers: [AVMetadataIdentifier]) -> String? {
+    private static func firstString(
+        _ items: [AVMetadataItem],
+        identifiers: [AVMetadataIdentifier]
+    ) async -> String? {
         for id in identifiers {
-            if let value = items.first(where: { $0.identifier == id })?.stringValue?
+            guard let item = items.first(where: { $0.identifier == id }) else { continue }
+            guard let value = try? await item.load(.stringValue)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-               !value.isEmpty {
-                return value
-            }
+                  !value.isEmpty
+            else { continue }
+            return value
         }
         return nil
     }
 
-    private static func firstNumber(_ items: [AVMetadataItem], identifiers: [AVMetadataIdentifier]) -> Int? {
+    private static func firstNumber(
+        _ items: [AVMetadataItem],
+        identifiers: [AVMetadataIdentifier]
+    ) async -> Int? {
         for id in identifiers {
             guard let item = items.first(where: { $0.identifier == id }) else { continue }
-            if let n = item.numberValue?.intValue, n > 0 { return n }
-            if let s = item.stringValue {
+            if let n = try? await item.load(.numberValue), n.intValue > 0 {
+                return n.intValue
+            }
+            if let s = try? await item.load(.stringValue) {
                 let part = s.split(whereSeparator: { $0 == "/" || $0 == " " }).first
                 if let part, let n = Int(part), n > 0 { return n }
             }
@@ -204,14 +216,16 @@ public enum AudioMetadata {
         return nil
     }
 
-    private static func firstArtwork(_ items: [AVMetadataItem]) -> Data? {
+    private static func firstArtwork(_ items: [AVMetadataItem]) async -> Data? {
         for item in items {
             let isArt = item.identifier == .commonIdentifierArtwork
                 || item.identifier == .iTunesMetadataCoverArt
                 || item.commonKey == .commonKeyArtwork
             guard isArt else { continue }
-            if let data = item.dataValue, !data.isEmpty { return data }
-            if let data = item.value as? Data, !data.isEmpty { return data }
+            if let data = try? await item.load(.dataValue), !data.isEmpty { return data }
+            if let value = try? await item.load(.value), let data = value as? Data, !data.isEmpty {
+                return data
+            }
         }
         return nil
     }

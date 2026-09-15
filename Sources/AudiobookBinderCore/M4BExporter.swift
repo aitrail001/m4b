@@ -370,9 +370,7 @@ public struct M4BExporter: Sendable {
         let finishGroup = DispatchGroup()
         finishGroup.enter()
         input.markAsFinished()
-        var finishError: Error?
         writer.finishWriting {
-            finishError = writer.error
             finishGroup.leave()
         }
         guard try Self.wait(finishGroup, timeout: Self.finishWritingTimeout, cancellation: cancellation) else {
@@ -380,7 +378,7 @@ public struct M4BExporter: Sendable {
             throw BinderError.exportFailed("Timed out waiting for encode to finish")
         }
         if writer.status != .completed {
-            throw BinderError.exportFailed(finishError?.localizedDescription ?? "Encode did not complete")
+            throw BinderError.exportFailed(writer.error?.localizedDescription ?? "Encode did not complete")
         }
         return marks
     }
@@ -394,18 +392,7 @@ public struct M4BExporter: Sendable {
         timescale: Int32,
         cancellation: EncodeCancellation
     ) throws -> CMTime {
-        let loaded = DispatchSemaphore(value: 0)
-        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
-            loaded.signal()
-        }
-        guard try Self.wait(loaded, timeout: Self.assetLoadTimeout, cancellation: cancellation) else {
-            throw BinderError.exportFailed("Timed out loading \(asset.url.lastPathComponent)")
-        }
-        var tracksError: NSError?
-        guard asset.statusOfValue(forKey: "tracks", error: &tracksError) == .loaded,
-              let track = asset.tracks(withMediaType: .audio).first else {
-            throw BinderError.exportFailed(tracksError?.localizedDescription ?? "No audio track in \(asset.url.lastPathComponent)")
-        }
+        let track = try Self.loadAudioTrack(from: asset, cancellation: cancellation)
 
         let reader: AVAssetReader
         do {
@@ -508,6 +495,44 @@ public struct M4BExporter: Sendable {
     private func avMetadata(for chapters: [Chapter]) -> [AVMetadataItem] {
         _ = chapters
         return []
+    }
+
+    private static func loadAudioTrack(
+        from asset: AVURLAsset,
+        cancellation: EncodeCancellation
+    ) throws -> AVAssetTrack {
+        final class Box: @unchecked Sendable {
+            let asset: AVURLAsset
+            var result: Result<AVAssetTrack, Error>?
+            init(asset: AVURLAsset) { self.asset = asset }
+        }
+        let box = Box(asset: asset)
+        let loaded = DispatchSemaphore(value: 0)
+        Task {
+            defer { loaded.signal() }
+            do {
+                _ = try await box.asset.load(.duration)
+                let tracks = try await box.asset.loadTracks(withMediaType: .audio)
+                guard let track = tracks.first else {
+                    throw BinderError.exportFailed("No audio track in \(box.asset.url.lastPathComponent)")
+                }
+                box.result = .success(track)
+            } catch {
+                box.result = .failure(error)
+            }
+        }
+        guard try wait(loaded, timeout: assetLoadTimeout, cancellation: cancellation) else {
+            throw BinderError.exportFailed("Timed out loading \(asset.url.lastPathComponent)")
+        }
+        switch box.result {
+        case .success(let track):
+            return track
+        case .failure(let error):
+            if let binder = error as? BinderError { throw binder }
+            throw BinderError.exportFailed(error.localizedDescription)
+        case nil:
+            throw BinderError.exportFailed("Failed to load \(asset.url.lastPathComponent)")
+        }
     }
 
     private static func throwIfCancelled(_ cancellation: EncodeCancellation, writer: AVAssetWriter) throws {

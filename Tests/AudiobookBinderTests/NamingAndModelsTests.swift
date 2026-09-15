@@ -295,6 +295,23 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertNotEqual(line, BinderCopy.cliOutcomeLine(url: url, outcome: .cancelled))
     }
 
+    func testCLIReportsFailureForFailedAndPublishedUnverified() {
+        XCTAssertTrue(BinderCopy.cliReportsFailure(.failed("disk full")))
+        XCTAssertTrue(
+            BinderCopy.cliReportsFailure(.publishedUnverified(replaced: false, warning: "late hash"))
+        )
+        XCTAssertTrue(
+            BinderCopy.cliReportsFailure(.publishedUnverified(replaced: true, warning: "sidecar write failed"))
+        )
+    }
+
+    func testCLIReportsFailureIsFalseForSuccessfulAndCancelledOutcomes() {
+        XCTAssertFalse(BinderCopy.cliReportsFailure(.created))
+        XCTAssertFalse(BinderCopy.cliReportsFailure(.replaced))
+        XCTAssertFalse(BinderCopy.cliReportsFailure(.skippedExisting))
+        XCTAssertFalse(BinderCopy.cliReportsFailure(.cancelled))
+    }
+
     func testPlannedOutputsDisambiguatesSameTitleAuthorAndSanitizedNames() {
         let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
         let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)

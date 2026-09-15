@@ -136,7 +136,7 @@ enum CLI {
                 var anyFailed = false
                 for result in results {
                     print(BinderCopy.cliOutcomeLine(url: result.url, outcome: result.outcome))
-                    if case .failed = result.outcome {
+                    if BinderCopy.cliReportsFailure(result.outcome) {
                         anyFailed = true
                     }
                 }

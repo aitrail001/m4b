@@ -579,6 +579,15 @@ public enum BinderCopy {
         }
     }
 
+    public static func cliReportsFailure(_ outcome: ExportOutcome) -> Bool {
+        switch outcome {
+        case .failed, .publishedUnverified:
+            return true
+        case .created, .replaced, .skippedExisting, .cancelled:
+            return false
+        }
+    }
+
     private static func labeledReason(title: String, reason: String) -> String {
         let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         if title.isEmpty {

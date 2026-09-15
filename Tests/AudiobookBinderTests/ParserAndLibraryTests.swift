@@ -443,23 +443,67 @@ final class MP4AtomIOTests: XCTestCase {
         let dir = try TestSupport.tempDir("atom-32mib")
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("moov.mp4")
-        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
-        let writer = try FileHandle(forWritingTo: url)
-        try writer.write(contentsOf: MP4Box.u32(UInt32(advertised)) + MP4Box.fourcc("moov"))
-        try writer.truncate(atOffset: advertised)
-        try writer.close()
+        try Self.writeSparseAdvertisedMoov(at: url, advertised: advertised)
 
         let reader = try FileHandle(forReadingFrom: url)
         defer { try? reader.close() }
         let header = MP4AtomHeader(offset: 0, headerSize: 8, size: advertised, type: "moov")
         XCTAssertThrowsError(try MP4AtomIO.readAtom(header, from: reader)) { error in
-            guard case BinderError.exportFailed(let message) = error else {
-                return XCTFail("\(error)")
-            }
-            XCTAssertTrue(
-                message.localizedCaseInsensitiveContains("too large"),
-                "expected a size-budget error, got \(message)"
-            )
+            Self.assertAtomTooLarge(error)
+        }
+    }
+
+    func testReadAtomLoadsOverDefaultBudgetWithTaggingLimit() throws {
+        XCTAssertEqual(MP4AtomIO.maxMetadataAtomBytes, 8 * 1024 * 1024)
+        XCTAssertEqual(MP4AtomIO.maxTaggingAtomBytes, 64 * 1024 * 1024)
+
+        let moovSize = MP4AtomIO.maxMetadataAtomBytes + 64
+        XCTAssertGreaterThan(moovSize, MP4AtomIO.maxMetadataAtomBytes)
+        XCTAssertLessThan(moovSize, MP4AtomIO.maxTaggingAtomBytes)
+
+        let dir = try TestSupport.tempDir("atom-tag-budget")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("padded.m4b")
+        try M4BInspectorTests.writeSparseTaggableMP4(at: url, moovSize: moovSize)
+
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let headers = try MP4AtomIO.readHeadersComplete(of: url)
+        XCTAssertEqual(headers.map(\.type), ["ftyp", "moov", "mdat"])
+        let moov = try XCTUnwrap(headers.first(where: { $0.type == "moov" }))
+        XCTAssertEqual(moov.size, UInt64(moovSize))
+
+        XCTAssertThrowsError(try MP4AtomIO.readAtom(moov, from: reader)) { error in
+            Self.assertAtomTooLarge(error)
+        }
+
+        let loaded = try MP4AtomIO.readAtom(
+            moov,
+            from: reader,
+            maxBytes: MP4AtomIO.maxTaggingAtomBytes
+        )
+        XCTAssertEqual(loaded.count, moovSize)
+        XCTAssertEqual(MP4AtomIO.readFourCC(loaded, 4), "moov")
+        let kids = try MP4AtomIO.parseHeadersComplete(loaded, range: 8..<loaded.count)
+        XCTAssertEqual(kids.map(\.type), ["mvhd", "free"])
+    }
+
+    func testReadAtomRejectsAboveTaggingBudget() throws {
+        let advertised: UInt64 = 128 * 1024 * 1024
+        XCTAssertGreaterThan(advertised, UInt64(MP4AtomIO.maxTaggingAtomBytes))
+
+        let dir = try TestSupport.tempDir("atom-128mib")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("moov.mp4")
+        try Self.writeSparseAdvertisedMoov(at: url, advertised: advertised)
+
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let header = MP4AtomHeader(offset: 0, headerSize: 8, size: advertised, type: "moov")
+        XCTAssertThrowsError(
+            try MP4AtomIO.readAtom(header, from: reader, maxBytes: MP4AtomIO.maxTaggingAtomBytes)
+        ) { error in
+            Self.assertAtomTooLarge(error)
         }
     }
 
@@ -626,4 +670,28 @@ final class MP4AtomIOTests: XCTestCase {
         mdat.append(Data(count: 4))
         return moov + mdat
     }
+
+    static func assertAtomTooLarge(_ error: Error, file: StaticString = #filePath, line: UInt = #line) {
+        guard case BinderError.exportFailed(let message) = error else {
+            return XCTFail("\(error)", file: file, line: line)
+        }
+        XCTAssertTrue(
+            message.localizedCaseInsensitiveContains("too large"),
+            "expected a size-budget error, got \(message)",
+            file: file,
+            line: line
+        )
+    }
+
+    static func writeSparseAdvertisedMoov(at url: URL, advertised: UInt64) throws {
+        guard let advertised32 = UInt32(exactly: advertised) else {
+            throw BinderError.exportFailed("advertised moov size does not fit in 32 bits")
+        }
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let writer = try FileHandle(forWritingTo: url)
+        try writer.write(contentsOf: MP4Box.u32(advertised32) + MP4Box.fourcc("moov"))
+        try writer.truncate(atOffset: advertised)
+        try writer.close()
+    }
+
 }

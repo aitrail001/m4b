@@ -70,7 +70,11 @@ public enum MP4AudiobookTagger {
             guard let moovHeader = top.first(where: { $0.type == "moov" }) else {
                 throw BinderError.exportFailed("No moov atom in exported audio")
             }
-            moovData = try MP4AtomIO.readAtom(moovHeader, from: input)
+            moovData = try MP4AtomIO.readAtom(
+                moovHeader,
+                from: input,
+                maxBytes: MP4AtomIO.maxTaggingAtomBytes
+            )
         } catch {
             try? input.close()
             throw error

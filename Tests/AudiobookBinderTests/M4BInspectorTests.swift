@@ -228,6 +228,32 @@ final class M4BInspectorTests: XCTestCase {
         try assertApplyThrowsLeavesOriginalAndNoScratch(url: url, original: original, fileName: "moov-budget.m4a")
     }
 
+    func testApplySucceedsWhenMoovExceedsDefaultMetadataBudget() throws {
+        let moovSize = MP4AtomIO.maxMetadataAtomBytes + 64
+        XCTAssertGreaterThan(moovSize, MP4AtomIO.maxMetadataAtomBytes)
+        XCTAssertLessThan(moovSize, MP4AtomIO.maxTaggingAtomBytes)
+
+        let dir = try TestSupport.tempDir("tag-large-moov")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("long.m4a")
+        try Self.writeSparseTaggableMP4(at: url, moovSize: moovSize)
+
+        XCTAssertNoThrow(
+            try MP4AudiobookTagger.apply(
+                to: url,
+                tags: AudiobookTags(title: "Tagged", author: "Author"),
+                chapters: []
+            )
+        )
+        let tagged = try Data(contentsOf: url)
+        XCTAssertGreaterThan(tagged.count, 0)
+        let atoms = try MP4AtomIO.parseHeadersComplete(tagged, range: 0..<tagged.count)
+        XCTAssertTrue(atoms.contains(where: { $0.type == "moov" }))
+        XCTAssertNotNil(tagged.range(of: MP4Box.fourcc("©nam")))
+        let leftovers = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        XCTAssertEqual(leftovers.map(\.lastPathComponent), ["long.m4a"])
+    }
+
     func testApplyThrowsAndLeavesOriginalWhenTrakHasTrailingTruncatedChild() throws {
         let dir = try TestSupport.tempDir("tag-trak-trunc")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -313,6 +339,33 @@ final class M4BInspectorTests: XCTestCase {
             nested = MP4Box.box("udta", meta + truncatedTail)
         }
         return wrapTaggableFile(moovPayload: validMvhdV0() + nested)
+    }
+
+    static func writeSparseTaggableMP4(at url: URL, moovSize: Int) throws {
+        let ftyp = MP4Box.box(
+            "ftyp",
+            MP4Box.fourcc("M4A ") + MP4Box.u32(0) + MP4Box.fourcc("M4A ") + MP4Box.fourcc("mp42")
+        )
+        let mvhd = validMvhdV0()
+        let freeSize = moovSize - 8 - mvhd.count
+        guard freeSize >= 8,
+              let moovSize32 = UInt32(exactly: moovSize),
+              let freeSize32 = UInt32(exactly: freeSize)
+        else {
+            throw BinderError.exportFailed("padded moov fixture sizes are invalid")
+        }
+
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.write(contentsOf: ftyp)
+        try handle.write(contentsOf: MP4Box.u32(moovSize32) + MP4Box.fourcc("moov"))
+        try handle.write(contentsOf: mvhd)
+        try handle.write(contentsOf: MP4Box.u32(freeSize32) + MP4Box.fourcc("free"))
+        let moovEnd = UInt64(ftyp.count + moovSize)
+        try handle.truncate(atOffset: moovEnd)
+        try handle.seek(toOffset: moovEnd)
+        try handle.write(contentsOf: MP4Box.box("mdat", Data(count: 8)))
+        try handle.close()
     }
 
     static func wrapTaggableFile(moovPayload: Data) -> Data {

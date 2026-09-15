@@ -68,8 +68,11 @@ enum MP4AtomIO {
     ]
     static let maxHeadersPerParse = 10_000
     static let ioChunkSize = 1_048_576
-    /// Largest atom `readAtom` will allocate (moov / metadata). Larger headers throw.
+    /// Largest atom `readAtom` will allocate by default (untrusted inspect / general load).
     static let maxMetadataAtomBytes = 8 * 1024 * 1024
+    /// Largest `moov` the audiobook tagger will load from the encoder's own just-written file.
+    /// Sized for AAC sample-size tables on long books; not for inspect or sidecar loads.
+    static let maxTaggingAtomBytes = 64 * 1024 * 1024
     /// Largest Nero `chpl` atom the inspector will load.
     static let maxChapterAtomBytes = 1 * 1024 * 1024
     /// Max nested container depth when walking a file for a specific atom.

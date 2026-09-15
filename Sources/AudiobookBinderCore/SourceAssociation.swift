@@ -70,14 +70,23 @@ public enum SourceAssociation: Sendable {
     /// Snapshot each included source before encode. Dest aliases are skipped.
     /// Throws if a remaining source is not a regular file with a digest.
     public static func capture(_ urls: [URL], dest: URL) throws -> [Entry] {
+        try capture(urls, dest: dest, cancellation: nil)
+    }
+
+    static func capture(
+        _ urls: [URL],
+        dest: URL,
+        cancellation: EncodeCancellation?
+    ) throws -> [Entry] {
         var entries: [Entry] = []
         var seen = Set<String>()
         for url in urls {
+            try cancellation?.checkCancelled()
             let standardized = url.standardizedFileURL
             if M4BExporter.isSameFileURL(standardized, dest) { continue }
             let key = standardized.path
             guard seen.insert(key).inserted else { continue }
-            guard let entry = captureEntry(standardized) else {
+            guard let entry = try captureEntry(standardized, cancellation: cancellation) else {
                 throw BinderError.exportFailed(
                     "Cannot capture source provenance for \(standardized.lastPathComponent)"
                 )
@@ -132,7 +141,7 @@ public enum SourceAssociation: Sendable {
             if M4BExporter.isSameFileURL(standardized, dest) { continue }
             let key = standardized.path
             guard seen.insert(key).inserted else { continue }
-            if let entry = captureEntry(standardized) {
+            if let entry = try? captureEntry(standardized, cancellation: nil) {
                 entries.append(entry)
             }
         }
@@ -152,13 +161,17 @@ public enum SourceAssociation: Sendable {
 
     /// Copy captured sources to a temp directory and re-hash each copy.
     /// Throws if a snapshot digest does not match the capture.
-    static func stageEncodeSnapshots(_ captured: [Entry]) throws -> (directory: URL, remap: [String: URL]) {
+    static func stageEncodeSnapshots(
+        _ captured: [Entry],
+        cancellation: EncodeCancellation? = nil
+    ) throws -> (directory: URL, remap: [String: URL]) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("m4b-encode-src-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var remap: [String: URL] = [:]
             for (index, entry) in captured.enumerated() {
+                try cancellation?.checkCancelled()
                 guard let expected = entry.sha256, !expected.isEmpty else {
                     throw BinderError.exportFailed(
                         "Cannot snapshot source provenance for \(URL(fileURLWithPath: entry.path).lastPathComponent)"
@@ -171,7 +184,7 @@ public enum SourceAssociation: Sendable {
                 } catch {
                     throw BinderError.exportFailed("Cannot snapshot \(live.lastPathComponent)")
                 }
-                guard let digest = sha256Hex(of: snapshot), !digest.isEmpty,
+                guard let digest = try sha256Hex(of: snapshot, cancellation: cancellation), !digest.isEmpty,
                       digest.caseInsensitiveCompare(expected) == .orderedSame else {
                     throw BinderError.exportFailed("Source changed after capture: \(live.lastPathComponent)")
                 }
@@ -195,27 +208,48 @@ public enum SourceAssociation: Sendable {
     }
 
     static func sha256Hex(of url: URL) -> String? {
+        try? sha256Hex(of: url, cancellation: nil)
+    }
+
+    static func sha256Hex(of url: URL, cancellation: EncodeCancellation?) throws -> String? {
         let resolved = url.resolvingSymlinksInPath()
+        let onMainThread = Thread.isMainThread
         do {
+            try cancellation?.checkCancelled()
             let handle = try FileHandle(forReadingFrom: resolved)
             defer { try? handle.close() }
             var hasher = SHA256()
+            var bytes = 0
             while true {
+                try cancellation?.checkCancelled()
+                DigestProbe.noteChunk()
+                try cancellation?.checkCancelled()
                 let chunk = try handle.read(upToCount: 65_536)
                 guard let chunk, !chunk.isEmpty else { break }
+                bytes += chunk.count
                 hasher.update(data: chunk)
             }
+            DigestProbe.record(url: url, bytes: bytes, onMainThread: onMainThread)
             return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        } catch let error as BinderError {
+            if case .cancelled = error { throw error }
+            return nil
+        } catch is CancellationError {
+            throw BinderError.cancelled
         } catch {
             return nil
         }
     }
 
-    private static func captureEntry(_ url: URL) -> Entry? {
+    private static func captureEntry(
+        _ url: URL,
+        cancellation: EncodeCancellation? = nil
+    ) throws -> Entry? {
+        try cancellation?.checkCancelled()
         guard let identity = FileIdentity.readResolved(from: url), !identity.isDirectory else {
             return nil
         }
-        guard let digest = sha256Hex(of: url), !digest.isEmpty else {
+        guard let digest = try sha256Hex(of: url, cancellation: cancellation), !digest.isEmpty else {
             return nil
         }
         return Entry(

@@ -1393,6 +1393,125 @@ final class AudioExportPlaybackTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testCleanupControlsPathDoesNotHashOnMainActor() {
+        DigestProbe.reset()
+        DigestProbe.setEnabled(true)
+        defer { DigestProbe.reset() }
+
+        XCTAssertTrue(Thread.isMainThread)
+        let sample = URL(fileURLWithPath: "/tmp/r4-03-a.mp3")
+        let cachedAllow = SourceCleanupAuthorization(allowed: true, sources: [sample, sample])
+        let cachedDeny = SourceCleanupAuthorization(allowed: false, sources: [sample], reason: "no")
+
+        XCTAssertEqual(
+            SourceCleanup.controlsState(canCleanupSources: true, isBuilding: false, cached: nil),
+            .pending
+        )
+        XCTAssertEqual(
+            SourceCleanup.controlsState(canCleanupSources: true, isBuilding: true, cached: cachedAllow),
+            .hidden
+        )
+        XCTAssertEqual(
+            SourceCleanup.controlsState(canCleanupSources: false, isBuilding: false, cached: cachedAllow),
+            .hidden
+        )
+        XCTAssertEqual(
+            SourceCleanup.controlsState(canCleanupSources: true, isBuilding: false, cached: cachedDeny),
+            .hidden
+        )
+        XCTAssertEqual(
+            SourceCleanup.controlsState(canCleanupSources: true, isBuilding: false, cached: cachedAllow),
+            .allowed(sourceCount: 2)
+        )
+
+        let snap = DigestProbe.snapshot()
+        XCTAssertEqual(snap.callCount, 0)
+        XCTAssertEqual(snap.bytesHashed, 0)
+        XCTAssertEqual(snap.mainThreadCallCount, 0)
+        XCTAssertEqual(snap.mainThreadBytes, 0)
+    }
+
+    func testCleanupPerformHashWorkIsLinearInSourceCount() throws {
+        let measured3 = try measureCleanupHashes(sourceCount: 3)
+        let measured6 = try measureCleanupHashes(sourceCount: 6)
+
+        XCTAssertTrue(measured3.didFinish)
+        XCTAssertTrue(measured6.didFinish)
+        XCTAssertEqual(measured3.destCalls, 1, "dest SHA-256 must run O(1) per perform, not per deletion")
+        XCTAssertEqual(measured6.destCalls, 1, "dest SHA-256 must run O(1) per perform, not per deletion")
+        XCTAssertEqual(measured3.destCalls, measured6.destCalls)
+
+        XCTAssertLessThanOrEqual(measured3.calls, 2 * 3 + 2)
+        XCTAssertLessThanOrEqual(measured6.calls, 2 * 6 + 2)
+        XCTAssertLessThan(
+            measured6.calls,
+            27,
+            "N=6 must stay far below the old N(N+3)/2 source-hash schedule (27)"
+        )
+        XCTAssertLessThanOrEqual(measured6.calls, measured3.calls * 2 + 4)
+        XCTAssertLessThanOrEqual(measured6.bytes, measured3.bytes * 2 + 64)
+    }
+
+    func testExportCancelDuringSourceHashDoesNotPublish() async throws {
+        let dir = try TestSupport.tempDir("export-cancel-source-hash")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        var chapters: [Chapter] = []
+        for index in 1...6 {
+            let url = dir.appendingPathComponent(String(format: "ch%02d.wav", index))
+            try TestSupport.writeSilenceWAV(to: url, seconds: 2)
+            let info = AudioMetadata.fileInfo(of: url)
+            chapters.append(
+                Chapter(
+                    url: url,
+                    index: index,
+                    title: "Ch\(index)",
+                    duration: info.duration,
+                    fileSize: 1,
+                    audioInfo: info.audioInfo
+                )
+            )
+        }
+        let book = Audiobook(folder: dir, title: "CancelHash", author: "A", chapters: chapters)
+        let dest = dir.appendingPathComponent("out.m4b")
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: dir)
+
+        DigestProbe.reset()
+        DigestProbe.setEnabled(true)
+        defer { DigestProbe.reset() }
+
+        let gate = ExportCancelGate()
+        DigestProbe.onChunk = { gate.requestCancel() }
+
+        let task = Task {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+        }
+        gate.attach(task)
+
+        do {
+            try await task.value
+            XCTFail("expected cancelled")
+        } catch let error as BinderError {
+            guard case .cancelled = error else { return XCTFail("\(error)") }
+        } catch is CancellationError {}
+
+        XCTAssertTrue(gate.didRequest, "cancel must fire at the first hash chunk")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path), "dest must not be published")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sidecar.path),
+            "must not write a new source sidecar"
+        )
+        XCTAssertNil(SourceAssociation.load(inBookFolder: dir))
+
+        let snap = DigestProbe.snapshot()
+        XCTAssertLessThan(
+            snap.callCount,
+            6,
+            "cancel must not finish hashing every source (completed hashes=\(snap.callCount))"
+        )
+    }
+
     func testExportSourcePersistFailureInvalidatesSidecarAndDeniesCleanup() async throws {
         let dir = try TestSupport.tempDir("source-persist-fail")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -1734,6 +1853,51 @@ final class AudioExportPlaybackTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
     }
 
+    private func measureCleanupHashes(sourceCount: Int) throws -> (
+        calls: Int,
+        bytes: Int,
+        destCalls: Int,
+        didFinish: Bool
+    ) {
+        let dir = try TestSupport.tempDir("cleanup-linear-\(sourceCount)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let dest = dir.appendingPathComponent("book.m4b")
+        try Data(count: 128).write(to: dest)
+        var sources: [URL] = []
+        var chapters: [Chapter] = []
+        var marks: [ChapterMark] = []
+        for index in 1...sourceCount {
+            let url = dir.appendingPathComponent(String(format: "%02d.mp3", index))
+            try Data(count: 64).write(to: url)
+            sources.append(url)
+            chapters.append(TestSupport.dummyChapter(index: index, url: url, duration: 10))
+            marks.append(ChapterMark(start: Double((index - 1) * 10), duration: 10, title: "Ch\(index)"))
+        }
+
+        var book = TestSupport.dummyBook(folder: dir.path, chapters: chapters)
+        book.existingM4BURL = dest
+        XCTAssertTrue(SourceAssociation.record(sources, dest: dest, inBookFolder: dir))
+        let inspection = M4BInspection.capturingIdentity(
+            url: dest,
+            duration: Double(sourceCount * 10),
+            chapters: marks,
+            bookID: book.id
+        )
+
+        DigestProbe.reset()
+        DigestProbe.setEnabled(true)
+        defer { DigestProbe.reset() }
+        let result = SourceCleanup.perform(book: book, inspection: inspection, isBuilding: false)
+        let snap = DigestProbe.snapshot()
+        return (
+            calls: snap.callCount,
+            bytes: snap.bytesHashed,
+            destCalls: DigestProbe.callCount(for: dest),
+            didFinish: result.didFinish
+        )
+    }
+
     private func makeRecordedCleanupFixture() throws -> RecordedCleanupFixture {
         let dir = try TestSupport.tempDir("export-cleanup-auth")
         let dest = dir.appendingPathComponent("book.m4b")
@@ -1848,6 +2012,38 @@ private struct RecordedCleanupFixture {
 
     func tearDown() {
         try? FileManager.default.removeItem(at: dir)
+    }
+}
+
+private final class ExportCancelGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Error>?
+    private var pending = false
+    private var requested = false
+
+    var didRequest: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return requested
+    }
+
+    func attach(_ task: Task<Void, Error>) {
+        lock.lock()
+        self.task = task
+        let shouldCancel = pending
+        lock.unlock()
+        if shouldCancel {
+            task.cancel()
+        }
+    }
+
+    func requestCancel() {
+        lock.lock()
+        requested = true
+        pending = true
+        let task = self.task
+        lock.unlock()
+        task?.cancel()
     }
 }
 

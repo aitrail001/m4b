@@ -533,6 +533,7 @@ struct ChaptersCompareSection: View {
     @State private var inspecting = false
     @State private var confirmCleanup = false
     @State private var cleanupError: String?
+    @State private var cleanupAuth: SourceCleanupAuthorization?
 
     private var m4bURL: URL? { appState.boundURL(for: book) }
     private var inspectTaskID: String {
@@ -541,6 +542,23 @@ struct ChaptersCompareSection: View {
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         return "\(book.id.uuidString)|\(url.path)|\(size)|\(mtime)"
+    }
+    private var cleanupVerifyTaskID: String {
+        guard let inspection, book.canCleanupSources else {
+            return "idle|\(book.id.uuidString)"
+        }
+        let destGen = m4bURL.flatMap { SourceCleanup.destGeneration(of: $0) } ?? ""
+        let sources = book.chapters
+            .map { "\($0.url.standardizedFileURL.path)|\($0.included)" }
+            .joined(separator: ";")
+        return [
+            book.id.uuidString,
+            inspection.url.path,
+            inspection.identityGeneration ?? "",
+            String(inspection.fileSize),
+            destGen,
+            sources
+        ].joined(separator: "|")
     }
     private var showOriginal: Bool { !book.chapters.isEmpty }
     private var showBound: Bool { m4bURL != nil }
@@ -584,8 +602,8 @@ struct ChaptersCompareSection: View {
                     .font(.system(size: 12))
                     .foregroundStyle(Color.red.opacity(0.85))
             }
-            if book.canCleanupSources, let inspection {
-                cleanupControls(inspection: inspection)
+            if book.canCleanupSources {
+                cleanupControls()
             }
         }
         .task(id: inspectTaskID) {
@@ -593,9 +611,13 @@ struct ChaptersCompareSection: View {
                 inspection = nil
                 boundChapters = []
                 fileChapter = nil
+                cleanupAuth = nil
                 return
             }
             await inspect()
+        }
+        .task(id: cleanupVerifyTaskID) {
+            await verifyCleanupAuthorization()
         }
         .confirmationDialog(
             "Move original audio files to Trash?",
@@ -838,19 +860,21 @@ struct ChaptersCompareSection: View {
     }
 
     @ViewBuilder
-    private func cleanupControls(inspection: M4BInspection) -> some View {
-        let auth = SourceCleanup.authorization(
-            book: book,
-            inspection: inspection,
-            isBuilding: appState.isBuilding
-        )
-        if auth.allowed {
-            Button("Move \(auth.sources.count) original audio files to Trash") {
+    private func cleanupControls() -> some View {
+        switch SourceCleanup.controlsState(
+            canCleanupSources: book.canCleanupSources,
+            isBuilding: appState.isBuilding,
+            cached: cleanupAuth
+        ) {
+        case .allowed(let count):
+            Button("Move \(count) original audio files to Trash") {
                 confirmCleanup = true
             }
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(BinderTheme.leather)
+        case .hidden, .pending:
+            EmptyView()
         }
     }
 
@@ -887,23 +911,54 @@ struct ChaptersCompareSection: View {
         )
     }
 
+    private func verifyCleanupAuthorization() async {
+        cleanupAuth = nil
+        guard let inspection, book.canCleanupSources else { return }
+        let bookSnapshot = book
+        let inspectionSnapshot = inspection
+        let result = await Task.detached(priority: .utility) {
+            SourceCleanup.authorization(
+                book: bookSnapshot,
+                inspection: inspectionSnapshot,
+                isBuilding: false
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        cleanupAuth = result
+    }
+
     private func performCleanup() {
         guard let inspection else { return }
-        let result = SourceCleanup.perform(
-            book: book,
-            inspection: inspection,
-            isBuilding: appState.isBuilding
-        )
-        if result.didFinish {
-            appState.applyCleanup(to: book.id, inspection: inspection)
-            cleanupError = nil
-            return
+        let bookSnapshot = book
+        let inspectionSnapshot = inspection
+        let isBuilding = appState.isBuilding
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                SourceCleanup.perform(
+                    book: bookSnapshot,
+                    inspection: inspectionSnapshot,
+                    isBuilding: isBuilding
+                )
+            }.value
+            if result.didFinish {
+                appState.applyCleanup(to: book.id, inspection: inspectionSnapshot)
+                cleanupError = nil
+                cleanupAuth = SourceCleanupAuthorization(allowed: false, sources: [])
+                return
+            }
+            if !result.moved.isEmpty {
+                let leftover = SourceCleanup.reconcile(
+                    chapters: bookSnapshot.chapters,
+                    moved: result.moved
+                )
+                appState.applyPartialCleanup(
+                    to: book.id,
+                    inspection: inspectionSnapshot,
+                    remainingChapters: leftover
+                )
+            }
+            cleanupError = result.error
         }
-        if !result.moved.isEmpty {
-            let leftover = SourceCleanup.reconcile(chapters: book.chapters, moved: result.moved)
-            appState.applyPartialCleanup(to: book.id, inspection: inspection, remainingChapters: leftover)
-        }
-        cleanupError = result.error
     }
 }
 

@@ -17,12 +17,14 @@ package final class EncodeCancellation: @unchecked Sendable {
 
     package var isCancelled: Bool {
         lock.lock()
-        defer { lock.unlock() }
-        return cancelledFlag
+        let flag = cancelledFlag
+        lock.unlock()
+        return flag || Task.isCancelled
     }
 
     package func checkCancelled() throws {
         if isCancelled {
+            cancel()
             throw BinderError.cancelled
         }
     }

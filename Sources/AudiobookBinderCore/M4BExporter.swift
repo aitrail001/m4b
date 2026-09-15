@@ -55,19 +55,26 @@ public struct M4BExporter: Sendable {
 
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        progress?(0.01, "Preparing \(book.title)")
-
-        let chapters = try Self.chaptersForExport(book.chapters, folder: book.folder)
-        let captured = try SourceAssociation.capture(chapters.map(\.url), dest: outputURL)
-        guard !captured.isEmpty else {
-            throw BinderError.exportFailed("Cannot capture source provenance")
-        }
-        afterSourceCapture?()
-        let snapshots = try SourceAssociation.stageEncodeSnapshots(captured)
-        defer { SourceAssociation.removeEncodeSnapshots(at: snapshots.directory) }
-        let encodeChapters = Self.chaptersForEncode(chapters, snapshots: snapshots.remap)
         let cancellation = EncodeCancellation()
         try await withTaskCancellationHandler {
+            progress?(0.01, "Preparing \(book.title)")
+
+            let chapters = try Self.chaptersForExport(book.chapters, folder: book.folder)
+            let captured = try SourceAssociation.capture(
+                chapters.map(\.url),
+                dest: outputURL,
+                cancellation: cancellation
+            )
+            guard !captured.isEmpty else {
+                throw BinderError.exportFailed("Cannot capture source provenance")
+            }
+            afterSourceCapture?()
+            let snapshots = try SourceAssociation.stageEncodeSnapshots(
+                captured,
+                cancellation: cancellation
+            )
+            defer { SourceAssociation.removeEncodeSnapshots(at: snapshots.directory) }
+            let encodeChapters = Self.chaptersForEncode(chapters, snapshots: snapshots.remap)
             let marks = try await encode(
                 chapters: encodeChapters,
                 to: tempURL,
@@ -97,7 +104,10 @@ public struct M4BExporter: Sendable {
             }
 
             try cancellation.checkCancelled()
-            guard let stagingDigest = SourceAssociation.sha256Hex(of: tempURL), !stagingDigest.isEmpty else {
+            guard let stagingDigest = try SourceAssociation.sha256Hex(
+                of: tempURL,
+                cancellation: cancellation
+            ), !stagingDigest.isEmpty else {
                 throw BinderError.exportFailed("Could not hash encoded output")
             }
             try Self.publish(
@@ -111,7 +121,10 @@ public struct M4BExporter: Sendable {
                 SourceAssociation.invalidate(inBookFolder: book.folder)
                 throw BinderError.exportFailed("Could not record published output identity")
             }
-            guard let publishedDigest = SourceAssociation.sha256Hex(of: outputURL),
+            guard let publishedDigest = try SourceAssociation.sha256Hex(
+                of: outputURL,
+                cancellation: cancellation
+            ),
                   !publishedDigest.isEmpty,
                   publishedDigest.caseInsensitiveCompare(stagingDigest) == .orderedSame
             else {

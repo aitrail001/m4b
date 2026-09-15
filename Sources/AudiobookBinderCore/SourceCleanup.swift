@@ -12,6 +12,13 @@ public struct SourceCleanupAuthorization: Equatable, Sendable {
     }
 }
 
+/// Cheap view-body decision. Never hashes; only reads a cached result.
+public enum SourceCleanupControlsState: Equatable, Sendable {
+    case hidden
+    case pending
+    case allowed(sourceCount: Int)
+}
+
 public struct SourceCleanupResult: Equatable, Sendable {
     public var moved: [URL]
     public var remaining: [URL]
@@ -30,6 +37,20 @@ public struct SourceCleanupResult: Equatable, Sendable {
 /// still this book's bound file, recorded source identity still matches, and
 /// neither dest nor sources have drifted since export/inspect.
 public enum SourceCleanup {
+    /// View-body helper: cached/pending/cheap guards only. Does not hash.
+    public static func controlsState(
+        canCleanupSources: Bool,
+        isBuilding: Bool,
+        cached: SourceCleanupAuthorization?
+    ) -> SourceCleanupControlsState {
+        guard canCleanupSources, !isBuilding else { return .hidden }
+        guard let cached else { return .pending }
+        if cached.allowed {
+            return .allowed(sourceCount: cached.sources.count)
+        }
+        return .hidden
+    }
+
     public static func authorization(
         book: Audiobook,
         inspection: M4BInspection,
@@ -82,7 +103,8 @@ public enum SourceCleanup {
         return SourceCleanupAuthorization(allowed: true, sources: sources)
     }
 
-    /// Re-authorizes immediately, then trashes one file at a time.
+    /// One bulk verification, then a last-moment check of only the file about to
+    /// be trashed. Dest is re-hashed only if its generation token changes.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -92,21 +114,40 @@ public enum SourceCleanup {
         guard initial.allowed else {
             return SourceCleanupResult(moved: [], remaining: initial.sources, error: initial.reason)
         }
+        guard let dest = book.existingM4BURL,
+              let document = SourceAssociation.loadDocument(inBookFolder: book.folder)
+        else {
+            return SourceCleanupResult(
+                moved: [],
+                remaining: initial.sources,
+                error: "Cannot verify sources: missing export provenance."
+            )
+        }
 
+        var destToken = destGeneration(of: dest)
         var moved: [URL] = []
         var remaining = initial.sources
 
         while !remaining.isEmpty {
-            let auth = authorization(
+            if let reason = destStillAuthorized(
+                dest: dest,
                 book: book,
                 inspection: inspection,
                 isBuilding: isBuilding,
-                alreadyMoved: moved
-            )
-            guard auth.allowed else {
-                return SourceCleanupResult(moved: moved, remaining: remaining, error: auth.reason)
+                document: document,
+                destToken: &destToken
+            ) {
+                return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
             }
             let next = remaining[0]
+            if let reason = verifySingleRecordedSource(
+                next,
+                dest: dest,
+                bookFolder: book.folder,
+                document: document
+            ) {
+                return SourceCleanupResult(moved: moved, remaining: remaining, error: reason)
+            }
             do {
                 try FileManager.default.trashItem(at: next, resultingItemURL: nil)
                 moved.append(next)
@@ -184,6 +225,78 @@ public enum SourceCleanup {
         guard let document = SourceAssociation.loadDocument(inBookFolder: book.folder) else {
             return "Cannot verify sources: missing export provenance."
         }
+        if let reason = verifyRecordedDestination(dest: dest, document: document) {
+            return reason
+        }
+        for entry in document.sources {
+            let url = entry.url(relativeTo: book.folder)
+            if refersToSameFile(url, dest) { continue }
+            if alreadyMoved.contains(where: { refersToSameFile($0, url) }) { continue }
+            if let reason = verifyLiveSource(url: url, entry: entry) {
+                return reason
+            }
+        }
+        return nil
+    }
+
+    /// Cheap dest/inspection guards, plus dest digest only when generation changed.
+    private static func destStillAuthorized(
+        dest: URL,
+        book: Audiobook,
+        inspection: M4BInspection,
+        isBuilding: Bool,
+        document: SourceAssociation.Document,
+        destToken: inout String?
+    ) -> String? {
+        if isBuilding {
+            return "Cannot trash sources while a build is running."
+        }
+        if let inspectionBookID = inspection.bookID, inspectionBookID != book.id {
+            return "Inspection is for a different book."
+        }
+        guard inspection.identityVerified else {
+            return "Inspection is not a stable snapshot of the bound file."
+        }
+        guard refersToSameFile(dest, inspection.url) else {
+            return "Inspection is not this book's bound file."
+        }
+        guard let live = FileIdentity.read(from: dest), !live.isDirectory else {
+            return "Bound .m4b is missing or is a folder."
+        }
+        guard live.matches(inspection) else {
+            return "Bound .m4b changed since it was inspected."
+        }
+        let liveToken = live.generationToken()
+        if liveToken != destToken {
+            if let reason = verifyRecordedDestination(dest: dest, document: document) {
+                return reason
+            }
+            destToken = liveToken
+        }
+        return nil
+    }
+
+    private static func verifySingleRecordedSource(
+        _ url: URL,
+        dest: URL,
+        bookFolder: URL,
+        document: SourceAssociation.Document
+    ) -> String? {
+        if refersToSameFile(url, dest) {
+            return "Cannot verify sources: missing export provenance."
+        }
+        guard let entry = document.sources.first(where: {
+            refersToSameFile($0.url(relativeTo: bookFolder), url)
+        }) else {
+            return "Cannot verify sources: missing export provenance."
+        }
+        return verifyLiveSource(url: url, entry: entry)
+    }
+
+    private static func verifyRecordedDestination(
+        dest: URL,
+        document: SourceAssociation.Document
+    ) -> String? {
         guard let recordedDest = document.destinationIdentity else {
             return "Cannot verify sources: missing export provenance."
         }
@@ -200,31 +313,32 @@ public enum SourceCleanup {
         else {
             return "Bound .m4b is not the file recorded at export."
         }
-        for entry in document.sources {
-            let url = entry.url(relativeTo: book.folder)
-            if refersToSameFile(url, dest) { continue }
-            if alreadyMoved.contains(where: { refersToSameFile($0, url) }) { continue }
+        return nil
+    }
 
-            var isDirectory: ObjCBool = false
-            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            if !exists {
-                return "A source file is missing since export."
-            }
-            if isDirectory.boolValue || !entry.isRegularFile {
-                return "A source file is no longer a regular file."
-            }
-            guard let live = FileIdentity.readResolved(from: url) else {
-                return "Cannot read a source file's identity."
-            }
-            guard live.matchesCaptured(entry) else {
-                return "Source files changed since they were bound."
-            }
-            guard let expectedDigest = entry.sha256, !expectedDigest.isEmpty,
-                  let liveDigest = SourceAssociation.sha256Hex(of: url),
-                  liveDigest.caseInsensitiveCompare(expectedDigest) == .orderedSame
-            else {
-                return "Source files changed since they were bound."
-            }
+    private static func verifyLiveSource(
+        url: URL,
+        entry: SourceAssociation.Entry
+    ) -> String? {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        if !exists {
+            return "A source file is missing since export."
+        }
+        if isDirectory.boolValue || !entry.isRegularFile {
+            return "A source file is no longer a regular file."
+        }
+        guard let live = FileIdentity.readResolved(from: url) else {
+            return "Cannot read a source file's identity."
+        }
+        guard live.matchesCaptured(entry) else {
+            return "Source files changed since they were bound."
+        }
+        guard let expectedDigest = entry.sha256, !expectedDigest.isEmpty,
+              let liveDigest = SourceAssociation.sha256Hex(of: url),
+              liveDigest.caseInsensitiveCompare(expectedDigest) == .orderedSame
+        else {
+            return "Source files changed since they were bound."
         }
         return nil
     }

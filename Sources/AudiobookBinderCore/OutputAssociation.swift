@@ -46,7 +46,8 @@ public enum OutputAssociation: Sendable {
         return dest
     }
 
-    public static func record(_ destination: URL, inBookFolder folder: URL) {
+    @discardableResult
+    public static func record(_ destination: URL, inBookFolder folder: URL) -> Bool {
         let sidecar = folder.appendingPathComponent(fileName)
         let dest = destination.standardizedFileURL
         guard hasM4BExtension(dest),
@@ -57,7 +58,7 @@ public enum OutputAssociation: Sendable {
         else {
             invalidate(sidecar)
             invalidateAuthority(inBookFolder: folder)
-            return
+            return false
         }
         let document = Document(
             associationID: existingAssociationID(for: folder, folderIdentity: folderIdentity) ?? UUID(),
@@ -72,16 +73,23 @@ public enum OutputAssociation: Sendable {
         guard let data = try? encoder.encode(document) else {
             invalidate(sidecar)
             invalidateAuthority(inBookFolder: folder)
-            return
+            return false
         }
         do {
             try data.write(to: sidecar, options: .atomic)
         } catch {
             invalidate(sidecar)
             invalidateAuthority(inBookFolder: folder)
-            return
+            return false
         }
-        writeAuthority(document)
+        _ = writeAuthority(document)
+        if let associated = load(inBookFolder: folder),
+           M4BExporter.isSameFileURL(associated, dest) {
+            return true
+        }
+        invalidate(sidecar)
+        invalidateAuthority(inBookFolder: folder)
+        return false
     }
 
     public static func isExistingRegularFile(_ url: URL) -> Bool {
@@ -415,9 +423,9 @@ public enum OutputAssociation: Sendable {
         return document
     }
 
-    private static func writeAuthority(_ document: Document) {
+    private static func writeAuthority(_ document: Document) -> Bool {
         AuthorityStore.withLock {
-            _ = persistAuthorityDocument(document)
+            persistAuthorityDocument(document)
         }
     }
 

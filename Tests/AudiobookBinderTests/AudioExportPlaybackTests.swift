@@ -1901,6 +1901,72 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar2.path))
     }
 
+    func testExportOutputAuthorityPersistFailureInvalidatesSidecarAndDeniesCleanup() async throws {
+        let dir = try TestSupport.tempDir("output-authority-persist-fail")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "OAPersistFail", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        let sidecar = dir.appendingPathComponent(OutputAssociation.fileName)
+        try Data("stale-output-record".utf8).write(to: sidecar)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
+
+        try await withUnwritableAuthorityStore {
+            do {
+                try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+                XCTFail("expected output association persist failure after publish")
+            } catch let error as BinderError {
+                guard case .publishedUnverified = error else { return XCTFail("\(error)") }
+            } catch {
+                XCTFail("\(error)")
+            }
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+            XCTAssertNil(OutputAssociation.load(inBookFolder: dir))
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: sidecar.path),
+                "older output sidecar must be invalidated when authority persist fails"
+            )
+            XCTAssertNil(SourceAssociation.load(inBookFolder: dir))
+
+            var bound = book
+            bound.existingM4BURL = dest
+            let inspection = await M4BInspector.inspect(dest, bookID: book.id)
+            XCTAssertFalse(
+                SourceCleanup.authorization(book: bound, inspection: inspection, isBuilding: false).allowed
+            )
+        }
+
+        let allDir = try TestSupport.tempDir("output-authority-persist-fail-all")
+        defer { try? FileManager.default.removeItem(at: allDir) }
+        let book2 = try makeSilenceBook(folder: allDir, title: "OAPersistFailAll", author: "A")
+        let out = allDir.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        try await withUnwritableAuthorityStore {
+            let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+            let results = try await M4BExporter(bitrate: 48_000).exportAll(books: [book2], settings: settings)
+            XCTAssertEqual(results.count, 1)
+            XCTAssertTrue(results[0].outcome.isPublished)
+            guard case .publishedUnverified(replaced: false, warning: let warning) = results[0].outcome else {
+                return XCTFail("expected publishedUnverified, got \(results[0].outcome)")
+            }
+            XCTAssertTrue(
+                warning.localizedCaseInsensitiveContains("output association"),
+                warning
+            )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
+            XCTAssertNil(OutputAssociation.load(inBookFolder: allDir))
+            XCTAssertNil(SourceAssociation.load(inBookFolder: allDir))
+
+            var bound2 = book2
+            bound2.existingM4BURL = results[0].url
+            let inspection2 = await M4BInspector.inspect(results[0].url, bookID: book2.id)
+            XCTAssertFalse(
+                SourceCleanup.authorization(book: bound2, inspection: inspection2, isBuilding: false).allowed
+            )
+        }
+    }
+
     func testExportFailureBeforePublishLeavesExistingSourceSidecar() async throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }
@@ -2182,6 +2248,19 @@ final class AudioExportPlaybackTests: XCTestCase {
         )
         let mdat = MP4Box.box("mdat", Data(count: MP4AtomIO.ioChunkSize + 64))
         return ftyp + MP4Box.box("moov", MP4Box.box("mvhd", mvhd)) + mdat
+    }
+
+    private func withUnwritableAuthorityStore(_ body: () async throws -> Void) async throws {
+        let parent = try TestSupport.tempDir("oa-auth-block")
+        let blocker = parent.appendingPathComponent("store")
+        try Data("not-a-directory".utf8).write(to: blocker)
+        let previous = OutputAssociation.authorityDirectoryOverride
+        OutputAssociation.authorityDirectoryOverride = blocker
+        defer {
+            OutputAssociation.authorityDirectoryOverride = previous
+            try? FileManager.default.removeItem(at: parent)
+        }
+        try await body()
     }
 
     private func assertSidecarLoadableOrInvalidated(folder: URL, dest: URL) throws {

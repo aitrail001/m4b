@@ -150,6 +150,10 @@ final class NamingAndModelsTests: XCTestCase {
             BinderError.publishedUnverified("Could not record source provenance").errorDescription,
             "Could not record source provenance"
         )
+        XCTAssertEqual(
+            BinderError.publishedUnverified("Could not record output association").errorDescription,
+            "Could not record output association"
+        )
     }
 
     func testAudiobookSuggestedNameMatchesNarrator() {
@@ -1651,6 +1655,39 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertTrue(generation.isCurrent(b))
     }
 
+    func testOutputAssociationRecordFailsWhenLeftoverAuthorityIsNotNewDest() throws {
+        try withIsolatedAuthorityStore { store in
+            let root = try TestSupport.tempDir("oa-record-leftover-dest")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let destA = root.appendingPathComponent("bookA.m4b")
+            let destB = root.appendingPathComponent("bookB.m4b")
+            try Data("M4B-A".utf8).write(to: destA)
+            try Data("M4B-B".utf8).write(to: destB)
+
+            XCTAssertTrue(OutputAssociation.record(destA, inBookFolder: root))
+            XCTAssertEqual(
+                OutputAssociation.load(inBookFolder: root)?.standardizedFileURL.path,
+                destA.standardizedFileURL.path
+            )
+
+            try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: store.path)
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: store.path)
+            }
+
+            XCTAssertFalse(
+                OutputAssociation.record(destB, inBookFolder: root),
+                "leftover dest A must not count as a successful record of dest B"
+            )
+            if let loaded = OutputAssociation.load(inBookFolder: root) {
+                XCTAssertFalse(
+                    M4BExporter.isSameFileURL(loaded, destB),
+                    "load must not report dest B after a failed record"
+                )
+            }
+        }
+    }
+
     private func writeOutputSidecar(_ dest: URL, in folder: URL) throws {
         OutputAssociation.record(dest, inBookFolder: folder)
         let sidecar = folder.appendingPathComponent(OutputAssociation.fileName)
@@ -1993,7 +2030,7 @@ final class BoundedFileReadTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let dest = root.appendingPathComponent("book.m4b")
         try Data("M4B".utf8).write(to: dest)
-        OutputAssociation.record(dest, inBookFolder: root)
+        XCTAssertTrue(OutputAssociation.record(dest, inBookFolder: root))
 
         XCTAssertEqual(
             OutputAssociation.load(inBookFolder: root)?.standardizedFileURL.path,
@@ -2002,6 +2039,31 @@ final class BoundedFileReadTests: XCTestCase {
         XCTAssertEqual(
             OutputAssociation.destinationHint(inBookFolder: root)?.standardizedFileURL.path,
             dest.standardizedFileURL.path
+        )
+    }
+
+    func testOutputAssociationRecordFailsWhenAuthorityUnwritable() throws {
+        let root = try TestSupport.tempDir("oa-record-unwritable")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("book.m4b")
+        try Data("M4B".utf8).write(to: dest)
+        let sidecar = root.appendingPathComponent(OutputAssociation.fileName)
+        try Data("stale-output-record".utf8).write(to: sidecar)
+
+        let parent = try TestSupport.tempDir("oa-record-block-parent")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let blocker = parent.appendingPathComponent("store")
+        try Data("not-a-directory".utf8).write(to: blocker)
+
+        let previous = OutputAssociation.authorityDirectoryOverride
+        OutputAssociation.authorityDirectoryOverride = blocker
+        defer { OutputAssociation.authorityDirectoryOverride = previous }
+
+        XCTAssertFalse(OutputAssociation.record(dest, inBookFolder: root))
+        XCTAssertNil(OutputAssociation.load(inBookFolder: root))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: sidecar.path),
+            "sidecar must be invalidated when authority cannot persist"
         )
     }
 

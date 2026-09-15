@@ -120,7 +120,6 @@ public struct M4BExporter: Sendable {
                 overwrite: overwrite,
                 expectedIdentity: expectedIdentity
             )
-            OutputAssociation.record(outputURL, inBookFolder: book.folder)
             afterPublish?()
             try Self.finalizePublishedOutput(
                 dest: outputURL,
@@ -644,7 +643,7 @@ extension M4BExporter {
     }
 
     /// Dest is already committed. Never throw `.cancelled` from this path.
-    /// Every exit persists a loadable source record or explicitly invalidates.
+    /// Every exit persists loadable provenance or explicitly invalidates.
     private static func finalizePublishedOutput(
         dest: URL,
         captured: [SourceAssociation.Entry],
@@ -704,6 +703,10 @@ extension M4BExporter {
         ) else {
             SourceAssociation.invalidate(inBookFolder: folder)
             throw BinderError.publishedUnverified("Could not record source provenance")
+        }
+        guard OutputAssociation.record(dest, inBookFolder: folder) else {
+            SourceAssociation.invalidate(inBookFolder: folder)
+            throw BinderError.publishedUnverified("Could not record output association")
         }
     }
 

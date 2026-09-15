@@ -552,6 +552,72 @@ final class MP4AtomIOTests: XCTestCase {
         XCTAssertEqual(fromFile.map(\.type), ["ftyp", "moov"])
     }
 
+    func testFindAtomBroadTreeQueueStaysWithinHeaderBudget() throws {
+        let dir = try TestSupport.tempDir("atom-broad-tree")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("broad.mp4")
+        try Self.writeBroadAtomTree(at: url, containers: 32, childrenPerContainer: 1_000)
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        XCTAssertEqual(fileSize, 256_256)
+
+        var stats = MP4AtomIO.AtomTraversalStats()
+        let found = MP4AtomIO.findAtom(
+            type: "mdat",
+            in: handle,
+            fileSize: fileSize,
+            stats: &stats
+        )
+        XCTAssertNil(found)
+        XCTAssertLessThanOrEqual(stats.enqueued, MP4AtomIO.maxHeadersPerParse)
+        XCTAssertLessThanOrEqual(stats.queuePeak, MP4AtomIO.maxHeadersPerParse)
+        XCTAssertLessThanOrEqual(stats.visited, MP4AtomIO.maxHeadersPerParse)
+    }
+
+    func testFindAtomCancelledTraversalStopsEarly() throws {
+        let dir = try TestSupport.tempDir("atom-cancel")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("broad.mp4")
+        try Self.writeBroadAtomTree(at: url, containers: 32, childrenPerContainer: 1_000)
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let fileSize = try handle.seekToEnd()
+        let cancellation = EncodeCancellation()
+        cancellation.cancel()
+
+        var stats = MP4AtomIO.AtomTraversalStats()
+        let found = MP4AtomIO.findAtom(
+            type: "free",
+            in: handle,
+            fileSize: fileSize,
+            cancellation: cancellation,
+            stats: &stats
+        )
+        XCTAssertNil(found)
+        XCTAssertEqual(stats.visited, 0)
+        XCTAssertEqual(stats.enqueued, 0)
+        XCTAssertEqual(stats.queuePeak, 0)
+    }
+
+    static func writeBroadAtomTree(at url: URL, containers: Int, childrenPerContainer: Int) throws {
+        let child = MP4Box.box("free", Data())
+        var children = Data()
+        children.reserveCapacity(childrenPerContainer * child.count)
+        for _ in 0..<childrenPerContainer {
+            children.append(child)
+        }
+        let container = MP4Box.box("skip", children)
+        var data = Data()
+        data.reserveCapacity(containers * container.count)
+        for _ in 0..<containers {
+            data.append(container)
+        }
+        try data.write(to: url)
+    }
+
     static func truncatedMdatAfterMoov() -> Data {
         let moov = MP4Box.box("moov", MP4Box.box("mvhd", Data(count: 100)))
         var mdat = Data()

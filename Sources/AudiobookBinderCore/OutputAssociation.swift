@@ -8,6 +8,8 @@ import Foundation
 /// trusted document: dest path, dest `FileIdentity`, and book-folder identity.
 public enum OutputAssociation: Sendable {
     public static let fileName = ".audiobookbinder-output"
+    static let maxSidecarBytes = 16 * 1024
+    static let maxPathLength = BoundedFileRead.maxPathLength
 
     /// Trusted dest only. Path-only, old-format, missing, or mismatched
     /// identities do not grant ownership of an existing file.
@@ -84,13 +86,13 @@ public enum OutputAssociation: Sendable {
 
     private static func readDocument(inBookFolder folder: URL) -> (url: URL, document: Document?)? {
         let sidecar = folder.appendingPathComponent(fileName)
-        guard let data = try? Data(contentsOf: sidecar), !data.isEmpty else { return nil }
+        guard let data = BoundedFileRead.read(from: sidecar, maxBytes: maxSidecarBytes) else { return nil }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
         if let document = try? decoder.decode(Document.self, from: data) {
             let path = document.destination.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !path.isEmpty else { return nil }
+            guard BoundedFileRead.isAllowedPath(path, maxLength: maxPathLength) else { return nil }
             return (resolve(path, relativeTo: folder), document)
         }
 
@@ -99,7 +101,7 @@ public enum OutputAssociation: Sendable {
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
-        guard let line else { return nil }
+        guard let line, BoundedFileRead.isAllowedPath(line, maxLength: maxPathLength) else { return nil }
         return (resolve(line, relativeTo: folder), nil)
     }
 

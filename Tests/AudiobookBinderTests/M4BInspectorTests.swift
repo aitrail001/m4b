@@ -905,6 +905,42 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertTrue(auth.sources.isEmpty)
     }
 
+    func testCleanupAuthorizationFailsWhenSourceSidecarExceedsBudget() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        XCTAssertTrue(
+            SourceCleanup.authorization(
+                book: fixture.book,
+                inspection: fixture.inspection,
+                isBuilding: false
+            ).allowed
+        )
+
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: fixture.dir)
+        let original = try Data(contentsOf: sidecar)
+        let handle = try FileHandle(forWritingTo: sidecar)
+        try handle.write(contentsOf: Data(repeating: UInt8(ascii: " "), count: SourceAssociation.maxSidecarBytes + 1))
+        try handle.write(contentsOf: original)
+        try handle.close()
+
+        XCTAssertNil(SourceAssociation.load(inBookFolder: fixture.dir))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: fixture.dir))
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed)
+        let reason = try XCTUnwrap(auth.reason)
+        XCTAssertTrue(
+            reason.localizedCaseInsensitiveContains("provenance")
+                || reason.localizedCaseInsensitiveContains("manifest"),
+            "expected a missing-provenance reason, got \(reason)"
+        )
+    }
+
     func testCleanupAuthorizationFailsWhenSourceManifestUnreadable() throws {
         let fixture = try CleanupFixture.make()
         defer { fixture.tearDown() }

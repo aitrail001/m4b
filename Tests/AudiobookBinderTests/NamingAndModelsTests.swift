@@ -688,6 +688,81 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertEqual(empty.detail, "No original audio left to compare.")
     }
 
+    func testOutputAssociationRejectsOversizedSidecar() throws {
+        let root = try TestSupport.tempDir("output-sidecar-oversize")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dest = root.appendingPathComponent("book.m4b")
+        try Data("M4B".utf8).write(to: dest)
+        try writePaddedSidecar(
+            at: root.appendingPathComponent(OutputAssociation.fileName),
+            padBytes: 2 * 1024 * 1024,
+            suffix: dest.path
+        )
+
+        XCTAssertNil(OutputAssociation.load(inBookFolder: root))
+        XCTAssertNil(OutputAssociation.destinationHint(inBookFolder: root))
+    }
+
+    func testOutputAssociationRejectsOverlongDestinationPath() throws {
+        let root = try TestSupport.tempDir("output-sidecar-long-path")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = "/" + String(repeating: "a", count: OutputAssociation.maxPathLength) + ".m4b"
+        XCTAssertGreaterThan(path.count, OutputAssociation.maxPathLength)
+        let json = Data("{\"destination\":\"\(path)\"}".utf8)
+        XCTAssertLessThanOrEqual(json.count, OutputAssociation.maxSidecarBytes)
+        try json.write(to: root.appendingPathComponent(OutputAssociation.fileName))
+
+        XCTAssertNil(OutputAssociation.load(inBookFolder: root))
+        XCTAssertNil(OutputAssociation.destinationHint(inBookFolder: root))
+    }
+
+    func testSourceAssociationRejectsOversizedSidecar() throws {
+        let root = try TestSupport.tempDir("source-sidecar-oversize")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writePaddedSidecar(
+            at: SourceAssociation.sidecarURL(inBookFolder: root),
+            padBytes: SourceAssociation.maxSidecarBytes + 1,
+            suffix: "{\"sources\":[]}"
+        )
+
+        XCTAssertNil(SourceAssociation.load(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
+    func testSourceAssociationRejectsTooManyEntries() throws {
+        let root = try TestSupport.tempDir("source-sidecar-too-many")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSourceSidecar(in: root, entryCount: SourceAssociation.maxSourceEntries + 1)
+
+        XCTAssertNil(SourceAssociation.load(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
+    func testSourceAssociationAcceptsMaxSourceEntries() throws {
+        let root = try TestSupport.tempDir("source-sidecar-max-entries")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSourceSidecar(in: root, entryCount: SourceAssociation.maxSourceEntries)
+
+        let loaded = try XCTUnwrap(SourceAssociation.load(inBookFolder: root))
+        XCTAssertEqual(loaded.count, SourceAssociation.maxSourceEntries)
+        XCTAssertEqual(loaded.first?.path, "/t/0")
+        XCTAssertEqual(loaded.last?.path, "/t/\(SourceAssociation.maxSourceEntries - 1)")
+    }
+
+    func testSourceAssociationRejectsOverlongSourcePath() throws {
+        let root = try TestSupport.tempDir("source-sidecar-long-path")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = String(repeating: "x", count: SourceAssociation.maxPathLength + 1)
+        let json = Data(
+            "{\"sources\":[{\"path\":\"\(path)\",\"isRegularFile\":true,\"fileSize\":1}]}".utf8
+        )
+        XCTAssertLessThanOrEqual(json.count, SourceAssociation.maxSidecarBytes)
+        try json.write(to: SourceAssociation.sidecarURL(inBookFolder: root))
+
+        XCTAssertNil(SourceAssociation.load(inBookFolder: root))
+        XCTAssertNil(SourceAssociation.loadDocument(inBookFolder: root))
+    }
+
     func testScanGenerationNewestWins() {
         var generation = ScanGeneration()
         let a = generation.begin()
@@ -702,5 +777,32 @@ final class NamingAndModelsTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: sidecar.path) else {
             throw BinderError.exportFailed("Could not write output association sidecar")
         }
+    }
+
+    private func writePaddedSidecar(at url: URL, padBytes: Int, suffix: String) throws {
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: url)
+        let chunk = Data(repeating: UInt8(ascii: " "), count: min(65_536, padBytes))
+        var remaining = padBytes
+        while remaining > 0 {
+            let n = min(remaining, chunk.count)
+            try handle.write(contentsOf: chunk.prefix(n))
+            remaining -= n
+        }
+        try handle.write(contentsOf: Data(suffix.utf8))
+        try handle.close()
+    }
+
+    private func writeSourceSidecar(in folder: URL, entryCount: Int) throws {
+        let entries: [[String: Any]] = (0..<entryCount).map { index in
+            [
+                "path": "/t/\(index)",
+                "isRegularFile": true,
+                "fileSize": 1
+            ]
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["sources": entries])
+        XCTAssertLessThanOrEqual(data.count, SourceAssociation.maxSidecarBytes)
+        try data.write(to: SourceAssociation.sidecarURL(inBookFolder: folder))
     }
 }

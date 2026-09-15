@@ -6,6 +6,9 @@ import Foundation
 /// without this provenance, and refuses if a recorded source has changed.
 public enum SourceAssociation: Sendable {
     public static let fileName = ".audiobookbinder-sources"
+    static let maxSidecarBytes = 256 * 1024
+    static let maxSourceEntries = 4_096
+    static let maxPathLength = BoundedFileRead.maxPathLength
 
     public struct Entry: Equatable, Sendable, Codable {
         public var path: String
@@ -49,11 +52,19 @@ public enum SourceAssociation: Sendable {
 
     static func loadDocument(inBookFolder folder: URL) -> Document? {
         let sidecar = sidecarURL(inBookFolder: folder)
-        guard FileManager.default.fileExists(atPath: sidecar.path) else { return nil }
-        guard let data = try? Data(contentsOf: sidecar) else { return nil }
+        guard let data = BoundedFileRead.read(from: sidecar, maxBytes: maxSidecarBytes) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
-        return try? decoder.decode(Document.self, from: data)
+        guard let document = try? decoder.decode(Document.self, from: data) else { return nil }
+        guard document.sources.count <= maxSourceEntries else { return nil }
+        if let destination = document.destination,
+           !BoundedFileRead.isAllowedPath(destination, maxLength: maxPathLength) {
+            return nil
+        }
+        for entry in document.sources {
+            guard BoundedFileRead.isAllowedPath(entry.path, maxLength: maxPathLength) else { return nil }
+        }
+        return document
     }
 
     /// Snapshot each included source before encode. Dest aliases are skipped.

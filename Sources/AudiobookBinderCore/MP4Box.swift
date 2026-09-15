@@ -75,6 +75,19 @@ enum MP4AtomIO {
     /// Max nested container depth when walking a file for a specific atom.
     static let maxAtomTraversalDepth = 32
 
+    /// Headers visited, enqueued, and peak retained queue size for one `findAtom`.
+    package struct AtomTraversalStats: Sendable, Equatable {
+        package var visited: Int
+        package var enqueued: Int
+        package var queuePeak: Int
+
+        package init(visited: Int = 0, enqueued: Int = 0, queuePeak: Int = 0) {
+            self.visited = visited
+            self.enqueued = enqueued
+            self.queuePeak = queuePeak
+        }
+    }
+
     static func readHeaders(of file: URL) throws -> [MP4AtomHeader] {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
@@ -87,10 +100,15 @@ enum MP4AtomIO {
         parseHeaders(from: handle, start: 0, end: fileSize)
     }
 
-    static func parseHeaders(from handle: FileHandle, start: UInt64, end: UInt64) -> [MP4AtomHeader] {
+    static func parseHeaders(
+        from handle: FileHandle,
+        start: UInt64,
+        end: UInt64,
+        limit: Int = maxHeadersPerParse
+    ) -> [MP4AtomHeader] {
         var atoms: [MP4AtomHeader] = []
         var offset: UInt64 = start
-        while atoms.count < maxHeadersPerParse {
+        while atoms.count < limit {
             guard end > offset, end - offset >= 8 else { break }
             let headerBytes: Data
             do {
@@ -227,32 +245,72 @@ enum MP4AtomIO {
         type: String,
         in handle: FileHandle,
         fileSize: UInt64,
-        maxDepth: Int = maxAtomTraversalDepth
+        maxDepth: Int = maxAtomTraversalDepth,
+        cancellation: EncodeCancellation? = nil
     ) -> MP4AtomHeader? {
-        var queue: [(header: MP4AtomHeader, depth: Int)] = parseHeaders(
-            from: handle,
-            start: 0,
-            end: fileSize
-        ).map { ($0, 0) }
+        var stats = AtomTraversalStats()
+        return findAtom(
+            type: type,
+            in: handle,
+            fileSize: fileSize,
+            maxDepth: maxDepth,
+            cancellation: cancellation,
+            stats: &stats
+        )
+    }
+
+    package static func findAtom(
+        type: String,
+        in handle: FileHandle,
+        fileSize: UInt64,
+        maxDepth: Int = maxAtomTraversalDepth,
+        cancellation: EncodeCancellation? = nil,
+        stats: inout AtomTraversalStats
+    ) -> MP4AtomHeader? {
+        stats = AtomTraversalStats()
+        if cancellation?.isCancelled == true {
+            return nil
+        }
+
+        var queue: [(header: MP4AtomHeader, depth: Int)] = []
+
+        func enqueue(_ headers: [MP4AtomHeader], depth: Int) {
+            for header in headers {
+                guard stats.enqueued < maxHeadersPerParse else { return }
+                queue.append((header, depth))
+                stats.enqueued += 1
+                if queue.count > stats.queuePeak {
+                    stats.queuePeak = queue.count
+                }
+            }
+        }
+
+        enqueue(
+            parseHeaders(from: handle, start: 0, end: fileSize, limit: maxHeadersPerParse),
+            depth: 0
+        )
+
         var i = 0
-        var visited = 0
-        while i < queue.count, visited < maxHeadersPerParse {
+        while i < queue.count, stats.visited < maxHeadersPerParse {
+            if cancellation?.isCancelled == true { return nil }
             let item = queue[i]
             i += 1
-            visited += 1
+            stats.visited += 1
             if item.header.type == type { return item.header }
             guard containers.contains(item.header.type),
                   item.depth < maxDepth,
                   item.header.payloadSize > 0
             else { continue }
+
+            let remaining = maxHeadersPerParse - stats.enqueued
+            guard remaining > 0 else { continue }
             let children = parseHeaders(
                 from: handle,
                 start: item.header.payloadOffset,
-                end: item.header.end
+                end: item.header.end,
+                limit: remaining
             )
-            for child in children {
-                queue.append((child, item.depth + 1))
-            }
+            enqueue(children, depth: item.depth + 1)
         }
         return nil
     }

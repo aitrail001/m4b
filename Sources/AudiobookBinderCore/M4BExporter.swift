@@ -12,6 +12,8 @@ public struct M4BExporter: Sendable {
     package var afterPreflight: (@Sendable () -> Void)?
     /// Test seam: runs after the first exportAll existence/owns check.
     package var afterDestinationCheck: (@Sendable () -> Void)?
+    /// Test seam: runs after the last exportAll skip check and before export.
+    package var beforeExport: (@Sendable () -> Void)?
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
@@ -20,6 +22,7 @@ public struct M4BExporter: Sendable {
         self.afterPublish = nil
         self.afterPreflight = nil
         self.afterDestinationCheck = nil
+        self.beforeExport = nil
     }
 
     public static func chaptersReadyForExport(_ chapters: [Chapter]) -> [Chapter] {
@@ -46,9 +49,10 @@ public struct M4BExporter: Sendable {
         book: Audiobook,
         to outputURL: URL,
         overwrite: Bool,
+        destWasAbsent: Bool? = nil,
         progress: (@Sendable (Double, String) -> Void)? = nil
     ) async throws {
-        let destWasAbsent = !Self.existingRegularFile(outputURL)
+        let destWasAbsent = destWasAbsent ?? !Self.existingRegularFile(outputURL)
         try Self.preflightDestination(outputURL, book: book, overwrite: overwrite)
         _ = try Self.chaptersForExport(book.chapters, folder: book.folder)
         afterPreflight?()
@@ -176,8 +180,14 @@ public struct M4BExporter: Sendable {
                 continue
             }
             let existed = Self.existingRegularFile(dest)
+            beforeExport?()
             do {
-                try await export(book: book, to: dest, overwrite: settings.overwrite) { fraction, detail in
+                try await export(
+                    book: book,
+                    to: dest,
+                    overwrite: settings.overwrite,
+                    destWasAbsent: !existed
+                ) { fraction, detail in
                     progress?(
                         JobProgress(
                             label: book.title,

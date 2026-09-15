@@ -188,18 +188,38 @@ if resolve_tag_commit unknown abc123def; then
   fail "unknown git ref object type must fail"
 fi
 
-# Provenance: matching HEAD + hash + version + test stamp passes; stale/wrong/missing fail.
+# Provenance: matching HEAD + hash + version + test stamp + app origin passes;
+# stale/wrong/missing fail. App-origin fields are required.
 PROV="$REPO"
 mkdir -p "$PROV/dist"
 print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
 HEAD='abc123def'
 VER='1.2.3'
+APP_SHA='deadbeefcafebabe'
 write_release_tests_ok_stamp "$PROV" "$HEAD"
-write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA"
 PROV_FILE="$(release_provenance_path "$PROV" "$VER")"
 
 require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV" \
   || fail "matching provenance HEAD+hash+version+stamp must pass"
+
+got="$(provenance_json_field "$PROV_FILE" app_commit)"
+[[ "$got" == "$HEAD" ]] || fail "provenance must record app_commit from the receipt"
+got="$(provenance_json_field "$PROV_FILE" app_version)"
+[[ "$got" == "$VER" ]] || fail "provenance must record app_version from the receipt"
+got="$(provenance_json_field "$PROV_FILE" tests_ok_source)"
+[[ "$got" == "stamp" ]] || fail "stamp-backed tests_ok must record tests_ok_source=stamp"
+
+(
+  export RELEASE_TESTS_OK=1
+  write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+    "$HEAD" "$VER" "$APP_SHA"
+)
+got="$(provenance_json_field "$PROV_FILE" tests_ok_source)"
+[[ "$got" == "override" ]] || fail "RELEASE_TESTS_OK=1 must record tests_ok_source=override, not stamp"
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA"
 
 if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" '9.9.9' "$PROV"; then
   fail "provenance version mismatch must fail"
@@ -217,7 +237,8 @@ PY
 if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
   fail "stale provenance commit must fail"
 fi
-write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA"
 
 print -r -- 'other-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
 if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
@@ -225,6 +246,24 @@ if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg
 fi
 
 print -r -- 'fixture-dmg-bytes' > "$PROV/dist/AudiobookBinder-1.2.3.dmg"
+
+# Matching DMG hash without verified app-origin fields must fail.
+python3 - "$PROV_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+obj = json.load(open(path))
+for key in ("app_commit", "app_version", "app_sha256"):
+    obj.pop(key, None)
+with open(path, "w") as fh:
+    json.dump(obj, fh, indent=2)
+    fh.write("\n")
+PY
+if require_release_provenance "$PROV_FILE" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
+  fail "provenance without app_commit/app_version must fail"
+fi
+write_release_provenance "$PROV" "$VER" "$HEAD" "$PROV/dist/AudiobookBinder-1.2.3.dmg" \
+  "$HEAD" "$VER" "$APP_SHA"
+
 rm -f "$(release_tests_ok_stamp_path "$PROV")"
 (
   unset RELEASE_TESTS_OK
@@ -236,6 +275,50 @@ rm -f "$(release_tests_ok_stamp_path "$PROV")"
 if require_release_provenance "$PROV/dist/missing.provenance.json" "$PROV/dist/AudiobookBinder-1.2.3.dmg" "$HEAD" "$VER" "$PROV"; then
   fail "missing provenance file must fail"
 fi
+
+# App origin gate: fake bundle + receipt (no swift build / notarytool).
+install_fixture_app() {
+  local root="$1"
+  local version="$2"
+  local payload="${3:-fixture-exe}"
+  local app
+  app="$(packaged_app_path "$root")"
+  mkdir -p "$app/Contents/MacOS"
+  print -r -- "$payload" > "$app/Contents/MacOS/AudiobookBinder"
+  rm -f "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" \
+    "$app/Contents/Info.plist" >/dev/null
+}
+
+install_fixture_app "$PROV" "$VER"
+write_packaged_app_receipt "$PROV" 'aaa'
+if require_packaged_app_origin "$PROV" 'bbb' "$VER"; then
+  fail "stale receipt commit must fail when HEAD is passed as another commit"
+fi
+
+install_fixture_app "$PROV" '9.9.9'
+write_packaged_app_receipt "$PROV" "$HEAD"
+if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
+  fail "receipt/app version 9.9.9 must fail against checkout 1.2.3"
+fi
+
+install_fixture_app "$PROV" "$VER"
+rm -f "$(packaged_app_receipt_path "$PROV")"
+if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
+  fail "missing app receipt must fail"
+fi
+
+install_fixture_app "$PROV" "$VER"
+write_packaged_app_receipt "$PROV" "$HEAD"
+print -r -- 'mutated-exe' > "$(packaged_app_path "$PROV")/Contents/MacOS/AudiobookBinder"
+if require_packaged_app_origin "$PROV" "$HEAD" "$VER"; then
+  fail "executable sha256 mismatch vs receipt must fail"
+fi
+
+install_fixture_app "$PROV" "$VER"
+write_packaged_app_receipt "$PROV" "$HEAD"
+require_packaged_app_origin "$PROV" "$HEAD" "$VER" \
+  || fail "matching receipt + app plist + exe hash + HEAD + version must pass"
 
 # make release is sequential: clean, then tests, then production DMG (dry-run only).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

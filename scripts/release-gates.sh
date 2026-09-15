@@ -1,4 +1,5 @@
-# Sourced by package-dmg.sh, github-release.sh, and scripts/test-release-gates.sh.
+# Sourced by package-app.sh, package-dmg.sh, github-release.sh, and
+# scripts/test-release-gates.sh.
 # Helpers only — no packaging, notarization, or GitHub side effects.
 # Provenance + remote-tag helpers are predicates; they do not call gh or notarytool.
 
@@ -179,13 +180,116 @@ release_provenance_path() {
   print -r -- "$root/dist/AudiobookBinder-${version}.provenance.json"
 }
 
-dmg_sha256() {
-  local dmg="${1-}"
-  if [[ ! -f "$dmg" ]]; then
-    print -r -- "Cannot hash missing DMG $dmg" >&2
+file_sha256() {
+  local file="${1-}"
+  if [[ ! -f "$file" ]]; then
+    print -r -- "Cannot hash missing file $file" >&2
     return 1
   fi
-  shasum -a 256 "$dmg" | awk '{print $1}'
+  shasum -a 256 "$file" | awk '{print $1}'
+}
+
+dmg_sha256() {
+  file_sha256 "${1-}"
+}
+
+packaged_app_path() {
+  print -r -- "${1:-.}/dist/AudiobookBinder.app"
+}
+
+packaged_app_receipt_path() {
+  print -r -- "${1:-.}/dist/AudiobookBinder.app.receipt.json"
+}
+
+app_plist_version() {
+  local app="${1-}"
+  local plist="$app/Contents/Info.plist"
+  if [[ ! -f "$plist" ]]; then
+    print -r -- "Missing $plist" >&2
+    return 1
+  fi
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist"
+}
+
+# Written by package-app.sh after the copied Info.plist + executable are in place.
+write_packaged_app_receipt() {
+  local root="${1:-.}"
+  local commit="${2-}"
+  local app="${3:-$(packaged_app_path "$root")}"
+  if [[ -z "$commit" ]]; then
+    print -r -- "Cannot write app receipt: missing commit." >&2
+    return 1
+  fi
+  local version sha dest exe
+  version="$(app_plist_version "$app")" || return 1
+  exe="$app/Contents/MacOS/AudiobookBinder"
+  sha="$(file_sha256 "$exe")" || return 1
+  dest="$(packaged_app_receipt_path "$root")"
+  mkdir -p "${dest:h}"
+  python3 - "$dest" "$commit" "$version" "$sha" <<'PY'
+import json, sys
+path, commit, version, sha = sys.argv[1:5]
+with open(path, "w") as fh:
+    json.dump(
+        {
+            "commit": commit,
+            "version": version,
+            "executable_sha256": sha,
+        },
+        fh,
+        indent=2,
+    )
+    fh.write("\n")
+PY
+}
+
+# Production packaging: receipt + app must match the commit/version captured at
+# the start of PRODUCTION=1 (before Developer ID re-sign / notary).
+require_packaged_app_origin() {
+  local root="${1:-.}"
+  local intended_commit="${2-}"
+  local checkout_version="${3-}"
+  local app="${4:-$(packaged_app_path "$root")}"
+  local receipt="${5:-$(packaged_app_receipt_path "$root")}"
+
+  if [[ -z "$intended_commit" || -z "$checkout_version" ]]; then
+    print -r -- "Cannot verify packaged app origin: missing intended commit or checkout version." >&2
+    return 1
+  fi
+  if [[ ! -d "$app" ]]; then
+    print -r -- "Missing packaged app $app. Run: make app" >&2
+    return 1
+  fi
+  if [[ ! -f "$receipt" ]]; then
+    print -r -- "Missing packaged app receipt $receipt. Run: make app" >&2
+    return 1
+  fi
+
+  local r_commit r_version r_sha app_ver live_sha exe
+  r_commit="$(provenance_json_field "$receipt" commit)" || return 1
+  r_version="$(provenance_json_field "$receipt" version)" || return 1
+  r_sha="$(provenance_json_field "$receipt" executable_sha256)" || return 1
+
+  if [[ -z "$r_commit" || "$r_commit" != "$intended_commit" ]]; then
+    print -r -- "Packaged app receipt commit ${r_commit:-empty} does not match $intended_commit. Refusing to notarize a leftover app from another checkout." >&2
+    return 1
+  fi
+  if [[ -z "$r_version" || "$r_version" != "$checkout_version" ]]; then
+    print -r -- "Packaged app receipt version ${r_version:-empty} does not match Info.plist $checkout_version." >&2
+    return 1
+  fi
+  app_ver="$(app_plist_version "$app")" || return 1
+  if [[ "$app_ver" != "$checkout_version" ]]; then
+    print -r -- "Packaged app Info.plist version $app_ver does not match checkout $checkout_version." >&2
+    return 1
+  fi
+  exe="$app/Contents/MacOS/AudiobookBinder"
+  live_sha="$(file_sha256 "$exe")" || return 1
+  if [[ -z "$r_sha" || "$r_sha" != "$live_sha" ]]; then
+    print -r -- "Packaged app executable SHA-256 does not match receipt. Refusing a swapped or rebuilt binary." >&2
+    return 1
+  fi
+  return 0
 }
 
 provenance_json_field() {
@@ -211,38 +315,61 @@ write_release_provenance() {
   local version="${2-}"
   local head="${3-}"
   local dmg="${4-}"
+  local app_commit="${5-}"
+  local app_version="${6-}"
+  local app_sha256="${7-}"
   if [[ -z "$version" || -z "$head" ]]; then
     print -r -- "Cannot write provenance: missing version or commit." >&2
+    return 1
+  fi
+  if [[ -z "$app_commit" || -z "$app_version" ]]; then
+    print -r -- "Cannot write provenance: missing app origin (app_commit/app_version)." >&2
+    return 1
+  fi
+  if [[ "$app_commit" != "$head" ]]; then
+    print -r -- "Cannot write provenance: app_commit $app_commit does not match commit $head." >&2
+    return 1
+  fi
+  if [[ "$app_version" != "$version" ]]; then
+    print -r -- "Cannot write provenance: app_version $app_version does not match version $version." >&2
     return 1
   fi
   local sha
   sha="$(dmg_sha256 "$dmg")" || return 1
   local tests_ok="false"
-  if [[ "${RELEASE_TESTS_OK:-0}" == "1" ]] || release_tests_ok_recorded "$root" "$head"; then
+  local tests_ok_source=""
+  if [[ "${RELEASE_TESTS_OK:-0}" == "1" ]]; then
     tests_ok="true"
+    tests_ok_source="override"
+  elif release_tests_ok_recorded "$root" "$head"; then
+    tests_ok="true"
+    tests_ok_source="stamp"
   fi
   local dest
   dest="$(release_provenance_path "$root" "$version")"
   mkdir -p "${dest:h}"
-  python3 - "$dest" "$head" "$version" "$sha" "$tests_ok" <<'PY'
+  python3 - "$dest" "$head" "$version" "$sha" "$tests_ok" "$app_commit" "$app_version" "$tests_ok_source" "$app_sha256" <<'PY'
 import json, sys
-path, commit, version, sha, tests_ok = sys.argv[1:6]
+path, commit, version, sha, tests_ok, app_commit, app_version, tests_ok_source, app_sha256 = sys.argv[1:10]
+obj = {
+    "commit": commit,
+    "version": version,
+    "dmg_sha256": sha,
+    "tests_ok": tests_ok == "true",
+    "app_commit": app_commit,
+    "app_version": app_version,
+    "tests_ok_source": tests_ok_source,
+}
+if app_sha256:
+    obj["app_sha256"] = app_sha256
 with open(path, "w") as fh:
-    json.dump(
-        {
-            "commit": commit,
-            "version": version,
-            "dmg_sha256": sha,
-            "tests_ok": tests_ok == "true",
-        },
-        fh,
-        indent=2,
-    )
+    json.dump(obj, fh, indent=2)
     fh.write("\n")
 PY
 }
 
-# Manifest must match current HEAD, Info.plist version, live DMG SHA-256, and a test-ok stamp.
+# Manifest must match captured HEAD, Info.plist version, live DMG SHA-256,
+# a test-ok record, and the packaged-app origin from the receipt.
 require_release_provenance() {
   local provenance_file="${1-}"
   local dmg="${2-}"
@@ -261,11 +388,13 @@ require_release_provenance() {
 
   require_release_tests_ok "$root" "$head" || return 1
 
-  local p_commit p_version p_sha p_tests live
+  local p_commit p_version p_sha p_tests p_app_commit p_app_version live
   p_commit="$(provenance_json_field "$provenance_file" commit)" || return 1
   p_version="$(provenance_json_field "$provenance_file" version)" || return 1
   p_sha="$(provenance_json_field "$provenance_file" dmg_sha256)" || return 1
   p_tests="$(provenance_json_field "$provenance_file" tests_ok)" || return 1
+  p_app_commit="$(provenance_json_field "$provenance_file" app_commit)" || return 1
+  p_app_version="$(provenance_json_field "$provenance_file" app_version)" || return 1
 
   if [[ "$p_commit" != "$head" ]]; then
     print -r -- "Provenance commit $p_commit does not match HEAD $head. Refusing leftover DMG from another commit." >&2
@@ -273,6 +402,18 @@ require_release_provenance() {
   fi
   if [[ "$p_version" != "$version" ]]; then
     print -r -- "Provenance version $p_version does not match Info.plist $version." >&2
+    return 1
+  fi
+  if [[ -z "$p_app_commit" || -z "$p_app_version" ]]; then
+    print -r -- "Provenance is missing verified app origin (app_commit/app_version). Refusing a DMG attested only by checkout + hash." >&2
+    return 1
+  fi
+  if [[ "$p_app_commit" != "$head" ]]; then
+    print -r -- "Provenance app_commit $p_app_commit does not match HEAD $head." >&2
+    return 1
+  fi
+  if [[ "$p_app_version" != "$version" ]]; then
+    print -r -- "Provenance app_version $p_app_version does not match Info.plist $version." >&2
     return 1
   fi
   live="$(dmg_sha256 "$dmg")" || return 1

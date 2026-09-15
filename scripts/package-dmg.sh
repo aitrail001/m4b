@@ -12,6 +12,8 @@ VOL="Audiobook Binder"
 DMG="$ROOT/dist/AudiobookBinder-${VERSION}.dmg"
 IDENTITY="${CODESIGN_IDENTITY:-}"
 PRODUCTION="${PRODUCTION:-0}"
+# Capture once. Origin + provenance must not re-read HEAD after packaging.
+PACKAGED_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 
 if [[ ! -d "$APP" ]]; then
   echo "Missing $APP. Run: make app" >&2
@@ -19,6 +21,7 @@ if [[ ! -d "$APP" ]]; then
 fi
 
 if [[ "$PRODUCTION" == "1" ]]; then
+  require_packaged_app_origin "$ROOT" "$PACKAGED_COMMIT" "$VERSION"
   if [[ -z "$IDENTITY" ]]; then
     if security find-identity -v -p codesigning 2>/dev/null | grep -q 'Developer ID Application'; then
       IDENTITY="$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
@@ -87,6 +90,11 @@ echo "Built $DMG"
 ls -lh "$DMG"
 
 if [[ "$PRODUCTION" == "1" ]]; then
-  write_release_provenance "$ROOT" "$VERSION" "$(git -C "$ROOT" rev-parse HEAD)" "$DMG"
+  receipt="$(packaged_app_receipt_path "$ROOT")"
+  app_commit="$(provenance_json_field "$receipt" commit)"
+  app_version="$(provenance_json_field "$receipt" version)"
+  app_sha="$(provenance_json_field "$receipt" executable_sha256)"
+  write_release_provenance "$ROOT" "$VERSION" "$PACKAGED_COMMIT" "$DMG" \
+    "$app_commit" "$app_version" "$app_sha"
   echo "Wrote $(release_provenance_path "$ROOT" "$VERSION")"
 fi

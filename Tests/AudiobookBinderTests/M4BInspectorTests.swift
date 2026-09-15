@@ -1149,6 +1149,10 @@ final class M4BInspectorTests: XCTestCase {
             wav.standardizedFileURL.path
         )
         XCTAssertFalse(M4BExporter.isSameFileURL(URL(fileURLWithPath: entries[0].path), dest))
+        let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: dir))
+        let destDigest = try XCTUnwrap(document.destinationSHA256)
+        XCTAssertFalse(destDigest.isEmpty)
+        XCTAssertEqual(destDigest, try XCTUnwrap(SourceAssociation.sha256Hex(of: dest)))
     }
 }
 

@@ -87,22 +87,24 @@ public enum SourceAssociation: Sendable {
         return entries
     }
 
-    /// Persist pre-encode captures plus the published dest identity. Atomic write.
+    /// Persist pre-encode captures plus the published dest identity and digest.
     @discardableResult
     static func record(
         captured: [Entry],
         dest: URL,
         destIdentity: FileIdentity,
+        destinationSHA256: String,
         inBookFolder folder: URL
     ) -> Bool {
-        guard !destIdentity.isDirectory else {
+        guard !destIdentity.isDirectory, !destinationSHA256.isEmpty else {
             invalidate(inBookFolder: folder)
             return false
         }
         let document = Document(
             sources: captured,
             destination: dest.standardizedFileURL.path,
-            destinationIdentity: destIdentity
+            destinationIdentity: destIdentity,
+            destinationSHA256: destinationSHA256
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -134,11 +136,56 @@ public enum SourceAssociation: Sendable {
                 entries.append(entry)
             }
         }
-        guard let destIdentity = FileIdentity.read(from: dest), !destIdentity.isDirectory else {
+        guard let destIdentity = FileIdentity.read(from: dest), !destIdentity.isDirectory,
+              let destDigest = sha256Hex(of: dest), !destDigest.isEmpty else {
             invalidate(inBookFolder: folder)
             return false
         }
-        return record(captured: entries, dest: dest, destIdentity: destIdentity, inBookFolder: folder)
+        return record(
+            captured: entries,
+            dest: dest,
+            destIdentity: destIdentity,
+            destinationSHA256: destDigest,
+            inBookFolder: folder
+        )
+    }
+
+    /// Copy captured sources to a temp directory and re-hash each copy.
+    /// Throws if a snapshot digest does not match the capture.
+    static func stageEncodeSnapshots(_ captured: [Entry]) throws -> (directory: URL, remap: [String: URL]) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("m4b-encode-src-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var remap: [String: URL] = [:]
+            for (index, entry) in captured.enumerated() {
+                guard let expected = entry.sha256, !expected.isEmpty else {
+                    throw BinderError.exportFailed(
+                        "Cannot snapshot source provenance for \(URL(fileURLWithPath: entry.path).lastPathComponent)"
+                    )
+                }
+                let live = URL(fileURLWithPath: entry.path).resolvingSymlinksInPath()
+                let snapshot = directory.appendingPathComponent("\(index)-\(live.lastPathComponent)")
+                do {
+                    try FileManager.default.copyItem(at: live, to: snapshot)
+                } catch {
+                    throw BinderError.exportFailed("Cannot snapshot \(live.lastPathComponent)")
+                }
+                guard let digest = sha256Hex(of: snapshot), !digest.isEmpty,
+                      digest.caseInsensitiveCompare(expected) == .orderedSame else {
+                    throw BinderError.exportFailed("Source changed after capture: \(live.lastPathComponent)")
+                }
+                remap[entry.path] = snapshot
+            }
+            return (directory, remap)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+
+    static func removeEncodeSnapshots(at directory: URL) {
+        try? FileManager.default.removeItem(at: directory)
     }
 
     public static func invalidate(inBookFolder folder: URL) {
@@ -185,5 +232,6 @@ public enum SourceAssociation: Sendable {
         var sources: [Entry]
         var destination: String?
         var destinationIdentity: FileIdentity?
+        var destinationSHA256: String? = nil
     }
 }

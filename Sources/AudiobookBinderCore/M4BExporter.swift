@@ -4,10 +4,13 @@ import Foundation
 public struct M4BExporter: Sendable {
     public var bitrate: Int
     public var sampleRate: Double
+    /// Test seam: runs after source capture and before snapshot/hash-verify.
+    package var afterSourceCapture: (@Sendable () -> Void)?
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
         self.sampleRate = sampleRate
+        self.afterSourceCapture = nil
     }
 
     public static func chaptersReadyForExport(_ chapters: [Chapter]) -> [Chapter] {
@@ -59,10 +62,14 @@ public struct M4BExporter: Sendable {
         guard !captured.isEmpty else {
             throw BinderError.exportFailed("Cannot capture source provenance")
         }
+        afterSourceCapture?()
+        let snapshots = try SourceAssociation.stageEncodeSnapshots(captured)
+        defer { SourceAssociation.removeEncodeSnapshots(at: snapshots.directory) }
+        let encodeChapters = Self.chaptersForEncode(chapters, snapshots: snapshots.remap)
         let cancellation = EncodeCancellation()
         try await withTaskCancellationHandler {
             let marks = try await encode(
-                chapters: chapters,
+                chapters: encodeChapters,
                 to: tempURL,
                 progress: progress,
                 cancellation: cancellation
@@ -90,6 +97,9 @@ public struct M4BExporter: Sendable {
             }
 
             try cancellation.checkCancelled()
+            guard let stagingDigest = SourceAssociation.sha256Hex(of: tempURL), !stagingDigest.isEmpty else {
+                throw BinderError.exportFailed("Could not hash encoded output")
+            }
             try Self.publish(
                 staging: tempURL,
                 to: outputURL,
@@ -101,10 +111,17 @@ public struct M4BExporter: Sendable {
                 SourceAssociation.invalidate(inBookFolder: book.folder)
                 throw BinderError.exportFailed("Could not record published output identity")
             }
+            guard let publishedDigest = SourceAssociation.sha256Hex(of: outputURL),
+                  !publishedDigest.isEmpty,
+                  publishedDigest.caseInsensitiveCompare(stagingDigest) == .orderedSame
+            else {
+                throw BinderError.exportFailed("Published output does not match encoded file")
+            }
             guard SourceAssociation.record(
                 captured: captured,
                 dest: outputURL,
                 destIdentity: destIdentity,
+                destinationSHA256: publishedDigest,
                 inBookFolder: book.folder
             ) else {
                 SourceAssociation.invalidate(inBookFolder: book.folder)
@@ -672,6 +689,17 @@ extension M4BExporter {
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
         return (exists, exists && isDirectory.boolValue)
+    }
+
+    private static func chaptersForEncode(_ chapters: [Chapter], snapshots: [String: URL]) -> [Chapter] {
+        chapters.map { chapter in
+            guard let snapshot = snapshots[chapter.url.standardizedFileURL.path] else {
+                return chapter
+            }
+            var copy = chapter
+            copy.url = snapshot
+            return copy
+        }
     }
 
     static func isSameFileURL(_ a: URL, _ b: URL) -> Bool {

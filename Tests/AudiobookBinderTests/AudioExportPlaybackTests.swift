@@ -1210,6 +1210,189 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
     }
 
+    func testExportRejectsSourceSwapBetweenCaptureAndSnapshot() async throws {
+        let dir = try TestSupport.tempDir("source-swap-before-snapshot")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "SwapCapture", author: "A")
+        let source = book.chapters[0].url
+        let dest = dir.appendingPathComponent("out.m4b")
+        let original = try Data(contentsOf: source)
+        let originalHash = sha256Hex(original)
+        XCTAssertFalse(original.isEmpty)
+
+        let swapped = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.afterSourceCapture = {
+            swapped.mark()
+            try? TestSupport.writeSilenceWAV(to: source, seconds: 2)
+        }
+
+        var exportError: Error?
+        do {
+            try await exporter.export(book: book, to: dest, overwrite: true)
+        } catch {
+            exportError = error
+        }
+
+        XCTAssertTrue(swapped.isSet, "hook must replace the live source after capture")
+        try original.write(to: source)
+        XCTAssertEqual(try Data(contentsOf: source), original, "restored original source bytes must still be present")
+
+        let destPublished = FileManager.default.fileExists(atPath: dest.path)
+        let sidecar = SourceAssociation.loadDocument(inBookFolder: dir)
+        var bound = book
+        bound.existingM4BURL = destPublished ? dest : nil
+        let inspection: M4BInspection
+        if destPublished {
+            inspection = await M4BInspector.inspect(dest, bookID: book.id)
+        } else {
+            inspection = M4BInspection.capturingIdentity(url: dest, duration: 1, chapters: [], bookID: book.id)
+        }
+        let auth = SourceCleanup.authorization(book: bound, inspection: inspection, isBuilding: false)
+
+        if destPublished {
+            XCTAssertFalse(
+                auth.allowed,
+                "cleanup of the restored original must be denied if dest was published after a swapped encode"
+            )
+        } else {
+            XCTAssertNotNil(exportError, "export must refuse to certify a swapped source")
+        }
+        if let sidecar {
+            XCTAssertFalse(
+                auth.allowed,
+                "sidecar must not authorize cleanup of the restored original after a swapped encode"
+            )
+            if sidecar.sources.contains(where: { $0.sha256 == originalHash }) {
+                XCTAssertFalse(
+                    auth.allowed,
+                    "must not claim the restored original was the consumed input if B was read"
+                )
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    func testCleanupDeniedWhenDestEditedInPlaceSameSizeRestoredMtime() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalDest = try Data(contentsOf: fixture.dest)
+        let originalSourceA = try Data(contentsOf: fixture.sourceA)
+        let originalSourceB = try Data(contentsOf: fixture.sourceB)
+        let edited = Data(repeating: 0xEF, count: originalDest.count)
+        XCTAssertEqual(edited.count, originalDest.count)
+        XCTAssertNotEqual(edited, originalDest)
+        try overwriteInPlaceKeepingMtime(at: fixture.dest, with: edited)
+
+        let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: fixture.dir))
+        let recordedDest = try XCTUnwrap(document.destinationIdentity)
+        let liveDest = try XCTUnwrap(FileIdentity.read(from: fixture.dest))
+        XCTAssertTrue(
+            liveDest.matchesRecordedIdentity(recordedDest),
+            "identity-only dest compare may still match after same-size in-place edit"
+        )
+
+        let fresh = M4BInspection.capturingIdentity(
+            url: fixture.dest,
+            duration: 30,
+            chapters: [
+                ChapterMark(start: 0, duration: 10, title: "One"),
+                ChapterMark(start: 10, duration: 20, title: "Two")
+            ],
+            bookID: fixture.book.id
+        )
+        XCTAssertTrue(fresh.identityVerified)
+        XCTAssertTrue(
+            ChapterCompare.summary(
+                original: fixture.book.chapters,
+                bound: M4BInspector.playableChapters(from: fresh),
+                boundDuration: fresh.duration
+            ).allMatch,
+            "chapter timings of the mutated dest must look like a match"
+        )
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fresh,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed, "same-size in-place dest edit with restored mtime must fail closed on dest digest")
+        XCTAssertEqual(try Data(contentsOf: fixture.dest), edited)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), originalSourceA)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalSourceB)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.dest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testCleanupDeniedWhenDestDigestMissing() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalDest = try Data(contentsOf: fixture.dest)
+        let originalSourceA = try Data(contentsOf: fixture.sourceA)
+        let originalSourceB = try Data(contentsOf: fixture.sourceB)
+
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: fixture.dir)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: sidecar)) as? [String: Any])
+        object.removeValue(forKey: "destinationSHA256")
+        try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]).write(to: sidecar)
+
+        let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: fixture.dir))
+        XCTAssertTrue(document.destinationSHA256 == nil || document.destinationSHA256?.isEmpty == true)
+        XCTAssertNotNil(document.destinationIdentity)
+        XCTAssertFalse(document.sources.isEmpty)
+
+        let auth = SourceCleanup.authorization(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+        XCTAssertFalse(auth.allowed, "identity-only dest match is not enough without a dest digest")
+        XCTAssertEqual(try Data(contentsOf: fixture.dest), originalDest)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceA), originalSourceA)
+        XCTAssertEqual(try Data(contentsOf: fixture.sourceB), originalSourceB)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.dest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+    }
+
+    func testExportRecordsOutputDigestAndAllowsUnchangedCleanup() async throws {
+        let dir = try TestSupport.tempDir("export-dest-digest")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "DestDigest", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+
+        let document = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: dir))
+        let destDigest = try XCTUnwrap(document.destinationSHA256)
+        XCTAssertFalse(destDigest.isEmpty)
+        XCTAssertEqual(destDigest, try XCTUnwrap(SourceAssociation.sha256Hex(of: dest)))
+
+        var bound = book
+        bound.existingM4BURL = dest
+        let inspection = await M4BInspector.inspect(dest, bookID: book.id)
+        let auth = SourceCleanup.authorization(book: bound, inspection: inspection, isBuilding: false)
+        XCTAssertTrue(auth.allowed, "unchanged published dest with recorded digest must allow cleanup")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: book.chapters[0].url.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+        let fixtureDocument = try XCTUnwrap(SourceAssociation.loadDocument(inBookFolder: fixture.dir))
+        XCTAssertFalse(fixtureDocument.destinationSHA256?.isEmpty ?? true)
+        XCTAssertTrue(
+            SourceCleanup.authorization(
+                book: fixture.book,
+                inspection: fixture.inspection,
+                isBuilding: false
+            ).allowed,
+            "unchanged recorded fixture must still allow cleanup"
+        )
+    }
+
     func testExportSourcePersistFailureInvalidatesSidecarAndDeniesCleanup() async throws {
         let dir = try TestSupport.tempDir("source-persist-fail")
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -191,6 +191,15 @@ public enum SourceCleanup {
               liveDest.matchesRecordedIdentity(recordedDest) else {
             return "Bound .m4b is not the file recorded at export."
         }
+        guard let recordedDestDigest = document.destinationSHA256, !recordedDestDigest.isEmpty else {
+            return "Cannot verify sources: missing export provenance."
+        }
+        guard let liveDestDigest = SourceAssociation.sha256Hex(of: dest),
+              !liveDestDigest.isEmpty,
+              liveDestDigest.caseInsensitiveCompare(recordedDestDigest) == .orderedSame
+        else {
+            return "Bound .m4b is not the file recorded at export."
+        }
         for entry in document.sources {
             let url = entry.url(relativeTo: book.folder)
             if refersToSameFile(url, dest) { continue }

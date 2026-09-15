@@ -18,7 +18,13 @@ final class CleanupJobTests: XCTestCase {
 
         let beforeB = bookB.book
         books = [bookB.book]
-        owner.commitSuccess(&books, job: job!, inspection: bookA.inspection)
+        owner.commitSuccess(
+            &books,
+            job: job!,
+            inspection: bookA.inspection,
+            snapshotChapters: bookA.book.chapters,
+            moved: bookA.chapterURLs
+        )
 
         XCTAssertEqual(books.count, 1)
         XCTAssertEqual(books[0].id, beforeB.id)
@@ -39,7 +45,13 @@ final class CleanupJobTests: XCTestCase {
         XCTAssertNotNil(job)
 
         books = []
-        owner.commitSuccess(&books, job: job!, inspection: bookA.inspection)
+        owner.commitSuccess(
+            &books,
+            job: job!,
+            inspection: bookA.inspection,
+            snapshotChapters: bookA.book.chapters,
+            moved: bookA.chapterURLs
+        )
         XCTAssertTrue(books.isEmpty)
     }
 
@@ -58,7 +70,13 @@ final class CleanupJobTests: XCTestCase {
 
         let beforeB = bookB.book
         books = [bookB.book, bookA.book]
-        owner.commitSuccess(&books, job: job!, inspection: bookA.inspection)
+        owner.commitSuccess(
+            &books,
+            job: job!,
+            inspection: bookA.inspection,
+            snapshotChapters: bookA.book.chapters,
+            moved: bookA.chapterURLs
+        )
 
         XCTAssertEqual(books.map(\.id), [beforeB.id, bookA.book.id])
         XCTAssertEqual(books[0].chapters, beforeB.chapters)
@@ -70,6 +88,59 @@ final class CleanupJobTests: XCTestCase {
         XCTAssertEqual(books[1].existingM4BURL, bookA.inspection.url)
         XCTAssertEqual(books[1].boundDuration, bookA.inspection.duration)
         XCTAssertFalse(books[1].selected)
+    }
+
+    func testCommitSuccessKeepsNeverExportedExtraChapter() throws {
+        let fixture = try makeBoundBook(name: "KeepExtra", chapterFiles: ["01.mp3", "02.mp3", "extra.mp3"])
+        defer { fixture.tearDown() }
+
+        var snapshot = fixture.book
+        snapshot.chapters[2].included = false
+
+        var owner = CleanupJobOwner()
+        var books = [snapshot]
+        let job = try XCTUnwrap(owner.begin(bookID: snapshot.id))
+        let moved = [fixture.chapterURLs[0], fixture.chapterURLs[1]]
+
+        XCTAssertTrue(
+            owner.commitSuccess(
+                &books,
+                job: job,
+                inspection: fixture.inspection,
+                snapshotChapters: snapshot.chapters,
+                moved: moved
+            )
+        )
+
+        XCTAssertEqual(books[0].chapters.map(\.url.lastPathComponent), ["extra.mp3"])
+        XCTAssertFalse(books[0].chapters[0].included)
+        XCTAssertEqual(books[0].existingM4BURL, fixture.inspection.url)
+        XCTAssertEqual(books[0].boundDuration, fixture.inspection.duration)
+        XCTAssertTrue(books[0].selected)
+    }
+
+    func testCommitSuccessClearsChaptersWhenEverySnapshotFileMoved() throws {
+        let fixture = try makeBoundBook(name: "AllMoved", chapterFiles: ["01.mp3", "02.mp3"])
+        defer { fixture.tearDown() }
+
+        var owner = CleanupJobOwner()
+        var books = [fixture.book]
+        let job = try XCTUnwrap(owner.begin(bookID: fixture.book.id))
+
+        XCTAssertTrue(
+            owner.commitSuccess(
+                &books,
+                job: job,
+                inspection: fixture.inspection,
+                snapshotChapters: fixture.book.chapters,
+                moved: fixture.chapterURLs
+            )
+        )
+
+        XCTAssertTrue(books[0].chapters.isEmpty)
+        XCTAssertEqual(books[0].existingM4BURL, fixture.inspection.url)
+        XCTAssertEqual(books[0].boundDuration, fixture.inspection.duration)
+        XCTAssertFalse(books[0].selected)
     }
 
     func testCommitPartialReconcilesSnapshotChaptersOnMatchingBookOnly() throws {
@@ -169,7 +240,13 @@ final class CleanupJobTests: XCTestCase {
         owner.finish(job!)
         XCTAssertFalse(owner.isCleaningUp)
 
-        owner.commitSuccess(&books, job: job!, inspection: bookA.inspection)
+        owner.commitSuccess(
+            &books,
+            job: job!,
+            inspection: bookA.inspection,
+            snapshotChapters: bookA.book.chapters,
+            moved: bookA.chapterURLs
+        )
 
         XCTAssertEqual(books[0].chapters, bookA.book.chapters)
         XCTAssertEqual(books[0].existingM4BURL, bookA.book.existingM4BURL)

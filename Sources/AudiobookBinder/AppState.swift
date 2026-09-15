@@ -326,7 +326,9 @@ final class AppState {
                 if cleanupOwner.commitSuccess(
                     &books,
                     job: job,
-                    inspection: inspectionSnapshot
+                    inspection: inspectionSnapshot,
+                    snapshotChapters: bookSnapshot.chapters,
+                    moved: result.moved
                 ) {
                     playback.stop()
                 }

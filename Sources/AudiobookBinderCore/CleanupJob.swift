@@ -40,14 +40,17 @@ public struct CleanupJobOwner: Equatable, Sendable {
         current == job && job.generation == generation
     }
 
-    /// Success: clear chapters, write dest/duration from the captured inspection, deselect.
+    /// Success: remaining chapters from reconciling the *snapshot* chapters against moved files.
     @discardableResult
     public func commitSuccess(
         _ books: inout [Audiobook],
         job: CleanupJob,
-        inspection: M4BInspection
+        inspection: M4BInspection,
+        snapshotChapters: [Chapter],
+        moved: [URL]
     ) -> Bool {
-        apply(to: &books, job: job, inspection: inspection, remainingChapters: [])
+        let remaining = SourceCleanup.reconcile(chapters: snapshotChapters, moved: moved)
+        return apply(to: &books, job: job, inspection: inspection, remainingChapters: remaining)
     }
 
     /// Partial: remaining chapters from reconciling the *snapshot* chapters.

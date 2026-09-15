@@ -112,6 +112,52 @@ final class CleanupJobTests: XCTestCase {
         XCTAssertTrue(books[1].selected)
     }
 
+    func testCommitPartialThenAuthorizationAllowsRemainingWithoutAlreadyMoved() throws {
+        let bookA = try makeBoundBook(name: "RetryPartial", chapterFiles: ["01.mp3", "02.mp3"])
+        defer { bookA.tearDown() }
+
+        let dest = try XCTUnwrap(bookA.book.existingM4BURL)
+        XCTAssertTrue(
+            SourceAssociation.record(bookA.chapterURLs, dest: dest, inBookFolder: bookA.book.folder)
+        )
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: bookA.book.folder)
+        let sidecarBefore = try Data(contentsOf: sidecar)
+        let inspection = M4BInspection.capturingIdentity(
+            url: dest,
+            duration: 5,
+            chapters: [
+                ChapterMark(start: 0, duration: 2, title: "One"),
+                ChapterMark(start: 2, duration: 3, title: "Two")
+            ],
+            bookID: bookA.book.id
+        )
+
+        try FileManager.default.removeItem(at: bookA.chapterURLs[0])
+        var owner = CleanupJobOwner()
+        var books = [bookA.book]
+        let job = try XCTUnwrap(owner.begin(bookID: bookA.book.id))
+        XCTAssertTrue(
+            owner.commitPartial(
+                &books,
+                job: job,
+                inspection: inspection,
+                snapshotChapters: bookA.book.chapters,
+                moved: [bookA.chapterURLs[0]]
+            )
+        )
+        XCTAssertEqual(books[0].chapters.map(\.url.lastPathComponent), ["02.mp3"])
+
+        let auth = SourceCleanup.authorization(
+            book: books[0],
+            inspection: inspection,
+            isBuilding: false
+        )
+        XCTAssertTrue(auth.allowed)
+        XCTAssertEqual(auth.sources.map(\.lastPathComponent), ["02.mp3"])
+        XCTAssertEqual(try Data(contentsOf: sidecar), sidecarBefore)
+        XCTAssertEqual(SourceAssociation.load(inBookFolder: bookA.book.folder)?.count, 2)
+    }
+
     func testStaleGenerationCommitDoesNotMutateBooks() throws {
         let bookA = try makeBoundBook(name: "StaleA")
         defer { bookA.tearDown() }

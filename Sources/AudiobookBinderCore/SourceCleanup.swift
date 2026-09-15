@@ -86,14 +86,16 @@ public enum SourceCleanup {
             return deny(sources, "Bound .m4b changed since it was inspected.")
         }
 
-        let boundChapters = M4BInspector.playableChapters(from: inspection)
-        let summary = ChapterCompare.summary(
-            original: book.chapters,
-            bound: boundChapters,
-            boundDuration: inspection.duration
-        )
-        guard summary.allMatch else {
-            return deny(sources, "Original chapters do not match the .m4b.")
+        if !bookOmitsRecordedExportedSource(book) {
+            let boundChapters = M4BInspector.playableChapters(from: inspection)
+            let summary = ChapterCompare.summary(
+                original: book.chapters,
+                bound: boundChapters,
+                boundDuration: inspection.duration
+            )
+            guard summary.allMatch else {
+                return deny(sources, "Original chapters do not match the .m4b.")
+            }
         }
         if let sourceReason = verifyRecordedSources(
             book: book,
@@ -248,11 +250,31 @@ public enum SourceCleanup {
             let url = entry.url(relativeTo: book.folder)
             if refersToSameFile(url, dest) { continue }
             if alreadyMoved.contains(where: { refersToSameFile($0, url) }) { continue }
+            if !isListedChapter(url, on: book) { continue }
             if let reason = verifyLiveSource(url: url, entry: entry) {
                 return reason
             }
         }
         return nil
+    }
+
+    /// True when a recorded exported source is no longer on `book.chapters`
+    /// (prior partial cleanup). Dest aliases in the manifest do not count.
+    private static func bookOmitsRecordedExportedSource(_ book: Audiobook) -> Bool {
+        guard let document = SourceAssociation.loadDocument(inBookFolder: book.folder) else {
+            return false
+        }
+        return document.sources.contains { entry in
+            let url = entry.url(relativeTo: book.folder)
+            if let dest = book.existingM4BURL, refersToSameFile(url, dest) {
+                return false
+            }
+            return !isListedChapter(url, on: book)
+        }
+    }
+
+    private static func isListedChapter(_ url: URL, on book: Audiobook) -> Bool {
+        book.chapters.contains { refersToSameFile($0.url, url) }
     }
 
     /// Cheap dest/inspection guards, then dest digest before every deletion.

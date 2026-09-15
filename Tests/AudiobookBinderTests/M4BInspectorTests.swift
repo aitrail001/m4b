@@ -1008,6 +1008,45 @@ final class M4BInspectorTests: XCTestCase {
         XCTAssertEqual(allowed.sources.map(\.lastPathComponent), ["02.mp3"])
     }
 
+    func testCleanupAuthorizationAllowsRemainingAfterPartialReconcileWithoutAlreadyMoved() throws {
+        let fixture = try CleanupFixture.make()
+        defer { fixture.tearDown() }
+
+        let sidecar = SourceAssociation.sidecarURL(inBookFolder: fixture.dir)
+        let sidecarBefore = try Data(contentsOf: sidecar)
+        try FileManager.default.removeItem(at: fixture.sourceA)
+
+        var remaining = fixture.book
+        remaining.chapters = SourceCleanup.reconcile(
+            chapters: fixture.book.chapters,
+            moved: [fixture.sourceA]
+        )
+        XCTAssertEqual(remaining.chapters.map(\.url.lastPathComponent), ["02.mp3"])
+        XCTAssertFalse(
+            ChapterCompare.summary(
+                original: remaining.chapters,
+                bound: M4BInspector.playableChapters(from: fixture.inspection),
+                boundDuration: fixture.inspection.duration
+            ).allMatch,
+            "partial reconcile leaves fewer originals than the bound .m4b"
+        )
+
+        let auth = SourceCleanup.authorization(
+            book: remaining,
+            inspection: fixture.inspection,
+            isBuilding: false,
+            alreadyMoved: []
+        )
+        XCTAssertTrue(auth.allowed)
+        XCTAssertEqual(auth.sources.map(\.lastPathComponent), ["02.mp3"])
+        XCTAssertEqual(
+            try Data(contentsOf: sidecar),
+            sidecarBefore,
+            "partial cleanup must not rewrite or delete export provenance"
+        )
+        XCTAssertEqual(SourceAssociation.load(inBookFolder: fixture.dir)?.count, 2)
+    }
+
     func testSourceFilesToRemoveIntersectsManifestAndSkipsDirectory() throws {
         let fixture = try CleanupFixture.make()
         defer { fixture.tearDown() }

@@ -14,6 +14,10 @@ public struct M4BExporter: Sendable {
     package var afterDestinationCheck: (@Sendable () -> Void)?
     /// Test seam: runs after the last exportAll skip check and before export.
     package var beforeExport: (@Sendable () -> Void)?
+    /// Test seam: after dest identity is confirmed and before the dest is moved aside.
+    nonisolated(unsafe) package static var testingBeforeReplaceItem: (() -> Void)?
+    /// Test seam: after the dest has been moved to the backup path.
+    nonisolated(unsafe) package static var testingAfterMoveDestAside: (() -> Void)?
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
@@ -791,29 +795,32 @@ extension M4BExporter {
             if !overwrite {
                 throw BinderError.outputExists(dest)
             }
+            testingBeforeReplaceItem?()
+            let backup = dest.deletingLastPathComponent()
+                .appendingPathComponent(".\(UUID().uuidString).m4b-bak")
             do {
-                var resultingItemURL: NSURL?
-                try FileManager.default.replaceItem(
-                    at: dest,
-                    withItemAt: staging,
-                    backupItemName: nil,
-                    options: [],
-                    resultingItemURL: &resultingItemURL
-                )
+                try FileManager.default.moveItem(at: dest, to: backup)
             } catch {
-                if overwrite && !FileManager.default.fileExists(atPath: dest.path) {
-                    do {
-                        try FileManager.default.moveItem(at: staging, to: dest)
-                        return
-                    } catch {
-                        throw BinderError.exportFailed(error.localizedDescription)
-                    }
-                }
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    throw BinderError.outputExists(dest)
-                }
-                throw BinderError.exportFailed(error.localizedDescription)
+                throw BinderError.outputExists(dest)
             }
+            testingAfterMoveDestAside?()
+            let displaced = FileIdentity.read(from: backup).flatMap { identity in
+                identity.isDirectory ? nil : identity
+            }
+            guard let displaced, displaced.isSameVersion(as: expectedIdentity) else {
+                restoreDisplacedBackupIfDestVacant(backup, dest: dest)
+                throw BinderError.outputExists(dest)
+            }
+            if FileManager.default.fileExists(atPath: dest.path) {
+                throw BinderError.outputExists(dest)
+            }
+            do {
+                try FileManager.default.moveItem(at: staging, to: dest)
+            } catch {
+                restoreDisplacedBackupIfDestVacant(backup, dest: dest)
+                throw BinderError.outputExists(dest)
+            }
+            try? FileManager.default.removeItem(at: backup)
             return
         }
 
@@ -828,6 +835,13 @@ extension M4BExporter {
             }
             throw BinderError.exportFailed(error.localizedDescription)
         }
+    }
+
+    /// Put the displaced dest back when the path is still vacant. Never delete
+    /// the backup here: if dest reappeared, the backup is the only copy.
+    private static func restoreDisplacedBackupIfDestVacant(_ backup: URL, dest: URL) {
+        guard !FileManager.default.fileExists(atPath: dest.path) else { return }
+        try? FileManager.default.moveItem(at: backup, to: dest)
     }
 
     private static func isUsableExportSource(_ url: URL) -> Bool {

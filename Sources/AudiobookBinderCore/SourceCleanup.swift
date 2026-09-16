@@ -59,6 +59,10 @@ public enum SourceCleanup {
     /// re-hashed and trashed. Production callers never set this.
     nonisolated(unsafe) package static var testingAfterExclusiveCopy: ((_ original: URL, _ exclusive: URL) -> Void)?
 
+    /// Test seam: after the recorded-digest check and before `trashItem`.
+    /// Production callers never set this.
+    nonisolated(unsafe) package static var testingBeforeTrashExclusive: ((_ original: URL, _ exclusive: URL) -> Void)?
+
     /// Test seam: the URL passed to `trashItem` after exclusive materialize.
     /// Production callers never set this.
     nonisolated(unsafe) package static var testingDidTrash: ((_ url: URL) -> Void)?
@@ -326,9 +330,24 @@ public enum SourceCleanup {
                     reason: exclusiveCopyChangedReason
                 )
             }
+            testingBeforeTrashExclusive?(next, exclusive.url)
+            let trashedURL: URL
             do {
-                try FileManager.default.trashItem(at: trashURL, resultingItemURL: nil)
+                var resultingItem: NSURL?
+                try FileManager.default.trashItem(at: trashURL, resultingItemURL: &resultingItem)
                 testingDidTrash?(trashURL)
+                guard let resulting = resultingItem as URL? else {
+                    removeExclusiveIfOurs(exclusive)
+                    return abortAfterOpenHandleRestore(
+                        handle: handle,
+                        expected: verifiedHold,
+                        original: next,
+                        moved: moved,
+                        remaining: remaining,
+                        reason: exclusiveCopyChangedReason
+                    )
+                }
+                trashedURL = resulting
             } catch {
                 removeExclusiveIfOurs(exclusive)
                 return abortAfterOpenHandleRestore(
@@ -341,6 +360,27 @@ public enum SourceCleanup {
                 )
             }
             removeEmptyDirectory(exclusive.uniqueDir)
+            guard pathNamesHeldInode(
+                trashedURL,
+                expected: exclusive.snapshot,
+                handle: exclusive.handle
+            ),
+                  exclusiveCopyMatchesRecordedSource(
+                    exclusive,
+                    recordedDigest: recordedDigest,
+                    source: handle,
+                    verifiedHold: verifiedHold
+                  )
+            else {
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: exclusiveCopyChangedReason
+                )
+            }
             guard let nlinkBefore = linkCount(of: handle) else {
                 return abortAfterOpenHandleRestore(
                     handle: handle,

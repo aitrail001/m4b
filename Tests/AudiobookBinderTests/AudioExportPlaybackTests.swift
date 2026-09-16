@@ -151,6 +151,70 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testExportRestoresDisplacedDestWhenReplaceItemHitsADifferentFile() async throws {
+        let dir = try TestSupport.tempDir("export-replace-swap")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "ReplaceSwap", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        try Data("ORIGINAL-OWNED-DEST".utf8).write(to: dest)
+        let planted = Data("PLANTED-AFTER-IDENTITY".utf8)
+        let plantedFlag = StartedFlag()
+        M4BExporter.testingBeforeReplaceItem = {
+            plantedFlag.mark()
+            let plantedURL = dest.deletingLastPathComponent()
+                .appendingPathComponent(".\(UUID().uuidString).planted")
+            do {
+                try planted.write(to: plantedURL)
+                _ = try FileManager.default.replaceItemAt(dest, withItemAt: plantedURL)
+            } catch {
+                XCTFail("planting dest swap failed: \(error)")
+            }
+        }
+        defer { M4BExporter.testingBeforeReplaceItem = nil }
+
+        do {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+            XCTFail("expected outputExists after dest swap")
+        } catch let error as BinderError {
+            guard case .outputExists = error else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertTrue(plantedFlag.isSet)
+        XCTAssertEqual(try Data(contentsOf: dest), planted)
+    }
+
+    func testExportKeepsMovedDestWhenPathIsReplantedAfterMoveAside() async throws {
+        let dir = try TestSupport.tempDir("export-replace-replant")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "ReplaceReplant", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        let original = Data("ORIGINAL-OWNED-DEST".utf8)
+        try original.write(to: dest)
+        let planted = Data("PLANTED-AFTER-MOVE-ASIDE".utf8)
+        let plantedFlag = StartedFlag()
+        M4BExporter.testingAfterMoveDestAside = {
+            plantedFlag.mark()
+            try? planted.write(to: dest)
+        }
+        defer { M4BExporter.testingAfterMoveDestAside = nil }
+
+        do {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+            XCTFail("expected outputExists after dest reappeared")
+        } catch let error as BinderError {
+            guard case .outputExists = error else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertTrue(plantedFlag.isSet)
+        XCTAssertEqual(try Data(contentsOf: dest), planted)
+        let leftovers = try FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasSuffix(".m4b-bak") }
+        XCTAssertEqual(leftovers.count, 1, "validated dest must remain on the backup path")
+        XCTAssertEqual(try Data(contentsOf: leftovers[0]), original)
+    }
+
     func testExportRefusesUnownedDestAppearingAfterPreflight() async throws {
         let dir = try TestSupport.tempDir("export-appear-after-preflight")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -2227,6 +2291,39 @@ final class AudioExportPlaybackTests: XCTestCase {
             FileManager.default.fileExists(atPath: fixture.sourceA.path)
                 || result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) }
         )
+        XCTAssertNotNil(result.error)
+    }
+
+    func testCleanupPerformRevalidatesTrashCopyBeforeUnlinkingHold() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalA = try Data(contentsOf: fixture.sourceA)
+        let mutated = Data(repeating: 0x22, count: max(originalA.count, 16))
+        XCTAssertNotEqual(mutated, originalA)
+        let mutatedCopy = StartedFlag()
+        SourceCleanup.testingBeforeTrashExclusive = { _, exclusive in
+            do {
+                try mutated.write(to: exclusive)
+                mutatedCopy.mark()
+            } catch {
+                XCTFail("overwriting exclusive copy failed: \(error)")
+            }
+        }
+        defer { SourceCleanup.testingBeforeTrashExclusive = nil }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(mutatedCopy.isSet, "hook must overwrite the exclusive copy after the first digest check")
+        XCTAssertFalse(
+            result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+            "must not unlink the hold when the Trash copy no longer matches the recorded digest"
+        )
+        XCTAssertFalse(result.didFinish)
         XCTAssertNotNil(result.error)
     }
 

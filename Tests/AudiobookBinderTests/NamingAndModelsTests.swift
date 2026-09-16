@@ -387,6 +387,80 @@ final class NamingAndModelsTests: XCTestCase {
         XCTAssertEqual(plan[lower.id]?.lastPathComponent, "same - Ann - EditionB.m4b")
     }
 
+    func testPlannedOutputsKeepsCollisionNamesWithinNAME_MAX() throws {
+        let out = URL(fileURLWithPath: "/tmp/OutSharedNameMax", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let author = "Ann"
+        let titleByteCount = 255 - " - ".utf8.count - author.utf8.count - ".m4b".utf8.count
+        let title = String(repeating: "W", count: titleByteCount)
+        let bookA = TestSupport.dummyBook(folder: "/tmp/lib/VeryLongFolderNameA", title: title, author: author)
+        let bookB = TestSupport.dummyBook(folder: "/tmp/lib/VeryLongFolderNameB", title: title, author: author)
+        XCTAssertEqual(bookA.suggestedFileName.utf8.count, 255)
+        XCTAssertEqual(bookA.suggestedFileName, bookB.suggestedFileName)
+        let stem = (bookA.suggestedFileName as NSString).deletingPathExtension as String
+        let naive = "\(stem) - VeryLongFolderNameB.m4b"
+        XCTAssertGreaterThan(naive.utf8.count, 255)
+
+        let plan = settings.plannedOutputs(for: [bookA, bookB])
+        let nameA = try XCTUnwrap(plan[bookA.id]).lastPathComponent
+        let nameB = try XCTUnwrap(plan[bookB.id]).lastPathComponent
+        XCTAssertLessThanOrEqual(nameA.utf8.count, 255)
+        XCTAssertLessThanOrEqual(nameB.utf8.count, 255)
+        XCTAssertEqual((nameA as NSString).pathExtension.lowercased(), "m4b")
+        XCTAssertEqual((nameB as NSString).pathExtension.lowercased(), "m4b")
+        XCTAssertNotEqual(nameA.lowercased(), nameB.lowercased())
+
+        var ownedB = bookB
+        ownedB.existingM4BURL = plan[bookB.id]
+        let again = settings.plannedOutputs(for: [ownedB])
+        XCTAssertEqual(again[ownedB.id]?.lastPathComponent, nameB)
+    }
+
+    func testPlannedOutputsReusesCJKCollisionShorterThanNAME_MAX() throws {
+        let out = URL(fileURLWithPath: "/tmp/OutSharedNameMaxCJK", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let title = String(repeating: "书", count: 90)
+        let bookA = TestSupport.dummyBook(folder: "/tmp/lib/FolderA", title: title, author: "Ann")
+        let bookB = TestSupport.dummyBook(folder: "/tmp/lib/FolderB", title: title, author: "Ann")
+        XCTAssertGreaterThan(bookA.suggestedFileName.utf8.count, 200)
+        let stem = (bookA.suggestedFileName as NSString).deletingPathExtension as String
+        let naive = "\(stem) - FolderB.m4b"
+        XCTAssertGreaterThan(naive.utf8.count, 255)
+
+        let plan = settings.plannedOutputs(for: [bookA, bookB])
+        let nameB = try XCTUnwrap(plan[bookB.id]).lastPathComponent
+        XCTAssertLessThanOrEqual(nameB.utf8.count, 255)
+        XCTAssertLessThan(nameB.utf8.count, 255)
+        XCTAssertEqual((nameB as NSString).pathExtension.lowercased(), "m4b")
+
+        var ownedB = bookB
+        ownedB.existingM4BURL = plan[bookB.id]
+        let again = settings.plannedOutputs(for: [ownedB])
+        XCTAssertEqual(again[ownedB.id]?.lastPathComponent, nameB)
+    }
+
+    func testPlannedOutputsReusesCollisionWhenFolderContainsDashSeparator() throws {
+        let out = URL(fileURLWithPath: "/tmp/OutSharedNameMaxDash", isDirectory: true)
+        let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)
+        let author = "Ann"
+        let titleByteCount = 255 - " - ".utf8.count - author.utf8.count - ".m4b".utf8.count
+        let title = String(repeating: "W", count: titleByteCount)
+        let bookA = TestSupport.dummyBook(folder: "/tmp/lib/Author - Title A", title: title, author: author)
+        let bookB = TestSupport.dummyBook(folder: "/tmp/lib/Author - Title B", title: title, author: author)
+        let stem = (bookA.suggestedFileName as NSString).deletingPathExtension as String
+        XCTAssertGreaterThan("\(stem) - Author - Title B.m4b".utf8.count, 255)
+
+        let plan = settings.plannedOutputs(for: [bookA, bookB])
+        let nameB = try XCTUnwrap(plan[bookB.id]).lastPathComponent
+        XCTAssertLessThanOrEqual(nameB.utf8.count, 255)
+        XCTAssertTrue(nameB.contains("Author - Title") || nameB.utf8.count == 255)
+
+        var ownedB = bookB
+        ownedB.existingM4BURL = plan[bookB.id]
+        let again = settings.plannedOutputs(for: [ownedB])
+        XCTAssertEqual(again[ownedB.id]?.lastPathComponent, nameB)
+    }
+
     func testPlanIgnoresUnselectedBooks() {
         let out = URL(fileURLWithPath: "/tmp/OutShared", isDirectory: true)
         let settings = ExportSettings(outputDirectory: out, writeNextToBook: false)

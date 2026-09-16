@@ -308,12 +308,43 @@ public struct ExportSettings: Sendable, Equatable {
 
     private static func destinationMatchesCurrentNaming(_ name: String, book: Audiobook) -> Bool {
         guard (name as NSString).pathExtension.lowercased() == "m4b" else { return false }
-        let stem = (book.suggestedFileName as NSString).deletingPathExtension.lowercased()
-        let destStem = (name as NSString).deletingPathExtension.lowercased()
-        if destStem == stem { return true }
-        if destStem.hasPrefix(stem + " - ") { return true }
-        if destStem.hasPrefix(stem + " ") { return true }
+        guard name.utf8.count <= maxOutputComponentBytes else { return false }
+        if name.caseInsensitiveCompare(book.suggestedFileName) == .orderedSame { return true }
+
+        let stem = (book.suggestedFileName as NSString).deletingPathExtension as String
+        let destStem = (name as NSString).deletingPathExtension as String
+        let destStemLower = destStem.lowercased()
+        let stemLower = stem.lowercased()
+        if destStemLower.hasPrefix(stemLower + " - ") { return true }
+        if destStemLower.hasPrefix(stemLower + " ") { return true }
+
+        let folder = sanitizedPathComponent(book.folder.lastPathComponent)
+        if name.caseInsensitiveCompare(collisionOutputName(stem: stem, folder: folder, serial: nil)) == .orderedSame {
+            return true
+        }
+        if let serial = trailingCollisionSerial(destStem),
+           name.caseInsensitiveCompare(collisionOutputName(stem: stem, folder: folder, serial: serial)) == .orderedSame {
+            return true
+        }
+        if let uuid = trailingCollisionUUID(destStem),
+           name.caseInsensitiveCompare(collisionOutputName(stem: stem, folder: uuid, serial: nil)) == .orderedSame {
+            return true
+        }
         return false
+    }
+
+    private static func trailingCollisionSerial(_ destStem: String) -> Int? {
+        guard let idx = destStem.lastIndex(of: " ") else { return nil }
+        let tail = destStem[destStem.index(after: idx)...]
+        guard let n = Int(tail), (2..<10_000).contains(n), String(n) == tail else { return nil }
+        return n
+    }
+
+    private static func trailingCollisionUUID(_ destStem: String) -> String? {
+        guard destStem.utf8.count >= 36 else { return nil }
+        let uuid = String(destStem.suffix(36))
+        guard UUID(uuidString: uuid) != nil else { return nil }
+        return uuid
     }
 
     private func uniqueOutputURL(for book: Audiobook, reserved: inout Set<String>) -> URL {
@@ -326,12 +357,12 @@ public struct ExportSettings: Sendable, Equatable {
         let stem = (primary as NSString).deletingPathExtension
         let folder = Self.sanitizedPathComponent(book.folder.lastPathComponent)
         if !folder.isEmpty {
-            if let url = claim(dir.appendingPathComponent("\(stem) - \(folder).m4b"), reserved: &reserved) {
+            if let url = claim(dir.appendingPathComponent(Self.collisionOutputName(stem: stem, folder: folder, serial: nil)), reserved: &reserved) {
                 return url
             }
             var n = 2
             while n < 10_000 {
-                if let url = claim(dir.appendingPathComponent("\(stem) - \(folder) \(n).m4b"), reserved: &reserved) {
+                if let url = claim(dir.appendingPathComponent(Self.collisionOutputName(stem: stem, folder: folder, serial: n)), reserved: &reserved) {
                     return url
                 }
                 n += 1
@@ -339,16 +370,19 @@ public struct ExportSettings: Sendable, Equatable {
         } else {
             var n = 2
             while n < 10_000 {
-                if let url = claim(dir.appendingPathComponent("\(stem) \(n).m4b"), reserved: &reserved) {
+                if let url = claim(dir.appendingPathComponent(Self.collisionOutputName(stem: stem, folder: "", serial: n)), reserved: &reserved) {
                     return url
                 }
                 n += 1
             }
         }
-        return dir.appendingPathComponent("\(stem) - \(UUID().uuidString).m4b")
+        return dir.appendingPathComponent(
+            Self.collisionOutputName(stem: stem, folder: UUID().uuidString, serial: nil)
+        )
     }
 
     private func claim(_ url: URL, reserved: inout Set<String>) -> URL? {
+        guard url.lastPathComponent.utf8.count <= Self.maxOutputComponentBytes else { return nil }
         let key = Self.destinationKey(url)
         guard !reserved.contains(key) else { return nil }
         if FileManager.default.fileExists(atPath: url.path) {
@@ -361,6 +395,37 @@ public struct ExportSettings: Sendable, Equatable {
 
     private static func destinationKey(_ url: URL) -> String {
         url.standardizedFileURL.path.lowercased()
+    }
+
+    private static let maxOutputComponentBytes = 255
+
+    private static func collisionOutputName(stem: String, folder: String, serial: Int?) -> String {
+        let ext = ".m4b"
+        let serialPart = serial.map { " \($0)" } ?? ""
+        if folder.isEmpty {
+            let suffix = serialPart + ext
+            return utf8Prefix(stem, maxBytes: max(0, maxOutputComponentBytes - suffix.utf8.count)) + suffix
+        }
+        let joiner = " - "
+        let reserved = joiner.utf8.count + serialPart.utf8.count + ext.utf8.count
+        let clippedFolder = utf8Prefix(folder, maxBytes: max(0, maxOutputComponentBytes - reserved))
+        let suffix = joiner + clippedFolder + serialPart + ext
+        return utf8Prefix(stem, maxBytes: max(0, maxOutputComponentBytes - suffix.utf8.count)) + suffix
+    }
+
+    /// Drops trailing Unicode scalars until the UTF-8 byte length fits.
+    private static func utf8Prefix(_ string: String, maxBytes: Int) -> String {
+        if maxBytes <= 0 { return "" }
+        if string.utf8.count <= maxBytes { return string }
+        var used = 0
+        var scalars = String.UnicodeScalarView()
+        for scalar in string.unicodeScalars {
+            let n = scalar.utf8.count
+            if used + n > maxBytes { break }
+            scalars.append(scalar)
+            used += n
+        }
+        return String(scalars)
     }
 
     private static func sanitizedPathComponent(_ name: String) -> String {

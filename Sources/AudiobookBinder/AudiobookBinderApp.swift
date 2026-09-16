@@ -73,6 +73,7 @@ struct BinderApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var isCleaningUp: () -> Bool = { false }
     private var postponeTerminate = false
+    private var lastWindowClosedDuringCleanup = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
@@ -86,7 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        JobGate.shouldTerminateAfterLastWindowClosed(isCleaningUp: isCleaningUp())
+        let shouldQuit = JobGate.shouldTerminateAfterLastWindowClosed(isCleaningUp: isCleaningUp())
+        if !shouldQuit {
+            lastWindowClosedDuringCleanup = true
+        }
+        return shouldQuit
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -99,9 +104,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     @objc private func cleanupDidFinish() {
-        guard postponeTerminate else { return }
+        let action = JobGate.cleanupQuitAction(
+            postponeTerminate: postponeTerminate,
+            lastWindowClosedDuringCleanup: lastWindowClosedDuringCleanup
+        )
         postponeTerminate = false
-        NSApp.reply(toApplicationShouldTerminate: true)
+        lastWindowClosedDuringCleanup = false
+        switch action {
+        case .none:
+            break
+        case .replyToTerminate:
+            NSApp.reply(toApplicationShouldTerminate: true)
+        case .terminate:
+            NSApp.terminate(nil)
+        }
     }
 
     func application(_ sender: NSApplication, open urls: [URL]) {

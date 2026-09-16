@@ -48,4 +48,21 @@ public enum JobGate {
     public static func shouldPostponeTermination(isCleaningUp: Bool) -> Bool {
         isCleaningUp
     }
+
+    public enum CleanupQuitAction: Equatable, Sendable {
+        case none
+        case replyToTerminate
+        case terminate
+    }
+
+    /// After cleanup, finish a postponed Cmd-Q, or quit if the last window
+    /// already closed while a hold was in progress.
+    public static func cleanupQuitAction(
+        postponeTerminate: Bool,
+        lastWindowClosedDuringCleanup: Bool
+    ) -> CleanupQuitAction {
+        if postponeTerminate { return .replyToTerminate }
+        if lastWindowClosedDuringCleanup { return .terminate }
+        return .none
+    }
 }

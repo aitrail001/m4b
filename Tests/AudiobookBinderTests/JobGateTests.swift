@@ -92,4 +92,26 @@ final class JobGateTests: XCTestCase {
         XCTAssertTrue(JobGate.shouldPostponeTermination(isCleaningUp: true))
         XCTAssertFalse(JobGate.shouldPostponeTermination(isCleaningUp: false))
     }
+
+    func testCleanupQuitActionRepliesWhenTerminateWasPostponed() {
+        XCTAssertEqual(
+            JobGate.cleanupQuitAction(postponeTerminate: true, lastWindowClosedDuringCleanup: false),
+            .replyToTerminate
+        )
+        XCTAssertEqual(
+            JobGate.cleanupQuitAction(postponeTerminate: true, lastWindowClosedDuringCleanup: true),
+            .replyToTerminate
+        )
+    }
+
+    func testCleanupQuitActionTerminatesWhenLastWindowClosedDuringCleanup() {
+        XCTAssertEqual(
+            JobGate.cleanupQuitAction(postponeTerminate: false, lastWindowClosedDuringCleanup: true),
+            .terminate
+        )
+        XCTAssertEqual(
+            JobGate.cleanupQuitAction(postponeTerminate: false, lastWindowClosedDuringCleanup: false),
+            .none
+        )
+    }
 }

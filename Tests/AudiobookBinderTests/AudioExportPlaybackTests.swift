@@ -1971,30 +1971,186 @@ final class AudioExportPlaybackTests: XCTestCase {
         if verifiedStillPresent {
             XCTAssertFalse(
                 result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
-                "must not list the original as moved unless the verified inode was trashed"
+                "must not list the original as moved unless the verified inode was unlinked"
+            )
+            XCTAssertFalse(result.didFinish, "must not finish while the verified inode remains linked")
+            XCTAssertNotNil(result.error)
+            XCTAssertTrue(
+                result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+                "vacant original stays in remaining when the verified inode was not unlinked"
             )
         } else {
             XCTAssertTrue(
                 result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
-                "verified inode was trashed, so the original must be listed as moved"
+                "verified inode was unlinked, so the original must be listed as moved"
             )
+            XCTAssertFalse(
+                result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+                "successfully unlinked original must leave remaining"
+            )
+            XCTAssertTrue(result.didFinish)
+            XCTAssertNil(result.error)
+            XCTAssertTrue(result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) })
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceB.path))
         }
-        XCTAssertFalse(
-            verifiedStillPresent,
-            "verified inode must be trashed via its current path after rename-away"
-        )
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: fixture.sourceA.path),
             "must not restore a mismatched hold onto the original chapter path"
         )
+    }
+
+    func testCleanupPerformDoesNotReportMovedWhenHoldReplacementLeavesVerifiedInode() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalA = try Data(contentsOf: fixture.sourceA)
+        let planted = Data(repeating: 0x31, count: 24)
+        XCTAssertNotEqual(planted, originalA)
+
+        var holdPath: URL?
+        var asideURL: URL?
+        let swappedHold = StartedFlag()
+        SourceCleanup.testingAfterDestRecheck = { original, held in
+            XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: original.path),
+                "original path must stay vacant while dest is rechecked"
+            )
+            guard SourceCleanup.refersToSameFile(original, fixture.sourceA) else { return }
+            let aside = held.deletingLastPathComponent()
+                .appendingPathComponent("\(held.lastPathComponent).aside")
+            do {
+                try FileManager.default.moveItem(at: held, to: aside)
+                try planted.write(to: held)
+                holdPath = held
+                asideURL = aside
+                swappedHold.mark()
+            } catch {
+                XCTFail("renaming hold and planting replacement failed: \(error)")
+            }
+        }
+        defer {
+            SourceCleanup.testingAfterDestRecheck = nil
+            SourceCleanup.testingBeforeTrashHeld = nil
+            SourceCleanup.testingAfterHold = nil
+            SourceCleanup.testingDidTrash = nil
+        }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        let hold = try XCTUnwrap(holdPath, "hook must capture the hold URL")
+        let aside = try XCTUnwrap(asideURL, "hook must capture the aside URL")
+        XCTAssertTrue(swappedHold.isSet, "hook must rename the hold and plant a replacement")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: hold.path),
+            "planted replacement at the old hold pathname must survive"
+        )
+        XCTAssertEqual(try Data(contentsOf: hold), planted)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: aside.path),
+            "verified inode must remain at the aside path when unlink would hit the replacement"
+        )
+        XCTAssertEqual(try Data(contentsOf: aside), originalA)
         XCTAssertFalse(
+            result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+            "exclusive trash is a copy; do not report moved while the verified inode is still linked"
+        )
+        XCTAssertFalse(result.didFinish)
+        let error = try XCTUnwrap(result.error)
+        XCTAssertFalse(error.isEmpty)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.sourceA.path),
+            "must not restore the replacement or the aside onto the original chapter path"
+        )
+        XCTAssertTrue(
             result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
-            "successfully trashed original must leave remaining"
+            "vacant original stays in remaining"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+        XCTAssertTrue(
+            result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) }
+        )
+        XCTAssertFalse(
+            result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) }
+        )
+    }
+
+    func testCleanupPerformExclusiveTrashUsesOriginalChapterBasename() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let namedA = SourceCleanup.exclusiveMaterializeFileName(from: fixture.sourceA)
+        let namedB = SourceCleanup.exclusiveMaterializeFileName(from: fixture.sourceB)
+        XCTAssertEqual(namedA, fixture.sourceA.lastPathComponent)
+        XCTAssertEqual(namedB, fixture.sourceB.lastPathComponent)
+        XCTAssertEqual(namedA, "01.mp3")
+        XCTAssertEqual((namedA as NSString).pathExtension, "mp3")
+        XCTAssertEqual((namedB as NSString).pathExtension, "mp3")
+        XCTAssertFalse(namedA.hasPrefix("."))
+        XCTAssertNil(UUID(uuidString: namedA))
+        XCTAssertNil(UUID(uuidString: namedA.hasPrefix(".") ? String(namedA.dropFirst()) : namedA))
+
+        let longName = String(repeating: "a", count: 300) + ".m4a"
+        let truncated = SourceCleanup.exclusiveMaterializeFileName(
+            from: URL(fileURLWithPath: "/tmp/\(longName)")
+        )
+        XCTAssertLessThanOrEqual(truncated.utf8.count, SourceAssociation.maxSnapshotComponentBytes)
+        XCTAssertEqual((truncated as NSString).pathExtension, "m4a")
+        XCTAssertTrue(truncated.hasSuffix(".m4a"))
+        XCTAssertNotEqual(truncated, longName)
+        XCTAssertNil(UUID(uuidString: truncated))
+
+        let helperDir = try TestSupport.tempDir("exclusive-materialize-name")
+        defer { try? FileManager.default.removeItem(at: helperDir) }
+        let original = helperDir.appendingPathComponent("Chapter 01.mp3")
+        let payload = Data("exclusive-name".utf8)
+        try payload.write(to: original)
+        let handle = try FileHandle(forReadingFrom: original)
+        defer { try? handle.close() }
+        let copy = try SourceCleanup.materializeExclusiveCopy(
+            from: handle,
+            original: original,
+            inDirectory: helperDir
+        )
+        defer { try? FileManager.default.removeItem(at: copy.deletingLastPathComponent()) }
+        XCTAssertEqual(copy.lastPathComponent, original.lastPathComponent)
+        XCTAssertEqual(copy.pathExtension, "mp3")
+        XCTAssertTrue(copy.deletingLastPathComponent().lastPathComponent.hasPrefix("."))
+        XCTAssertNotEqual(copy.lastPathComponent, copy.deletingLastPathComponent().lastPathComponent)
+        XCTAssertNotNil(
+            UUID(uuidString: String(copy.deletingLastPathComponent().lastPathComponent.dropFirst()))
+        )
+        XCTAssertEqual(try Data(contentsOf: copy), payload)
+
+        var trashed: [URL] = []
+        SourceCleanup.testingDidTrash = { url in
+            trashed.append(url)
+        }
+        defer { SourceCleanup.testingDidTrash = nil }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
         )
         XCTAssertTrue(result.didFinish)
         XCTAssertNil(result.error)
-        XCTAssertTrue(result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceB) })
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceB.path))
+        XCTAssertEqual(Set(trashed.map(\.lastPathComponent)), ["01.mp3", "02.mp3"])
+        XCTAssertTrue(trashed.allSatisfy { $0.pathExtension == "mp3" })
+        XCTAssertTrue(
+            trashed.allSatisfy { $0.deletingLastPathComponent().lastPathComponent.hasPrefix(".") }
+        )
+        XCTAssertTrue(
+            trashed.allSatisfy {
+                UUID(uuidString: String($0.deletingLastPathComponent().lastPathComponent.dropFirst())) != nil
+            }
+        )
+        XCTAssertFalse(trashed.contains { UUID(uuidString: $0.lastPathComponent) != nil })
+        XCTAssertFalse(trashed.contains { UUID(uuidString: String($0.lastPathComponent.dropFirst())) != nil })
     }
 
     func testCleanupPerformDoesNotRestorePlantedHoldWhenDestUnauthorizedAfterRenameAway() throws {

@@ -55,6 +55,10 @@ public enum SourceCleanup {
     /// Production callers never set this.
     nonisolated(unsafe) package static var testingAfterDestRecheck: ((_ original: URL, _ held: URL) -> Void)?
 
+    /// Test seam: the URL passed to `trashItem` after exclusive materialize.
+    /// Production callers never set this.
+    nonisolated(unsafe) package static var testingDidTrash: ((_ url: URL) -> Void)?
+
     /// View-body helper: cached/pending/cheap guards only. Does not hash.
     public static func controlsState(
         canCleanupSources: Bool,
@@ -154,8 +158,9 @@ public enum SourceCleanup {
     /// One bulk verification, then dest revalidation before each hold.
     /// Rename onto a same-directory hold, open that inode immediately, verify
     /// through the fd, dest-recheck, copy verified bytes into an exclusive
-    /// file, trash that file, then unlink the hold entry only if it still
-    /// names the open inode.
+    /// file named with the original chapter basename, trash that file, then
+    /// unlink the hold entry only if it still names the open inode and
+    /// nlink / F_GETPATH confirm that inode left the namespace.
     public static func perform(
         book: Audiobook,
         inspection: M4BInspection,
@@ -267,6 +272,7 @@ public enum SourceCleanup {
             do {
                 exclusive = try materializeExclusiveCopy(
                     from: handle,
+                    original: next,
                     inDirectory: next.deletingLastPathComponent()
                 )
             } catch {
@@ -281,8 +287,10 @@ public enum SourceCleanup {
             }
             do {
                 try FileManager.default.trashItem(at: exclusive, resultingItemURL: nil)
+                testingDidTrash?(exclusive)
             } catch {
                 try? FileManager.default.removeItem(at: exclusive)
+                try? FileManager.default.removeItem(at: exclusive.deletingLastPathComponent())
                 return abortAfterOpenHandleRestore(
                     handle: handle,
                     expected: verifiedHold,
@@ -292,12 +300,33 @@ public enum SourceCleanup {
                     reason: error.localizedDescription
                 )
             }
-            if let current = currentURL(of: handle),
-               pathNamesHeldInode(current, expected: verifiedHold, handle: handle) {
-                unlinkPath(current)
+            try? FileManager.default.removeItem(at: exclusive.deletingLastPathComponent())
+            guard let nlinkBefore = linkCount(of: handle) else {
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: "Cannot read the held source identity."
+                )
             }
-            moved.append(next)
-            remaining.removeAll { refersToSameFile($0, next) }
+            if pathNamesHeldInode(hold, expected: verifiedHold, handle: handle) {
+                unlinkPath(hold)
+            }
+            let nlinkDropped = linkCount(of: handle).map { $0 < nlinkBefore } ?? false
+            let fullyUnlinked = currentURL(of: handle) == nil
+            if nlinkDropped || fullyUnlinked {
+                moved.append(next)
+                remaining.removeAll { refersToSameFile($0, next) }
+                continue
+            }
+            return abortMismatchedHold(
+                original: next,
+                moved: moved,
+                remaining: remaining,
+                reason: verifiedInodeStillLinkedReason
+            )
         }
         return SourceCleanupResult(moved: moved, remaining: remaining, error: nil)
     }
@@ -367,6 +396,8 @@ public enum SourceCleanup {
     private static let sourceChangedReason = "Source files changed since they were bound."
     private static let holdChangedAfterDestRecheckReason =
         "Held source is no longer the verified file."
+    private static let verifiedInodeStillLinkedReason =
+        "Verified source is still on disk after Trash."
     private static let cancelledReason = BinderError.cancelled.errorDescription ?? "Cancelled"
 
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
@@ -574,6 +605,12 @@ public enum SourceCleanup {
         }
     }
 
+    private static func linkCount(of handle: FileHandle) -> nlink_t? {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else { return nil }
+        return info.st_nlink
+    }
+
     private static func openHoldForVerify(_ hold: URL) throws -> FileHandle {
         try hold.withUnsafeFileSystemRepresentation { cPath in
             guard let cPath else {
@@ -587,23 +624,79 @@ public enum SourceCleanup {
         }
     }
 
-    /// Bytes of the open handle into a file this process exclusively created.
-    private static func materializeExclusiveCopy(
+    /// Original chapter basename, truncated to `NAME_MAX` while keeping the extension.
+    package static func exclusiveMaterializeFileName(from original: URL) -> String {
+        let name = original.lastPathComponent
+        let maxBytes = Int(NAME_MAX)
+        if name.utf8.count <= maxBytes { return name }
+        let ext = original.pathExtension
+        if ext.isEmpty {
+            return utf8Prefix(name, maxBytes: maxBytes)
+        }
+        let suffix = ".\(ext)"
+        let suffixBytes = suffix.utf8.count
+        if suffixBytes >= maxBytes {
+            return utf8Prefix(name, maxBytes: maxBytes)
+        }
+        let stem = (name as NSString).deletingPathExtension
+        return utf8Prefix(stem, maxBytes: maxBytes - suffixBytes) + suffix
+    }
+
+    /// Bytes of the open handle into a file this process exclusively created,
+    /// using the original chapter basename inside a unique hidden directory.
+    package static func materializeExclusiveCopy(
         from handle: FileHandle,
+        original: URL,
         inDirectory directory: URL
     ) throws -> URL {
         var lastError: Error = POSIXError(.EIO)
+        let fileName = exclusiveMaterializeFileName(from: original)
         for _ in 0..<4 {
-            let dest = directory.appendingPathComponent(".\(UUID().uuidString)")
+            let uniqueDir = directory.appendingPathComponent(".\(UUID().uuidString)")
+            do {
+                try createExclusiveDirectory(uniqueDir)
+            } catch let error as POSIXError where error.code == .EEXIST {
+                lastError = error
+                continue
+            }
+            let dest = uniqueDir.appendingPathComponent(fileName)
             do {
                 try writeExclusiveCopy(from: handle, to: dest)
                 return dest
             } catch let error as POSIXError where error.code == .EEXIST {
                 lastError = error
+                try? FileManager.default.removeItem(at: uniqueDir)
                 continue
+            } catch {
+                try? FileManager.default.removeItem(at: uniqueDir)
+                throw error
             }
         }
         throw lastError
+    }
+
+    private static func createExclusiveDirectory(_ url: URL) throws {
+        try url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { throw POSIXError(.EFAULT) }
+            guard mkdir(cPath, S_IRWXU) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        }
+    }
+
+    /// Drops trailing Unicode scalars until the UTF-8 byte length fits.
+    private static func utf8Prefix(_ string: String, maxBytes: Int) -> String {
+        if maxBytes <= 0 { return "" }
+        if string.utf8.count <= maxBytes { return string }
+        var used = 0
+        var scalars = String.UnicodeScalarView()
+        for scalar in string.unicodeScalars {
+            let n = scalar.utf8.count
+            if used + n > maxBytes { break }
+            scalars.append(scalar)
+            used += n
+        }
+        return String(scalars)
     }
 
     private static func writeExclusiveCopy(from handle: FileHandle, to dest: URL) throws {

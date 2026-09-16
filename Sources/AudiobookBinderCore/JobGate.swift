@@ -38,4 +38,14 @@ public enum JobGate {
     ) -> Bool {
         !isScanning && !isBuilding && !isCleaningUp
     }
+
+    /// Closing the last window must not kill a cleanup that already renamed a hold.
+    public static func shouldTerminateAfterLastWindowClosed(isCleaningUp: Bool) -> Bool {
+        !isCleaningUp
+    }
+
+    /// Cmd-Q waits until cleanup restores or finishes the held source.
+    public static func shouldPostponeTermination(isCleaningUp: Bool) -> Bool {
+        isCleaningUp
+    }
 }

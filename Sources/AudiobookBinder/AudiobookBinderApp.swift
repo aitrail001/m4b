@@ -38,6 +38,9 @@ struct BinderApp: App {
             ContentView()
                 .environment(appState)
                 .frame(minWidth: 980, minHeight: 640)
+                .onAppear {
+                    appDelegate.isCleaningUp = { appState.isCleaningUp }
+                }
         }
         .defaultSize(width: 1240, height: 800)
         .windowToolbarStyle(.unified)
@@ -68,13 +71,37 @@ struct BinderApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var isCleaningUp: () -> Bool = { false }
+    private var postponeTerminate = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(cleanupDidFinish),
+            name: .binderCleanupDidFinish,
+            object: nil
+        )
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        JobGate.shouldTerminateAfterLastWindowClosed(isCleaningUp: isCleaningUp())
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if JobGate.shouldPostponeTermination(isCleaningUp: isCleaningUp()) {
+            postponeTerminate = true
+            return .terminateLater
+        }
+        return .terminateNow
+    }
+
+    @MainActor
+    @objc private func cleanupDidFinish() {
+        guard postponeTerminate else { return }
+        postponeTerminate = false
+        NSApp.reply(toApplicationShouldTerminate: true)
     }
 
     func application(_ sender: NSApplication, open urls: [URL]) {
@@ -84,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let binderOpenURLs = Notification.Name("audiobookBinder.openURLs")
+    static let binderCleanupDidFinish = Notification.Name("audiobookBinder.cleanupDidFinish")
 }
 
 enum CLI {

@@ -219,10 +219,12 @@ public struct M4BExporter: Sendable {
             }
             let existed = Self.existingRegularFile(dest)
             let ownedIdentity = existed
-                ? FileIdentity.read(from: dest).flatMap { identity in
-                    identity.isDirectory ? nil : identity
-                }
+                ? Self.validatedOwnedDestinationIdentity(dest, book: book, settings: settings)
                 : nil
+            if existed, ownedIdentity == nil {
+                results.append(BookExportResult(bookID: book.id, url: dest, outcome: .skippedExisting))
+                continue
+            }
             beforeExport?()
             do {
                 try await exportPrepared(
@@ -735,7 +737,23 @@ extension M4BExporter {
         settings: ExportSettings
     ) -> Bool {
         guard existingRegularFile(dest) else { return false }
-        return !settings.owns(dest, for: book) || !settings.overwrite
+        return validatedOwnedDestinationIdentity(dest, book: book, settings: settings) == nil
+    }
+
+    /// Identity `loadVerified` accepted for this dest. Nil if dest is absent,
+    /// overwrite is off, or the live file is not the owned object.
+    private static func validatedOwnedDestinationIdentity(
+        _ dest: URL,
+        book: Audiobook,
+        settings: ExportSettings
+    ) -> FileIdentity? {
+        guard settings.overwrite else { return nil }
+        guard let associated = OutputAssociation.loadVerified(inBookFolder: book.folder),
+              isSameFileURL(associated.url, dest)
+        else {
+            return nil
+        }
+        return associated.identity
     }
 
     static func preflightDestination(_ dest: URL, book: Audiobook, overwrite: Bool) throws {

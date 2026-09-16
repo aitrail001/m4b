@@ -82,4 +82,14 @@ final class JobGateTests: XCTestCase {
             "Cannot trash sources while cleanup is already running."
         )
     }
+
+    func testDoesNotQuitOnLastWindowWhileCleaningUp() {
+        XCTAssertFalse(JobGate.shouldTerminateAfterLastWindowClosed(isCleaningUp: true))
+        XCTAssertTrue(JobGate.shouldTerminateAfterLastWindowClosed(isCleaningUp: false))
+    }
+
+    func testPostponesTerminationWhileCleaningUp() {
+        XCTAssertTrue(JobGate.shouldPostponeTermination(isCleaningUp: true))
+        XCTAssertFalse(JobGate.shouldPostponeTermination(isCleaningUp: false))
+    }
 }

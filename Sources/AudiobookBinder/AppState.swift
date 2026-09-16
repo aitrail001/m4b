@@ -314,7 +314,10 @@ final class AppState {
         cleanupError = nil
         status = "Moving original audio files to Trash…"
         Task {
-            defer { cleanupOwner.finish(job) }
+            defer {
+                cleanupOwner.finish(job)
+                NotificationCenter.default.post(name: .binderCleanupDidFinish, object: nil)
+            }
             let result = await Task.detached(priority: .userInitiated) {
                 SourceCleanup.perform(
                     book: bookSnapshot,

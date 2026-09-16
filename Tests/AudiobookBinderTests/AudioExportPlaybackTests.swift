@@ -2192,6 +2192,44 @@ final class AudioExportPlaybackTests: XCTestCase {
         _ = result
     }
 
+    func testCleanupPerformRefusesExclusiveCopyThatDoesNotMatchRecordedDigest() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let originalA = try Data(contentsOf: fixture.sourceA)
+        let mutated = Data(repeating: 0x11, count: max(originalA.count, 16))
+        XCTAssertNotEqual(mutated, originalA)
+        let mutatedHold = StartedFlag()
+        SourceCleanup.testingAfterDestRecheck = { original, held in
+            guard SourceCleanup.refersToSameFile(original, fixture.sourceA) else { return }
+            do {
+                try mutated.write(to: held)
+                mutatedHold.mark()
+            } catch {
+                XCTFail("overwriting held inode failed: \(error)")
+            }
+        }
+        defer { SourceCleanup.testingAfterDestRecheck = nil }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(mutatedHold.isSet, "hook must overwrite the hold after dest recheck")
+        XCTAssertFalse(result.didFinish)
+        XCTAssertFalse(
+            result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+            "Trash must not be accepted when the exclusive copy does not match the recorded digest"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: fixture.sourceA.path)
+                || result.remaining.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) }
+        )
+        XCTAssertNotNil(result.error)
+    }
+
     func testCleanupPerformDoesNotRestorePlantedHoldWhenDestUnauthorizedAfterRenameAway() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }

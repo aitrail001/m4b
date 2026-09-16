@@ -291,7 +291,18 @@ public enum SourceCleanup {
             }
             defer { try? exclusive.handle.close() }
             testingAfterExclusiveCopy?(next, exclusive.url)
-            guard exclusiveCopyMatchesVerifiedSource(exclusive, source: handle) else {
+            guard let recordedDigest = recordedSourceDigest(
+                original: next,
+                bookFolder: book.folder,
+                document: document
+            ),
+                  exclusiveCopyMatchesRecordedSource(
+                    exclusive,
+                    recordedDigest: recordedDigest,
+                    source: handle,
+                    verifiedHold: verifiedHold
+                  )
+            else {
                 removeExclusiveIfOurs(exclusive)
                 return abortAfterOpenHandleRestore(
                     handle: handle,
@@ -733,18 +744,37 @@ public enum SourceCleanup {
         throw lastError
     }
 
-    private static func exclusiveCopyMatchesVerifiedSource(
+    private static func recordedSourceDigest(
+        original: URL,
+        bookFolder: URL,
+        document: SourceAssociation.Document
+    ) -> String? {
+        document.sources.first(where: {
+            refersToSameFile($0.url(relativeTo: bookFolder), original)
+        })?.sha256
+    }
+
+    /// Exclusive copy must match the sidecar digest, not whatever the hold
+    /// currently hashes to after a post-verify overwrite.
+    private static func exclusiveCopyMatchesRecordedSource(
         _ exclusive: ExclusiveCopy,
-        source: FileHandle
+        recordedDigest: String,
+        source: FileHandle,
+        verifiedHold: HeldInodeSnapshot
     ) -> Bool {
-        guard let exclusiveDigest = SourceAssociation.sha256Hex(of: exclusive.handle),
-              let sourceDigest = SourceAssociation.sha256Hex(of: source),
+        guard !recordedDigest.isEmpty,
+              let exclusiveDigest = SourceAssociation.sha256Hex(of: exclusive.handle),
               !exclusiveDigest.isEmpty,
-              exclusiveDigest.caseInsensitiveCompare(sourceDigest) == .orderedSame
+              exclusiveDigest.caseInsensitiveCompare(recordedDigest) == .orderedSame
         else {
             return false
         }
-        guard let now = inodeSnapshot(of: exclusive.handle), now == exclusive.snapshot else {
+        guard let exclusiveNow = inodeSnapshot(of: exclusive.handle),
+              exclusiveNow == exclusive.snapshot
+        else {
+            return false
+        }
+        guard let sourceNow = inodeSnapshot(of: source), sourceNow == verifiedHold else {
             return false
         }
         return true

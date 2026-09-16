@@ -581,6 +581,60 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(size, 1_000)
     }
 
+    func testExportAllDoesNotReplaceOwnedDestSwappedAfterSkipCheck() async throws {
+        let root = try TestSupport.tempDir("export-all-owned-swap-after-skip")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bookDir = root.appendingPathComponent("BookA", isDirectory: true)
+        let out = root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: bookDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+
+        var book = try makeSilenceBook(folder: bookDir, title: "ReplaceMe", author: "System")
+        let settings = ExportSettings(outputDirectory: out, overwrite: true, writeNextToBook: false)
+        let dest = settings.plannedOutputs(for: [book])[book.id]!
+        try Data("OWNED-DEST".utf8).write(to: dest)
+        book.existingM4BURL = dest
+        OutputAssociation.record(dest, inBookFolder: bookDir)
+        XCTAssertTrue(settings.owns(dest, for: book))
+
+        let planted = Data("PLANTED-AFTER-OWNED-SKIP".utf8)
+        let plantedFlag = StartedFlag()
+        var exporter = M4BExporter(bitrate: 48_000)
+        exporter.beforeExport = {
+            plantedFlag.mark()
+            try? planted.write(to: dest)
+        }
+
+        let results = try await exporter.exportAll(books: [book], settings: settings)
+        XCTAssertTrue(plantedFlag.isSet)
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].outcome, .skippedExisting)
+        XCTAssertEqual(try Data(contentsOf: dest), planted)
+    }
+
+    func testExportReportsUnverifiedWhenBackupTrashFails() async throws {
+        let dir = try TestSupport.tempDir("export-backup-trash-fail")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "TrashFail", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        try Data("ORIGINAL-OWNED-DEST".utf8).write(to: dest)
+        M4BExporter.testingTrashHeldBackupFails = true
+        defer { M4BExporter.testingTrashHeldBackupFails = false }
+
+        do {
+            try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+            XCTFail("expected publishedUnverified when Trash rejects the backup")
+        } catch let error as BinderError {
+            guard case .publishedUnverified(let warning) = error else {
+                return XCTFail("\(error)")
+            }
+            XCTAssertTrue(warning.contains("Trash"))
+        }
+
+        let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
+        XCTAssertGreaterThan(size, 1_000)
+    }
+
     func testExportAllDoesNotReplaceUnownedDestAppearingAfterFirstCheck() async throws {
         let root = try TestSupport.tempDir("export-all-appear-after-check")
         defer { try? FileManager.default.removeItem(at: root) }

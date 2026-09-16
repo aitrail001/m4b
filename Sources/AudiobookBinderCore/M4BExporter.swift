@@ -21,6 +21,8 @@ public struct M4BExporter: Sendable {
     nonisolated(unsafe) package static var testingAfterMoveDestAside: (() -> Void)?
     /// Test seam: after staging is published and before the backup inode is unlinked.
     nonisolated(unsafe) package static var testingBeforeRemoveBackup: ((_ backup: URL) -> Void)?
+    /// Test seam: make `trashHeldBackup` fail after a successful publish.
+    nonisolated(unsafe) package static var testingTrashHeldBackupFails = false
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
@@ -59,7 +61,32 @@ public struct M4BExporter: Sendable {
         destWasAbsent: Bool? = nil,
         progress: (@Sendable (Double, String) -> Void)? = nil
     ) async throws {
+        try await exportPrepared(
+            book: book,
+            to: outputURL,
+            overwrite: overwrite,
+            destWasAbsent: destWasAbsent,
+            expectedOwnedIdentity: nil,
+            progress: progress
+        )
+    }
+
+    private func exportPrepared(
+        book: Audiobook,
+        to outputURL: URL,
+        overwrite: Bool,
+        destWasAbsent: Bool?,
+        expectedOwnedIdentity: FileIdentity?,
+        progress: (@Sendable (Double, String) -> Void)?
+    ) async throws {
         let destWasAbsent = destWasAbsent ?? !Self.existingRegularFile(outputURL)
+        let ownedIdentity = expectedOwnedIdentity ?? (
+            destWasAbsent
+                ? nil
+                : FileIdentity.read(from: outputURL).flatMap { identity in
+                    identity.isDirectory ? nil : identity
+                }
+        )
         try Self.preflightDestination(outputURL, book: book, overwrite: overwrite)
         _ = try Self.chaptersForExport(book.chapters, folder: book.folder)
         afterPreflight?()
@@ -71,7 +98,8 @@ public struct M4BExporter: Sendable {
         let expectedIdentity = try Self.expectedDestinationIdentity(
             dest: outputURL,
             book: book,
-            destWasAbsent: destWasAbsent
+            destWasAbsent: destWasAbsent,
+            ownedIdentity: ownedIdentity
         )
 
         let tempURL = outputURL.deletingLastPathComponent()
@@ -187,13 +215,19 @@ public struct M4BExporter: Sendable {
                 continue
             }
             let existed = Self.existingRegularFile(dest)
+            let ownedIdentity = existed
+                ? FileIdentity.read(from: dest).flatMap { identity in
+                    identity.isDirectory ? nil : identity
+                }
+                : nil
             beforeExport?()
             do {
-                try await export(
+                try await exportPrepared(
                     book: book,
                     to: dest,
                     overwrite: settings.overwrite,
-                    destWasAbsent: !existed
+                    destWasAbsent: !existed,
+                    expectedOwnedIdentity: ownedIdentity
                 ) { fraction, detail in
                     progress?(
                         JobProgress(
@@ -658,14 +692,26 @@ extension M4BExporter {
     private static func expectedDestinationIdentity(
         dest: URL,
         book: Audiobook,
-        destWasAbsent: Bool
+        destWasAbsent: Bool,
+        ownedIdentity: FileIdentity?
     ) throws -> FileIdentity? {
         let live = FileIdentity.read(from: dest).flatMap { identity in
             identity.isDirectory ? nil : identity
         }
-        guard destWasAbsent else { return live }
-        guard live != nil || existingRegularFile(dest) else { return nil }
-        guard let live, isOwnedAppearedDest(dest, book: book, live: live) else {
+        if destWasAbsent {
+            guard live != nil || existingRegularFile(dest) else { return nil }
+            guard let live, isOwnedAppearedDest(dest, book: book, live: live) else {
+                throw BinderError.outputExists(dest)
+            }
+            return live
+        }
+        guard let ownedIdentity else {
+            if live != nil || existingRegularFile(dest) {
+                throw BinderError.outputExists(dest)
+            }
+            return nil
+        }
+        guard let live, live.isSameVersion(as: ownedIdentity) else {
             throw BinderError.outputExists(dest)
         }
         return live
@@ -832,7 +878,7 @@ extension M4BExporter {
                 throw BinderError.outputExists(dest)
             }
             testingBeforeRemoveBackup?(backup)
-            trashHeldBackup(handle: backupHandle, expected: backupSnap)
+            try trashHeldBackup(handle: backupHandle, expected: backupSnap)
             return
         }
 
@@ -915,13 +961,20 @@ extension M4BExporter {
 
     /// Trash the displaced dest inode. Never delete by the original backup
     /// pathname — that name may now point at a replacement.
-    private static func trashHeldBackup(handle: FileHandle, expected: BackupInode) {
+    private static func trashHeldBackup(handle: FileHandle, expected: BackupInode) throws {
+        if testingTrashHeldBackupFails {
+            throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
+        }
         guard let current = currentURL(of: handle),
               pathNamesBackupInode(current, expected: expected, handle: handle)
         else {
-            return
+            throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
         }
-        try? FileManager.default.trashItem(at: current, resultingItemURL: nil)
+        do {
+            try FileManager.default.trashItem(at: current, resultingItemURL: nil)
+        } catch {
+            throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
+        }
     }
 
     private static func isUsableExportSource(_ url: URL) -> Bool {

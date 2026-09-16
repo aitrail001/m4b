@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 
 public struct M4BExporter: Sendable {
@@ -806,10 +807,18 @@ extension M4BExporter {
                 throw BinderError.outputExists(dest)
             }
             testingAfterMoveDestAside?()
-            let displaced = FileIdentity.read(from: backup).flatMap { identity in
-                identity.isDirectory ? nil : identity
+            guard let backupHandle = openBackup(backup) else {
+                restoreDisplacedBackupIfDestVacant(backup, dest: dest)
+                throw BinderError.outputExists(dest)
             }
-            guard let displaced, displaced.isSameVersion(as: expectedIdentity) else {
+            defer { try? backupHandle.close() }
+            guard let backupSnap = backupInodeSnapshot(of: backupHandle),
+                  let displaced = FileIdentity.read(from: backup).flatMap({ identity in
+                      identity.isDirectory ? nil : identity
+                  }),
+                  displaced.isSameVersion(as: expectedIdentity),
+                  pathNamesBackupInode(backup, expected: backupSnap, handle: backupHandle)
+            else {
                 restoreDisplacedBackupIfDestVacant(backup, dest: dest)
                 throw BinderError.outputExists(dest)
             }
@@ -822,9 +831,8 @@ extension M4BExporter {
                 restoreDisplacedBackupIfDestVacant(backup, dest: dest)
                 throw BinderError.outputExists(dest)
             }
-            // Leave the validated backup. Path-based delete can remove a
-            // replacement that appeared at this name after the identity check.
             testingBeforeRemoveBackup?(backup)
+            trashHeldBackup(handle: backupHandle, expected: backupSnap)
             return
         }
 
@@ -846,6 +854,74 @@ extension M4BExporter {
     private static func restoreDisplacedBackupIfDestVacant(_ backup: URL, dest: URL) {
         guard !FileManager.default.fileExists(atPath: dest.path) else { return }
         try? FileManager.default.moveItem(at: backup, to: dest)
+    }
+
+    private struct BackupInode: Equatable {
+        var device: dev_t
+        var inode: ino_t
+    }
+
+    private static func openBackup(_ url: URL) -> FileHandle? {
+        url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { return nil }
+            let fd = open(cPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { return nil }
+            return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        }
+    }
+
+    private static func backupInodeSnapshot(of handle: FileHandle) -> BackupInode? {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else { return nil }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return BackupInode(device: info.st_dev, inode: info.st_ino)
+    }
+
+    private static func backupInodeSnapshot(at url: URL) -> BackupInode? {
+        url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { return nil }
+            var info = stat()
+            guard lstat(cPath, &info) == 0 else { return nil }
+            guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+            return BackupInode(device: info.st_dev, inode: info.st_ino)
+        }
+    }
+
+    private static func pathNamesBackupInode(
+        _ url: URL,
+        expected: BackupInode,
+        handle: FileHandle
+    ) -> Bool {
+        guard let pathSnap = backupInodeSnapshot(at: url),
+              let fdSnap = backupInodeSnapshot(of: handle)
+        else {
+            return false
+        }
+        return pathSnap == expected && fdSnap == expected
+    }
+
+    private static func currentURL(of handle: FileHandle) -> URL? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let status = buffer.withUnsafeMutableBufferPointer { ptr -> Int32 in
+            guard let base = ptr.baseAddress else { return -1 }
+            return fcntl(handle.fileDescriptor, F_GETPATH, base)
+        }
+        guard status == 0 else { return nil }
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let path = String(decoding: bytes, as: UTF8.self)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    /// Trash the displaced dest inode. Never delete by the original backup
+    /// pathname — that name may now point at a replacement.
+    private static func trashHeldBackup(handle: FileHandle, expected: BackupInode) {
+        guard let current = currentURL(of: handle),
+              pathNamesBackupInode(current, expected: expected, handle: handle)
+        else {
+            return
+        }
+        try? FileManager.default.trashItem(at: current, resultingItemURL: nil)
     }
 
     private static func isUsableExportSource(_ url: URL) -> Bool {

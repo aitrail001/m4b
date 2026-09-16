@@ -245,12 +245,18 @@ final class AudioExportPlaybackTests: XCTestCase {
 
         XCTAssertTrue(plantedFlag.isSet)
         XCTAssertGreaterThan(try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0, 1_000)
-        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(stranded)), original)
+        let backupPath = try XCTUnwrap(backupURL)
+        let strandedPath = try XCTUnwrap(stranded)
         XCTAssertEqual(
-            try Data(contentsOf: XCTUnwrap(backupURL)),
+            try Data(contentsOf: backupPath),
             planted,
             "must not path-delete a replacement that appeared at the backup name"
         )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: strandedPath.path),
+            "the displaced dest inode should be moved to Trash after a successful overwrite"
+        )
+        XCTAssertNotEqual(try Data(contentsOf: dest), original)
     }
 
     func testExportRefusesUnownedDestAppearingAfterPreflight() async throws {

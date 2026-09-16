@@ -55,6 +55,10 @@ public enum SourceCleanup {
     /// Production callers never set this.
     nonisolated(unsafe) package static var testingAfterDestRecheck: ((_ original: URL, _ held: URL) -> Void)?
 
+    /// Test seam: after exclusive copy is written and opened, before it is
+    /// re-hashed and trashed. Production callers never set this.
+    nonisolated(unsafe) package static var testingAfterExclusiveCopy: ((_ original: URL, _ exclusive: URL) -> Void)?
+
     /// Test seam: the URL passed to `trashItem` after exclusive materialize.
     /// Production callers never set this.
     nonisolated(unsafe) package static var testingDidTrash: ((_ url: URL) -> Void)?
@@ -268,9 +272,9 @@ public enum SourceCleanup {
                     remaining: remaining
                 )
             }
-            let exclusive: URL
+            let exclusive: ExclusiveCopy
             do {
-                exclusive = try materializeExclusiveCopy(
+                exclusive = try materializeExclusiveCopyOpen(
                     from: handle,
                     original: next,
                     inDirectory: next.deletingLastPathComponent()
@@ -285,12 +289,37 @@ public enum SourceCleanup {
                     reason: error.localizedDescription
                 )
             }
+            defer { try? exclusive.handle.close() }
+            testingAfterExclusiveCopy?(next, exclusive.url)
+            guard exclusiveCopyMatchesVerifiedSource(exclusive, source: handle) else {
+                removeExclusiveIfOurs(exclusive)
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: exclusiveCopyChangedReason
+                )
+            }
+            guard let trashURL = currentURL(of: exclusive.handle),
+                  pathNamesHeldInode(trashURL, expected: exclusive.snapshot, handle: exclusive.handle)
+            else {
+                removeExclusiveIfOurs(exclusive)
+                return abortAfterOpenHandleRestore(
+                    handle: handle,
+                    expected: verifiedHold,
+                    original: next,
+                    moved: moved,
+                    remaining: remaining,
+                    reason: exclusiveCopyChangedReason
+                )
+            }
             do {
-                try FileManager.default.trashItem(at: exclusive, resultingItemURL: nil)
-                testingDidTrash?(exclusive)
+                try FileManager.default.trashItem(at: trashURL, resultingItemURL: nil)
+                testingDidTrash?(trashURL)
             } catch {
-                try? FileManager.default.removeItem(at: exclusive)
-                try? FileManager.default.removeItem(at: exclusive.deletingLastPathComponent())
+                removeExclusiveIfOurs(exclusive)
                 return abortAfterOpenHandleRestore(
                     handle: handle,
                     expected: verifiedHold,
@@ -300,7 +329,7 @@ public enum SourceCleanup {
                     reason: error.localizedDescription
                 )
             }
-            try? FileManager.default.removeItem(at: exclusive.deletingLastPathComponent())
+            removeEmptyDirectory(exclusive.uniqueDir)
             guard let nlinkBefore = linkCount(of: handle) else {
                 return abortAfterOpenHandleRestore(
                     handle: handle,
@@ -398,6 +427,8 @@ public enum SourceCleanup {
         "Held source is no longer the verified file."
     private static let verifiedInodeStillLinkedReason =
         "Verified source is still on disk after Trash."
+    private static let exclusiveCopyChangedReason =
+        "Recoverable Trash copy is no longer the verified source."
     private static let cancelledReason = BinderError.cancelled.errorDescription ?? "Cancelled"
 
     private static func deny(_ sources: [URL], _ reason: String) -> SourceCleanupAuthorization {
@@ -649,6 +680,27 @@ public enum SourceCleanup {
         original: URL,
         inDirectory directory: URL
     ) throws -> URL {
+        let copy = try materializeExclusiveCopyOpen(
+            from: handle,
+            original: original,
+            inDirectory: directory
+        )
+        try? copy.handle.close()
+        return copy.url
+    }
+
+    private struct ExclusiveCopy {
+        var url: URL
+        var handle: FileHandle
+        var uniqueDir: URL
+        var snapshot: HeldInodeSnapshot
+    }
+
+    private static func materializeExclusiveCopyOpen(
+        from handle: FileHandle,
+        original: URL,
+        inDirectory directory: URL
+    ) throws -> ExclusiveCopy {
         var lastError: Error = POSIXError(.EIO)
         let fileName = exclusiveMaterializeFileName(from: original)
         for _ in 0..<4 {
@@ -661,18 +713,57 @@ public enum SourceCleanup {
             }
             let dest = uniqueDir.appendingPathComponent(fileName)
             do {
-                try writeExclusiveCopy(from: handle, to: dest)
-                return dest
+                let destHandle = try writeExclusiveCopy(from: handle, to: dest)
+                guard let snapshot = inodeSnapshot(of: destHandle) else {
+                    try? destHandle.close()
+                    unlinkPath(dest)
+                    removeEmptyDirectory(uniqueDir)
+                    throw POSIXError(.EIO)
+                }
+                return ExclusiveCopy(url: dest, handle: destHandle, uniqueDir: uniqueDir, snapshot: snapshot)
             } catch let error as POSIXError where error.code == .EEXIST {
                 lastError = error
-                try? FileManager.default.removeItem(at: uniqueDir)
+                removeEmptyDirectory(uniqueDir)
                 continue
             } catch {
-                try? FileManager.default.removeItem(at: uniqueDir)
+                removeEmptyDirectory(uniqueDir)
                 throw error
             }
         }
         throw lastError
+    }
+
+    private static func exclusiveCopyMatchesVerifiedSource(
+        _ exclusive: ExclusiveCopy,
+        source: FileHandle
+    ) -> Bool {
+        guard let exclusiveDigest = SourceAssociation.sha256Hex(of: exclusive.handle),
+              let sourceDigest = SourceAssociation.sha256Hex(of: source),
+              !exclusiveDigest.isEmpty,
+              exclusiveDigest.caseInsensitiveCompare(sourceDigest) == .orderedSame
+        else {
+            return false
+        }
+        guard let now = inodeSnapshot(of: exclusive.handle), now == exclusive.snapshot else {
+            return false
+        }
+        return true
+    }
+
+    /// Unlink our exclusive file only when that pathname still names the open inode.
+    /// Never recursively delete the unique directory.
+    private static func removeExclusiveIfOurs(_ exclusive: ExclusiveCopy) {
+        if pathNamesHeldInode(exclusive.url, expected: exclusive.snapshot, handle: exclusive.handle) {
+            unlinkPath(exclusive.url)
+        }
+        removeEmptyDirectory(exclusive.uniqueDir)
+    }
+
+    private static func removeEmptyDirectory(_ url: URL) {
+        url.withUnsafeFileSystemRepresentation { cPath in
+            guard let cPath else { return }
+            _ = rmdir(cPath)
+        }
     }
 
     private static func createExclusiveDirectory(_ url: URL) throws {
@@ -699,14 +790,13 @@ public enum SourceCleanup {
         return String(scalars)
     }
 
-    private static func writeExclusiveCopy(from handle: FileHandle, to dest: URL) throws {
+    private static func writeExclusiveCopy(from handle: FileHandle, to dest: URL) throws -> FileHandle {
         try dest.withUnsafeFileSystemRepresentation { cPath in
             guard let cPath else { throw POSIXError(.EFAULT) }
-            let fd = open(cPath, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, S_IRUSR | S_IWUSR)
+            let fd = open(cPath, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
             if fd < 0 {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            defer { close(fd) }
             do {
                 try handle.seek(toOffset: 0)
                 while true {
@@ -725,7 +815,12 @@ public enum SourceCleanup {
                     }
                 }
                 try? handle.seek(toOffset: 0)
+                guard fsync(fd) == 0, lseek(fd, 0, SEEK_SET) == 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             } catch {
+                close(fd)
                 unlink(cPath)
                 throw error
             }

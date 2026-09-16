@@ -2153,6 +2153,45 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertFalse(trashed.contains { UUID(uuidString: String($0.lastPathComponent.dropFirst())) != nil })
     }
 
+    func testCleanupPerformDoesNotTrashReplacedExclusiveCopy() throws {
+        let fixture = try makeRecordedCleanupFixture()
+        defer { fixture.tearDown() }
+
+        let planted = Data(repeating: 0xCD, count: 24)
+        var plantedPath: URL?
+        let plantedFlag = StartedFlag()
+        SourceCleanup.testingAfterExclusiveCopy = { _, exclusive in
+            guard plantedPath == nil else { return }
+            plantedPath = exclusive
+            do {
+                try planted.write(to: exclusive, options: .atomic)
+                plantedFlag.mark()
+            } catch {
+                XCTFail("planting exclusive replacement failed: \(error)")
+            }
+        }
+        defer { SourceCleanup.testingAfterExclusiveCopy = nil }
+
+        let result = SourceCleanup.perform(
+            book: fixture.book,
+            inspection: fixture.inspection,
+            isBuilding: false
+        )
+
+        XCTAssertTrue(plantedFlag.isSet, "hook must replace the exclusive path after materialize")
+        let exclusive = try XCTUnwrap(plantedPath)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: exclusive.path),
+            "replacement at the exclusive pathname must survive path-based trash"
+        )
+        XCTAssertEqual(try Data(contentsOf: exclusive), planted)
+        XCTAssertFalse(
+            result.moved.contains { SourceCleanup.refersToSameFile($0, fixture.sourceA) },
+            "must not report the original as moved if the exclusive path was swapped"
+        )
+        _ = result
+    }
+
     func testCleanupPerformDoesNotRestorePlantedHoldWhenDestUnauthorizedAfterRenameAway() throws {
         let fixture = try makeRecordedCleanupFixture()
         defer { fixture.tearDown() }

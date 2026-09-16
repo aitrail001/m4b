@@ -215,6 +215,44 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: leftovers[0]), original)
     }
 
+    func testExportDoesNotUnlinkReplacedBackupAfterPublish() async throws {
+        let dir = try TestSupport.tempDir("export-backup-swap")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let book = try makeSilenceBook(folder: dir, title: "BackupSwap", author: "A")
+        let dest = dir.appendingPathComponent("out.m4b")
+        let original = Data("ORIGINAL-OWNED-DEST".utf8)
+        try original.write(to: dest)
+        let planted = Data("PLANTED-BACKUP-REPLACEMENT".utf8)
+        let plantedFlag = StartedFlag()
+        var backupURL: URL?
+        var stranded: URL?
+        M4BExporter.testingBeforeRemoveBackup = { backup in
+            plantedFlag.mark()
+            let away = backup.deletingLastPathComponent()
+                .appendingPathComponent("stranded-original.m4b")
+            do {
+                try FileManager.default.moveItem(at: backup, to: away)
+                stranded = away
+                backupURL = backup
+                try planted.write(to: backup)
+            } catch {
+                XCTFail("planting backup replacement failed: \(error)")
+            }
+        }
+        defer { M4BExporter.testingBeforeRemoveBackup = nil }
+
+        try await M4BExporter(bitrate: 48_000).export(book: book, to: dest, overwrite: true)
+
+        XCTAssertTrue(plantedFlag.isSet)
+        XCTAssertGreaterThan(try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0, 1_000)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(stranded)), original)
+        XCTAssertEqual(
+            try Data(contentsOf: XCTUnwrap(backupURL)),
+            planted,
+            "must not path-delete a replacement that appeared at the backup name"
+        )
+    }
+
     func testExportRefusesUnownedDestAppearingAfterPreflight() async throws {
         let dir = try TestSupport.tempDir("export-appear-after-preflight")
         defer { try? FileManager.default.removeItem(at: dir) }

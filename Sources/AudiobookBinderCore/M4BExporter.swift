@@ -18,6 +18,8 @@ public struct M4BExporter: Sendable {
     nonisolated(unsafe) package static var testingBeforeReplaceItem: (() -> Void)?
     /// Test seam: after the dest has been moved to the backup path.
     nonisolated(unsafe) package static var testingAfterMoveDestAside: (() -> Void)?
+    /// Test seam: after staging is published and before the backup inode is unlinked.
+    nonisolated(unsafe) package static var testingBeforeRemoveBackup: ((_ backup: URL) -> Void)?
 
     public init(bitrate: Int = 64_000, sampleRate: Double = 44_100) {
         self.bitrate = bitrate
@@ -820,7 +822,9 @@ extension M4BExporter {
                 restoreDisplacedBackupIfDestVacant(backup, dest: dest)
                 throw BinderError.outputExists(dest)
             }
-            try? FileManager.default.removeItem(at: backup)
+            // Leave the validated backup. Path-based delete can remove a
+            // replacement that appeared at this name after the identity check.
+            testingBeforeRemoveBackup?(backup)
             return
         }
 

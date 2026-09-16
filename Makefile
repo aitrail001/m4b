@@ -22,11 +22,11 @@ icon:
 	sips -z 512 512   Resources/AppIcon-1024.png --out Resources/AppIcon.iconset/icon_256x256@2x.png >/dev/null
 	sips -z 512 512   Resources/AppIcon-1024.png --out Resources/AppIcon.iconset/icon_512x512.png >/dev/null
 	sips -z 1024 1024 Resources/AppIcon-1024.png --out Resources/AppIcon.iconset/icon_512x512@2x.png >/dev/null
-	iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon.icns.new
-	@if [ -f Resources/AppIcon.icns ] && cmp -s Resources/AppIcon.icns.new Resources/AppIcon.icns; then \
-		rm -f Resources/AppIcon.icns.new; \
+	iconutil -c icns Resources/AppIcon.iconset -o Resources/AppIcon-build.icns
+	@if [ -f Resources/AppIcon.icns ] && cmp -s Resources/AppIcon-build.icns Resources/AppIcon.icns; then \
+		rm -f Resources/AppIcon-build.icns; \
 	else \
-		mv Resources/AppIcon.icns.new Resources/AppIcon.icns; \
+		mv Resources/AppIcon-build.icns Resources/AppIcon.icns; \
 	fi
 
 app: icon build

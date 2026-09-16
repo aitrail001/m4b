@@ -425,7 +425,7 @@ final class AudioExportPlaybackTests: XCTestCase {
         try Data("NEW-STAGING".utf8).write(to: staging)
 
         do {
-            try M4BExporter.publish(
+            _ = try M4BExporter.publish(
                 staging: staging,
                 to: dest,
                 overwrite: false,
@@ -448,7 +448,7 @@ final class AudioExportPlaybackTests: XCTestCase {
         try Data("OLD".utf8).write(to: dest)
         try Data("NEW-CONTENT".utf8).write(to: staging)
 
-        try M4BExporter.publish(
+        _ = try M4BExporter.publish(
             staging: staging,
             to: dest,
             overwrite: true,
@@ -633,6 +633,10 @@ final class AudioExportPlaybackTests: XCTestCase {
 
         let size = try FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64 ?? 0
         XCTAssertGreaterThan(size, 1_000)
+        XCTAssertEqual(
+            OutputAssociation.load(inBookFolder: dir)?.standardizedFileURL.path,
+            dest.standardizedFileURL.path
+        )
     }
 
     func testExportAllDoesNotReplaceUnownedDestAppearingAfterFirstCheck() async throws {

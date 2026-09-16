@@ -163,7 +163,7 @@ public struct M4BExporter: Sendable {
             ), !stagingDigest.isEmpty else {
                 throw BinderError.exportFailed("Could not hash encoded output")
             }
-            try Self.publish(
+            let backupWarning = try Self.publish(
                 staging: tempURL,
                 to: outputURL,
                 overwrite: overwrite,
@@ -176,6 +176,9 @@ public struct M4BExporter: Sendable {
                 stagingDigest: stagingDigest,
                 inBookFolder: book.folder
             )
+            if let backupWarning {
+                throw BinderError.publishedUnverified(backupWarning)
+            }
             progress?(1.0, "Finished \(book.title)")
         } onCancel: {
             cancellation.cancel()
@@ -823,12 +826,14 @@ extension M4BExporter {
 
     /// Publishes a ready staging file. Never delete-then-move the previous dest.
     /// `expectedIdentity` is the dest snapshot from export start (`nil` = absent).
+    /// Returns a warning when dest was published but the previous dest could
+    /// not be moved to Trash. Callers must finalize provenance first.
     static func publish(
         staging: URL,
         to dest: URL,
         overwrite: Bool,
         expectedIdentity: FileIdentity?
-    ) throws {
+    ) throws -> String? {
         let kind = destinationKind(dest)
         if kind.isDirectory {
             throw BinderError.exportFailed("Destination is a directory: \(dest.path)")
@@ -878,8 +883,15 @@ extension M4BExporter {
                 throw BinderError.outputExists(dest)
             }
             testingBeforeRemoveBackup?(backup)
-            try trashHeldBackup(handle: backupHandle, expected: backupSnap)
-            return
+            do {
+                try trashHeldBackup(handle: backupHandle, expected: backupSnap)
+            } catch let error as BinderError {
+                if case .publishedUnverified(let warning) = error {
+                    return warning
+                }
+                throw error
+            }
+            return nil
         }
 
         if live != nil || kind.exists {
@@ -893,6 +905,7 @@ extension M4BExporter {
             }
             throw BinderError.exportFailed(error.localizedDescription)
         }
+        return nil
     }
 
     /// Put the displaced dest back when the path is still vacant. Never delete
@@ -971,7 +984,15 @@ extension M4BExporter {
             throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
         }
         do {
-            try FileManager.default.trashItem(at: current, resultingItemURL: nil)
+            var resultingItem: NSURL?
+            try FileManager.default.trashItem(at: current, resultingItemURL: &resultingItem)
+            guard let trashed = resultingItem as URL?,
+                  pathNamesBackupInode(trashed, expected: expected, handle: handle)
+            else {
+                throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
+            }
+        } catch BinderError.publishedUnverified {
+            throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
         } catch {
             throw BinderError.publishedUnverified("Could not move the previous audiobook to Trash")
         }

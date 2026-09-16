@@ -33,6 +33,7 @@ final class AppState {
     }
     var isScanning = false
     var isBuilding = false
+    var cleanupError: String?
     var status: String = "Choose a books folder to begin."
     var lastError: String?
     var scanProgress: JobProgress?
@@ -40,6 +41,11 @@ final class AppState {
     var finishedURLs: [URL] = []
 
     private var buildTask: Task<Void, Never>?
+    private var scanTask: Task<Void, Never>?
+    private var scanGeneration = ScanGeneration()
+    private var cleanupOwner = CleanupJobOwner()
+
+    var isCleaningUp: Bool { cleanupOwner.isCleaningUp }
 
     init() {
         settings = Self.loadSettings()
@@ -107,44 +113,72 @@ final class AppState {
     }
 
     func scan(_ url: URL) {
+        guard JobGate.canStartScan(
+            isBuilding: isBuilding,
+            isScanning: isScanning,
+            isCleaningUp: isCleaningUp
+        ) else {
+            status = isCleaningUp
+                ? JobGate.cannotScanWhileCleaningUp
+                : JobGate.cannotScanWhileBuilding
+            return
+        }
         playback.stop()
         bookQuery = ""
         let folder = LibraryOutline.folderURL(url)
         libraryFolder = folder
         lastOpenedFolder = folder
         UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
+        let generation = scanGeneration.begin()
+        scanTask?.cancel()
         isScanning = true
         lastError = nil
         scanProgress = JobProgress.looking(in: folder)
         status = scanProgress?.detail ?? "Scanning \(folder.lastPathComponent)…"
-        Task {
+        scanTask = Task {
             do {
                 let found = try await BookScanner().scan(root: url) { [weak self] progress in
                     Task { @MainActor in
-                        self?.scanProgress = progress
-                        self?.status = progress.detail
+                        self?.applyIfCurrent(generation) {
+                            self?.scanProgress = progress
+                            self?.status = progress.detail
+                        }
                     }
                 }
-                books = found
-                selectedID = found.first?.id
-                selectedFolderURL = folder
-                let boundCount = found.filter(\.isAlreadyBound).count
-                if boundCount > 0 {
-                    status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
-                } else {
-                    status = found.count == 1
-                        ? "Found 1 book — \(found[0].chapterCount) chapters."
-                        : "Found \(found.count) books."
+                try Task.checkCancellation()
+                applyIfCurrent(generation) {
+                    books = found
+                    selectedID = found.first?.id
+                    selectedFolderURL = folder
+                    let boundCount = found.filter(\.isAlreadyBound).count
+                    if boundCount > 0 {
+                        status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
+                    } else {
+                        status = found.count == 1
+                            ? "Found 1 book — \(found[0].chapterCount) chapters."
+                            : "Found \(found.count) books."
+                    }
                 }
+            } catch is CancellationError {
+                // Superseded scans are ignored below. A current cancel only stops.
             } catch {
-                lastError = error.localizedDescription
-                status = error.localizedDescription
-                books = []
-                selectedFolderURL = folder
+                applyIfCurrent(generation) {
+                    lastError = error.localizedDescription
+                    status = error.localizedDescription
+                    books = []
+                    selectedFolderURL = folder
+                }
             }
-            isScanning = false
-            scanProgress = nil
+            applyIfCurrent(generation) {
+                isScanning = false
+                scanProgress = nil
+            }
         }
+    }
+
+    private func applyIfCurrent(_ generation: UInt64, _ body: () -> Void) {
+        guard scanGeneration.isCurrent(generation) else { return }
+        body()
     }
 
     func selectAll(_ on: Bool) {
@@ -167,7 +201,18 @@ final class AppState {
     }
 
     func buildSelected() {
-        guard !isBuilding else { return }
+        guard JobGate.canStartBuild(
+            isScanning: isScanning,
+            isBuilding: isBuilding,
+            isCleaningUp: isCleaningUp
+        ) else {
+            if isScanning {
+                status = JobGate.cannotBuildWhileScanning
+            } else if isCleaningUp {
+                status = JobGate.cannotBuildWhileCleaningUp
+            }
+            return
+        }
         let selectedBooks = books.filter { $0.selected && !$0.isAlreadyBound }
         let queue = selectedBooks.filter { !$0.includedChapters.isEmpty }
         guard !queue.isEmpty else {
@@ -184,7 +229,7 @@ final class AppState {
         let settings = settings
         buildTask = Task {
             do {
-                let urls = try await M4BExporter(bitrate: settings.bitrate).exportAll(
+                let results = try await M4BExporter(bitrate: settings.bitrate).exportAll(
                     books: queue,
                     settings: settings
                 ) { [weak self] progress in
@@ -193,14 +238,15 @@ final class AppState {
                         self?.status = progress.detail
                     }
                 }
-                finishedURLs = urls
-                for (book, url) in zip(queue, urls) {
-                    if let index = books.firstIndex(where: { $0.id == book.id }) {
-                        books[index].existingM4BURL = url
-                        books[index].boundDuration = AudioMetadata.fileInfo(of: url).duration
+                let published = results.filter(\.outcome.isPublished)
+                finishedURLs = published.map(\.url)
+                for result in published {
+                    if let index = books.firstIndex(where: { $0.id == result.bookID }) {
+                        books[index].existingM4BURL = result.url
+                        books[index].boundDuration = AudioMetadata.fileInfo(of: result.url).duration
                     }
                 }
-                status = BinderCopy.createdAudiobooks(titles: queue.map(\.title))
+                status = BinderCopy.exportSummary(results: results, books: queue)
             } catch is CancellationError {
                 status = "Cancelled."
             } catch {
@@ -231,23 +277,82 @@ final class AppState {
     }
 
     func boundURL(for book: Audiobook) -> URL? {
-        if let url = book.existingM4BURL, FileManager.default.fileExists(atPath: url.path) {
-            return url
+        guard let url = book.existingM4BURL,
+              FileManager.default.fileExists(atPath: url.path) else {
+            return nil
         }
-        let dest = settings.outputURL(for: book)
-        if FileManager.default.fileExists(atPath: dest.path) {
-            return dest
-        }
-        return nil
+        return url
     }
 
-    func applyCleanup(to bookID: Audiobook.ID, inspection: M4BInspection) {
-        guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
+    func startCleanup(book: Audiobook, inspection: M4BInspection) {
+        let bookSnapshot = book
+        let inspectionSnapshot = inspection
+        guard JobGate.canStartCleanup(
+            isScanning: isScanning,
+            isBuilding: isBuilding,
+            isCleaningUp: isCleaningUp
+        ) else {
+            let reason: String
+            if isScanning {
+                reason = JobGate.cannotCleanupWhileScanning
+            } else if isBuilding {
+                reason = JobGate.cannotCleanupWhileBuilding
+            } else {
+                reason = JobGate.cannotCleanupWhileCleaningUp
+            }
+            cleanupError = reason
+            status = reason
+            return
+        }
+        guard let job = cleanupOwner.begin(bookID: bookSnapshot.id) else {
+            cleanupError = JobGate.cannotCleanupWhileCleaningUp
+            status = JobGate.cannotCleanupWhileCleaningUp
+            return
+        }
         playback.stop()
-        books[index].chapters = []
-        books[index].existingM4BURL = inspection.url
-        books[index].boundDuration = inspection.duration
-        books[index].selected = false
+        lastError = nil
+        cleanupError = nil
+        status = "Moving original audio files to Trash…"
+        Task {
+            defer {
+                cleanupOwner.finish(job)
+                NotificationCenter.default.post(name: .binderCleanupDidFinish, object: nil)
+            }
+            let result = await Task.detached(priority: .userInitiated) {
+                SourceCleanup.perform(
+                    book: bookSnapshot,
+                    inspection: inspectionSnapshot,
+                    isBuilding: false
+                )
+            }.value
+            if result.didFinish {
+                if cleanupOwner.commitSuccess(
+                    &books,
+                    job: job,
+                    inspection: inspectionSnapshot,
+                    moved: result.moved
+                ) {
+                    playback.stop()
+                }
+                cleanupError = nil
+                lastError = nil
+                status = "Moved original audio files to Trash."
+                return
+            }
+            if !result.moved.isEmpty {
+                _ = cleanupOwner.commitPartial(
+                    &books,
+                    job: job,
+                    inspection: inspectionSnapshot,
+                    moved: result.moved
+                )
+            }
+            cleanupError = result.error
+            if let error = result.error {
+                lastError = error
+                status = error
+            }
+        }
     }
 
     private static func loadSettings() -> ExportSettings {

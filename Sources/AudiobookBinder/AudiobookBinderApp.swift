@@ -38,6 +38,9 @@ struct BinderApp: App {
             ContentView()
                 .environment(appState)
                 .frame(minWidth: 980, minHeight: 640)
+                .onAppear {
+                    appDelegate.isCleaningUp = { appState.isCleaningUp }
+                }
         }
         .defaultSize(width: 1240, height: 800)
         .windowToolbarStyle(.unified)
@@ -45,6 +48,7 @@ struct BinderApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open Folder…") { appState.openFolder() }
                     .keyboardShortcut("o", modifiers: .command)
+                    .disabled(appState.isScanning || appState.isBuilding || appState.isCleaningUp)
             }
             CommandMenu("Library") {
                 Button("Select All") { appState.selectAll(true) }
@@ -53,20 +57,67 @@ struct BinderApp: App {
                 Divider()
                 Button("Build Selected Audiobooks") { appState.buildSelected() }
                     .keyboardShortcut("b", modifiers: .command)
-                    .disabled(appState.books.isEmpty || appState.isBuilding)
+                    .disabled(
+                        appState.books.isEmpty
+                            || !JobGate.canStartBuild(
+                                isScanning: appState.isScanning,
+                                isBuilding: appState.isBuilding,
+                                isCleaningUp: appState.isCleaningUp
+                            )
+                    )
             }
         }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var isCleaningUp: () -> Bool = { false }
+    private var postponeTerminate = false
+    private var lastWindowClosedDuringCleanup = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(cleanupDidFinish),
+            name: .binderCleanupDidFinish,
+            object: nil
+        )
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        let shouldQuit = JobGate.shouldTerminateAfterLastWindowClosed(isCleaningUp: isCleaningUp())
+        if !shouldQuit {
+            lastWindowClosedDuringCleanup = true
+        }
+        return shouldQuit
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if JobGate.shouldPostponeTermination(isCleaningUp: isCleaningUp()) {
+            postponeTerminate = true
+            return .terminateLater
+        }
+        return .terminateNow
+    }
+
+    @MainActor
+    @objc private func cleanupDidFinish() {
+        let action = JobGate.cleanupQuitAction(
+            postponeTerminate: postponeTerminate,
+            lastWindowClosedDuringCleanup: lastWindowClosedDuringCleanup
+        )
+        postponeTerminate = false
+        lastWindowClosedDuringCleanup = false
+        switch action {
+        case .none:
+            break
+        case .replyToTerminate:
+            NSApp.reply(toApplicationShouldTerminate: true)
+        case .terminate:
+            NSApp.terminate(nil)
+        }
     }
 
     func application(_ sender: NSApplication, open urls: [URL]) {
@@ -76,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
     static let binderOpenURLs = Notification.Name("audiobookBinder.openURLs")
+    static let binderCleanupDidFinish = Notification.Name("audiobookBinder.cleanupDidFinish")
 }
 
 enum CLI {
@@ -119,14 +171,20 @@ enum CLI {
                     overwrite: overwrite,
                     writeNextToBook: output == nil
                 )
-                let urls = try await M4BExporter(bitrate: bitrate).exportAll(books: books, settings: settings) { progress in
+                let results = try await M4BExporter(bitrate: bitrate).exportAll(books: books, settings: settings) { progress in
                     fputs(
                         String(format: "[%d/%d] %.0f%% %@\n", progress.index, progress.count, progress.fraction * 100, progress.detail),
                         stderr
                     )
                 }
-                for url in urls { print(url.path) }
-                Darwin.exit(0)
+                var anyFailed = false
+                for result in results {
+                    print(BinderCopy.cliOutcomeLine(url: result.url, outcome: result.outcome))
+                    if BinderCopy.cliReportsFailure(result.outcome) {
+                        anyFailed = true
+                    }
+                }
+                Darwin.exit(anyFailed ? 1 : 0)
             } catch {
                 fputs("\(error.localizedDescription)\n", stderr)
                 Darwin.exit(1)

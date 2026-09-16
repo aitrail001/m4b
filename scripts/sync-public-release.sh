@@ -3,6 +3,17 @@
 # Run only as part of an explicit release (`make release`).
 set -euo pipefail
 
+# Drop leftover local AudiobookBinder*.dmg copies. (N) is a no-op when the
+# downloads dir or matching files are missing (zsh NOMATCH would abort rm -f).
+remove_legacy_site_dmgs() {
+  rm -f "$1/site/downloads"/AudiobookBinder*.dmg(N)
+}
+
+# Sourced by scripts/test-sync-glob.sh — helpers only, no release side effects.
+if [[ "$ZSH_EVAL_CONTEXT" == *:file* ]]; then
+  return 0
+fi
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Info.plist")"
 TAG="v${VERSION}"
@@ -21,7 +32,7 @@ if ! gh release view "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
-rm -f "$ROOT/site/downloads"/AudiobookBinder*.dmg
+remove_legacy_site_dmgs "$ROOT"
 print -r -- "/downloads/AudiobookBinder.dmg ${GH_DMG} 302
 /downloads/AudiobookBinder-${VERSION}.dmg ${GH_DMG} 302" > "$REDIRECTS"
 

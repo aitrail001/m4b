@@ -136,33 +136,41 @@ public enum AudioMetadata {
 
     public static func loadTags(from url: URL, includeArtwork: Bool = true) async -> TrackTags {
         var tags = TrackTags(duration: fileInfo(of: url).duration)
+        if Task.isCancelled { return tags }
         let asset = AVURLAsset(url: url)
         do {
             let metadata = try await asset.load(.metadata)
-            tags.title = firstString(metadata, identifiers: [
+            if Task.isCancelled { return tags }
+            tags.title = await firstString(metadata, identifiers: [
                 .commonIdentifierTitle, .id3MetadataTitleDescription, .iTunesMetadataSongName
             ])
-            tags.album = firstString(metadata, identifiers: [
+            tags.album = await firstString(metadata, identifiers: [
                 .commonIdentifierAlbumName, .id3MetadataAlbumTitle, .iTunesMetadataAlbum
             ])
-            tags.artist = firstString(metadata, identifiers: [
+            tags.artist = await firstString(metadata, identifiers: [
                 .commonIdentifierArtist, .id3MetadataLeadPerformer, .iTunesMetadataArtist
             ])
-            tags.composer = firstString(metadata, identifiers: [
+            tags.composer = await firstString(metadata, identifiers: [
                 .id3MetadataComposer, .iTunesMetadataComposer, .commonIdentifierCreator
             ])
-            tags.comment = firstString(metadata, identifiers: [
+            tags.comment = await firstString(metadata, identifiers: [
                 .commonIdentifierDescription, .id3MetadataComments, .iTunesMetadataDescription
             ])
-            if let track = firstNumber(metadata, identifiers: [.id3MetadataTrackNumber, .iTunesMetadataTrackNumber]) {
+            if Task.isCancelled { return tags }
+            if let track = await firstNumber(
+                metadata,
+                identifiers: [.id3MetadataTrackNumber, .iTunesMetadataTrackNumber]
+            ) {
                 tags.trackNumber = track
             }
             if includeArtwork {
-                tags.artwork = firstArtwork(metadata)
+                tags.artwork = await firstArtwork(metadata)
                 if tags.artwork == nil {
-                    tags.artwork = firstArtwork(try await asset.load(.commonMetadata))
+                    if Task.isCancelled { return tags }
+                    tags.artwork = await firstArtwork(try await asset.load(.commonMetadata))
                 }
             }
+            if Task.isCancelled { return tags }
             let tracks = try await asset.loadTracks(withMediaType: .audio)
             if let track = tracks.first {
                 let desc = try await track.load(.formatDescriptions)
@@ -175,28 +183,42 @@ public enum AudioMetadata {
             if precise.isNumeric, precise.seconds > 0 {
                 tags.duration = precise.seconds
             }
+        } catch is CancellationError {
+            return tags
         } catch {
+            if Task.isCancelled { return tags }
             // Keep AudioToolbox duration even if metadata load fails.
         }
         return tags
     }
 
-    private static func firstString(_ items: [AVMetadataItem], identifiers: [AVMetadataIdentifier]) -> String? {
+    private static func firstString(
+        _ items: [AVMetadataItem],
+        identifiers: [AVMetadataIdentifier]
+    ) async -> String? {
         for id in identifiers {
-            if let value = items.first(where: { $0.identifier == id })?.stringValue?
+            if Task.isCancelled { return nil }
+            guard let item = items.first(where: { $0.identifier == id }) else { continue }
+            guard let value = try? await item.load(.stringValue)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-               !value.isEmpty {
-                return value
-            }
+                  !value.isEmpty
+            else { continue }
+            return value
         }
         return nil
     }
 
-    private static func firstNumber(_ items: [AVMetadataItem], identifiers: [AVMetadataIdentifier]) -> Int? {
+    private static func firstNumber(
+        _ items: [AVMetadataItem],
+        identifiers: [AVMetadataIdentifier]
+    ) async -> Int? {
         for id in identifiers {
+            if Task.isCancelled { return nil }
             guard let item = items.first(where: { $0.identifier == id }) else { continue }
-            if let n = item.numberValue?.intValue, n > 0 { return n }
-            if let s = item.stringValue {
+            if let n = try? await item.load(.numberValue), n.intValue > 0 {
+                return n.intValue
+            }
+            if let s = try? await item.load(.stringValue) {
                 let part = s.split(whereSeparator: { $0 == "/" || $0 == " " }).first
                 if let part, let n = Int(part), n > 0 { return n }
             }
@@ -204,56 +226,79 @@ public enum AudioMetadata {
         return nil
     }
 
-    private static func firstArtwork(_ items: [AVMetadataItem]) -> Data? {
+    private static func firstArtwork(_ items: [AVMetadataItem]) async -> Data? {
         for item in items {
+            if Task.isCancelled { return nil }
             let isArt = item.identifier == .commonIdentifierArtwork
                 || item.identifier == .iTunesMetadataCoverArt
                 || item.commonKey == .commonKeyArtwork
             guard isArt else { continue }
-            if let data = item.dataValue, !data.isEmpty { return data }
-            if let data = item.value as? Data, !data.isEmpty { return data }
+            if let data = try? await item.load(.dataValue), !data.isEmpty { return data }
+            if let value = try? await item.load(.value), let data = value as? Data, !data.isEmpty {
+                return data
+            }
         }
         return nil
     }
 }
 
 public enum CoverJPEG {
-    public static func loadAndNormalize(from url: URL, maxEdge: CGFloat = 1400) -> Data? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return normalize(data, maxEdge: maxEdge)
+    /// Source images larger than this are rejected before decode.
+    public static let maxSourceBytes = 16 * 1024 * 1024
+    public static let defaultMaxEdge: CGFloat = 1400
+
+    public static func loadAndNormalize(from url: URL, maxEdge: CGFloat = defaultMaxEdge) -> Data? {
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+              values.isRegularFile == true,
+              let size = values.fileSize,
+              size > 0,
+              size <= maxSourceBytes
+        else { return nil }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions()) else {
+            return nil
+        }
+        return jpegThumbnail(from: source, maxEdge: maxEdge)
     }
 
-    public static func normalize(_ data: Data, maxEdge: CGFloat = 1400) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            return data.isEmpty ? nil : data
+    public static func normalize(_ data: Data, maxEdge: CGFloat = defaultMaxEdge) -> Data? {
+        guard !data.isEmpty, data.count <= maxSourceBytes else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions()) else {
+            return nil
         }
-        let w = CGFloat(image.width)
-        let h = CGFloat(image.height)
-        let longest = max(w, h)
-        let scale = longest > maxEdge ? maxEdge / longest : 1
-        let tw = max(1, Int(w * scale))
-        let th = max(1, Int(h * scale))
-        let color = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: tw,
-            height: th,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: color,
-            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-        ) else { return data }
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: tw, height: th))
-        guard let scaled = ctx.makeImage() else { return data }
+        return jpegThumbnail(from: source, maxEdge: maxEdge)
+    }
+
+    private static func sourceOptions() -> CFDictionary {
+        [
+            kCGImageSourceShouldCache: false,
+            kCGImageSourceShouldCacheImmediately: false
+        ] as CFDictionary
+    }
+
+    private static func jpegThumbnail(from source: CGImageSource, maxEdge: CGFloat) -> Data? {
+        let pixelSize = max(1, Int(maxEdge))
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+            kCGImageSourceThumbnailMaxPixelSize: pixelSize,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
         let dest = NSMutableData()
-        guard let destSrc = CGImageDestinationCreateWithData(dest, "public.jpeg" as CFString, 1, nil) else {
-            return data
+        guard let destination = CGImageDestinationCreateWithData(dest, "public.jpeg" as CFString, 1, nil) else {
+            return nil
         }
-        let opts: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.88]
-        CGImageDestinationAddImage(destSrc, scaled, opts as CFDictionary)
-        CGImageDestinationFinalize(destSrc)
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: 0.88] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination), dest.length > 0 else {
+            return nil
+        }
         return dest as Data
     }
 }

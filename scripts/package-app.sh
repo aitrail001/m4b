@@ -15,7 +15,7 @@ RESOURCES="$CONTENTS/Resources"
 APP_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
 
 # Refuse a leftover .build binary from another commit. Compile origin is
-# written after `swift build -c release`; a packaged-app receipt is not enough.
+# written after the Xcode Release build; a packaged-app receipt is not enough.
 require_build_origin "$ROOT" "$APP_COMMIT"
 
 rm -rf "$APP"

@@ -44,12 +44,16 @@ final class AppState {
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = ScanGeneration()
     private var cleanupOwner = CleanupJobOwner()
+    private let libraryAccess = SecurityScopedAccess()
+    private let outputAccess = SecurityScopedAccess()
 
     var isCleaningUp: Bool { cleanupOwner.isCleaningUp }
 
     init() {
         settings = Self.loadSettings()
-        if let path = UserDefaults.standard.string(forKey: "audiobookBinder.libraryFolder"), !path.isEmpty {
+        restoreBookmarks()
+        if lastOpenedFolder == nil,
+           let path = UserDefaults.standard.string(forKey: "audiobookBinder.libraryFolder"), !path.isEmpty {
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
                 lastOpenedFolder = URL(fileURLWithPath: path, isDirectory: true)
@@ -108,8 +112,10 @@ final class AppState {
         panel.prompt = "Use"
         panel.message = "Save finished .m4b files here."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        outputAccess.retain(url)
         settings.outputDirectory = url
         settings.writeNextToBook = false
+        storeBookmark(Self.outputBookmarkKey, for: url)
     }
 
     func scan(_ url: URL) {
@@ -126,9 +132,11 @@ final class AppState {
         playback.stop()
         bookQuery = ""
         let folder = LibraryOutline.folderURL(url)
+        libraryAccess.retain(folder)
         libraryFolder = folder
         lastOpenedFolder = folder
         UserDefaults.standard.set(folder.path, forKey: "audiobookBinder.libraryFolder")
+        storeBookmark(Self.libraryBookmarkKey, for: folder)
         let generation = scanGeneration.begin()
         scanTask?.cancel()
         isScanning = true
@@ -196,6 +204,8 @@ final class AppState {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        let started = url.startAccessingSecurityScopedResource()
+        defer { if started { url.stopAccessingSecurityScopedResource() } }
         books[idx].coverURL = url
         books[idx].coverJPEG = CoverJPEG.loadAndNormalize(from: url)
     }
@@ -353,6 +363,43 @@ final class AppState {
                 status = error
             }
         }
+    }
+
+    private static let libraryBookmarkKey = "audiobookBinder.libraryFolderBookmark"
+    private static let outputBookmarkKey = "audiobookBinder.outputDirectoryBookmark"
+
+    private func restoreBookmarks() {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: Self.libraryBookmarkKey),
+           let resolved = SecurityScopedBookmark.resolve(data) {
+            libraryAccess.retain(resolved.url)
+            if libraryAccess.isActive {
+                lastOpenedFolder = resolved.url
+                refreshBookmark(Self.libraryBookmarkKey, resolved: resolved, defaults: defaults)
+            }
+        }
+        if let data = defaults.data(forKey: Self.outputBookmarkKey),
+           let resolved = SecurityScopedBookmark.resolve(data) {
+            outputAccess.retain(resolved.url)
+            if outputAccess.isActive {
+                settings.outputDirectory = resolved.url
+                refreshBookmark(Self.outputBookmarkKey, resolved: resolved, defaults: defaults)
+            }
+        }
+    }
+
+    private func storeBookmark(_ key: String, for url: URL) {
+        guard let data = SecurityScopedBookmark.data(for: url) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    private func refreshBookmark(
+        _ key: String,
+        resolved: SecurityScopedBookmark.Resolved,
+        defaults: UserDefaults
+    ) {
+        guard resolved.isStale, let data = SecurityScopedBookmark.data(for: resolved.url) else { return }
+        defaults.set(data, forKey: key)
     }
 
     private static func loadSettings() -> ExportSettings {

@@ -24,14 +24,14 @@ The shipped app is self-contained. Encoding, playback, chapters, and tags use Ap
 
 ## Build and run
 
-Requires macOS 14+ and Swift 6.
+Requires macOS 14+ and Xcode 16+ (Swift 6). Open `AudiobookBinder.xcodeproj`, or:
 
 ```bash
 cd m4b
 make run
 ```
 
-That compiles a release build, packages `dist/AudiobookBinder.app`, and opens it.
+That compiles a Release build, packages `dist/AudiobookBinder.app`, and opens it.
 
 ```bash
 make test     # XCTest + live library smoke

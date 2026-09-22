@@ -3,11 +3,14 @@
 all: app
 
 test:
-	tested=$$(git rev-parse HEAD) && swift test && swift run AudiobookBinderSelfTest && ./scripts/stamp-release-tests-ok.sh "$$tested"
+	tested=$$(git rev-parse HEAD) && xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinder -destination 'platform=macOS' -derivedDataPath .build/DerivedData test && xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinderSelfTest -destination 'platform=macOS' -derivedDataPath .build/DerivedData -configuration Debug build && .build/DerivedData/Build/Products/Debug/AudiobookBinderSelfTest && ./scripts/stamp-release-tests-ok.sh "$$tested"
 
 build:
 	./scripts/write-build-intent.sh
-	swift build -c release
+	xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinder -configuration Release -destination 'platform=macOS' -derivedDataPath .build/DerivedData build
+	mkdir -p .build/release
+	cp .build/DerivedData/Build/Products/Release/AudiobookBinder.app/Contents/MacOS/AudiobookBinder .build/release/AudiobookBinder
+	chmod +x .build/release/AudiobookBinder
 	./scripts/write-build-origin.sh
 
 icon:

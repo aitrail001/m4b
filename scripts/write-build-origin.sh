@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Record compile origin after `swift build -c release` (`make build`).
+# Record compile origin after the Xcode Release build (`make build`).
 # Reads the pre-compile intent; never downgrades same-hash dirty→clean.
 set -euo pipefail
 

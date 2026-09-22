@@ -683,49 +683,52 @@ fi
 print -r -- "$TEST_PLAN" | grep -q 'stamp-release-tests-ok\|stamp_release_tests_ok_if_head_unchanged' \
   || fail "make -n test must stamp via stamp_release_tests_ok_if_head_unchanged"
 case "$TEST_PLAN" in
-  *'git rev-parse HEAD'*'swift test'*) ;;
-  *) fail "make -n test must capture HEAD before swift test" ;;
+  *'git rev-parse HEAD'*'-scheme AudiobookBinder -destination'*' test '*) ;;
+  *) fail "make -n test must capture HEAD before xcodebuild test" ;;
 esac
 case "$TEST_PLAN" in
-  *'swift test'*'AudiobookBinderSelfTest'*'stamp-release-tests-ok'*) ;;
-  *'swift test'*'AudiobookBinderSelfTest'*'stamp_release_tests_ok_if_head_unchanged'*) ;;
+  *'-scheme AudiobookBinder -destination'*' test '*'AudiobookBinderSelfTest'*'stamp-release-tests-ok'*) ;;
+  *'-scheme AudiobookBinder -destination'*' test '*'AudiobookBinderSelfTest'*'stamp_release_tests_ok_if_head_unchanged'*) ;;
   *) fail "make -n test must stamp the captured SHA after both test commands" ;;
 esac
 
 BUILD_PLAN="$(make -C "$REPO_ROOT" -n build)"
-print -r -- "$BUILD_PLAN" | grep -q 'swift build -c release' \
-  || fail "make -n build must run swift build -c release"
+print -r -- "$BUILD_PLAN" | grep -q 'xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinder -configuration Release' \
+  || fail "make -n build must run xcodebuild Release"
 print -r -- "$BUILD_PLAN" | grep -q 'write-build-intent\|write_build_intent' \
-  || fail "make -n build must write compile intent before swift build"
+  || fail "make -n build must write compile intent before xcodebuild"
 print -r -- "$BUILD_PLAN" | grep -q 'write-build-origin\|write_build_origin' \
-  || fail "make -n build must write compile origin after swift build"
+  || fail "make -n build must write compile origin after xcodebuild"
+print -r -- "$BUILD_PLAN" | grep -q 'cp .build/DerivedData/Build/Products/Release/AudiobookBinder.app/Contents/MacOS/AudiobookBinder .build/release/AudiobookBinder' \
+  || fail "make -n build must copy the Xcode executable to .build/release/AudiobookBinder"
 intent_n="$(print -r -- "$BUILD_PLAN" | grep -n 'write-build-intent\|write_build_intent' | head -1 | cut -d: -f1)"
-swift_n="$(print -r -- "$BUILD_PLAN" | grep -n 'swift build -c release' | head -1 | cut -d: -f1)"
+xcode_n="$(print -r -- "$BUILD_PLAN" | grep -n 'xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinder -configuration Release' | head -1 | cut -d: -f1)"
+copy_n="$(print -r -- "$BUILD_PLAN" | grep -n 'cp .build/DerivedData/Build/Products/Release/AudiobookBinder.app/Contents/MacOS/AudiobookBinder .build/release/AudiobookBinder' | head -1 | cut -d: -f1)"
 origin_write_n="$(print -r -- "$BUILD_PLAN" | grep -n 'write-build-origin\|write_build_origin' | head -1 | cut -d: -f1)"
-[[ -n "$intent_n" && -n "$swift_n" && -n "$origin_write_n" ]] \
-  || fail "make -n build must list intent, swift build, and the origin writer"
-if (( intent_n >= swift_n )); then
-  fail "make -n build must write compile intent before swift build"
+[[ -n "$intent_n" && -n "$xcode_n" && -n "$copy_n" && -n "$origin_write_n" ]] \
+  || fail "make -n build must list intent, xcodebuild, the executable copy, and the origin writer"
+if (( intent_n >= xcode_n )); then
+  fail "make -n build must write compile intent before xcodebuild"
 fi
-if (( swift_n >= origin_write_n )); then
-  fail "make -n build must write compile origin after swift build"
+if (( xcode_n >= copy_n || copy_n >= origin_write_n )); then
+  fail "make -n build must copy the executable after xcodebuild and before the origin writer"
 fi
 
 APP_PLAN="$(make -C "$REPO_ROOT" -n app)"
-print -r -- "$APP_PLAN" | grep -q 'swift build -c release' \
+print -r -- "$APP_PLAN" | grep -q 'xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinder -configuration Release' \
   || fail "make -n app must build before packaging"
 print -r -- "$APP_PLAN" | grep -q 'write-build-intent\|write_build_intent' \
-  || fail "make -n app must write compile intent before swift build"
+  || fail "make -n app must write compile intent before xcodebuild"
 print -r -- "$APP_PLAN" | grep -q 'write-build-origin\|write_build_origin' \
-  || fail "make -n app must write compile origin after swift build"
+  || fail "make -n app must write compile origin after xcodebuild"
 print -r -- "$APP_PLAN" | grep -q 'package-app.sh' \
   || fail "make -n app must invoke package-app.sh"
 app_intent_n="$(print -r -- "$APP_PLAN" | grep -n 'write-build-intent\|write_build_intent' | head -1 | cut -d: -f1)"
-app_swift_n="$(print -r -- "$APP_PLAN" | grep -n 'swift build -c release' | head -1 | cut -d: -f1)"
+app_xcode_n="$(print -r -- "$APP_PLAN" | grep -n 'xcodebuild -project AudiobookBinder.xcodeproj -scheme AudiobookBinder -configuration Release' | head -1 | cut -d: -f1)"
 app_origin_n="$(print -r -- "$APP_PLAN" | grep -n 'write-build-origin\|write_build_origin' | head -1 | cut -d: -f1)"
 app_pkg_n="$(print -r -- "$APP_PLAN" | grep -n 'package-app.sh' | head -1 | cut -d: -f1)"
-if (( app_intent_n >= app_swift_n || app_swift_n >= app_origin_n || app_origin_n >= app_pkg_n )); then
-  fail "make -n app must write intent, then swift build, then origin, then package-app.sh"
+if (( app_intent_n >= app_xcode_n || app_xcode_n >= app_origin_n || app_origin_n >= app_pkg_n )); then
+  fail "make -n app must write intent, then xcodebuild, then origin, then package-app.sh"
 fi
 
 dmg_script="$SCRIPT_DIR/package-dmg.sh"
@@ -764,17 +767,17 @@ awk '/^require_packaged_app_origin\(\)/,/^}/' "$SCRIPT_DIR/release-gates.sh" \
 PLAN="$(make -C "$REPO_ROOT" -n release)"
 print -r -- "$PLAN" | grep -q 'require-clean-release' \
   || fail "make -n release must fail-fast with require-clean-release"
-print -r -- "$PLAN" | grep -q 'swift test' \
-  || fail "make -n release must include swift test"
+print -r -- "$PLAN" | grep -q -- '-scheme AudiobookBinder -destination' \
+  || fail "make -n release must include xcodebuild test"
 print -r -- "$PLAN" | grep -q 'PRODUCTION=1' \
   || fail "make -n release must package a PRODUCTION=1 DMG"
 clean_n="$(print -r -- "$PLAN" | grep -n 'require-clean-release' | head -1 | cut -d: -f1)"
-test_n="$(print -r -- "$PLAN" | grep -n 'swift test' | head -1 | cut -d: -f1)"
+test_n="$(print -r -- "$PLAN" | grep -n -- '-scheme AudiobookBinder -destination' | head -1 | cut -d: -f1)"
 prod_n="$(print -r -- "$PLAN" | grep -n 'PRODUCTION=1' | head -1 | cut -d: -f1)"
 [[ -n "$clean_n" && -n "$test_n" && -n "$prod_n" ]] \
-  || fail "make -n release must list require-clean-release, swift test, and PRODUCTION=1"
+  || fail "make -n release must list require-clean-release, xcodebuild test, and PRODUCTION=1"
 if (( clean_n >= test_n || test_n >= prod_n )); then
-  fail "make -n release must run require-clean-release, then swift test, then PRODUCTION=1"
+  fail "make -n release must run require-clean-release, then xcodebuild test, then PRODUCTION=1"
 fi
 
 print -r -- "ok: release gates"

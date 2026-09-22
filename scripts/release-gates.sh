@@ -221,13 +221,13 @@ release_binary_path() {
   print -r -- "${1:-.}/.build/release/AudiobookBinder"
 }
 
-# Written after a successful `swift build -c release`. Binds the live
+# Written after a successful Xcode Release build (`make build`). Binds the live
 # .build/release/AudiobookBinder bytes to the source commit at compile time.
 build_origin_path() {
   print -r -- "${1:-.}/.build/release/AudiobookBinder.origin.json"
 }
 
-# Written before `swift build -c release`. The origin writer uses this to
+# Written before the Xcode Release build. The origin writer uses this to
 # prove the compile interval (commit + dirty) did not change mid-build.
 build_intent_path() {
   print -r -- "${1:-.}/.build/release/AudiobookBinder.intent.json"

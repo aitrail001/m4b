@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Record compile intent before `swift build -c release` (`make build`).
+# Record compile intent before the Xcode Release build (`make build`).
 set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"

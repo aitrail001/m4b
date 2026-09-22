@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy — Audiobook Binder</title>
+  <meta name="description" content="Audiobook Binder runs on your Mac. It does not collect, upload, or sell your books or personal information.">
+  <link rel="icon" href="media/icon-256.png" type="image/png">
+  <link rel="stylesheet" href="fonts.css">
+  <style>
+    :root {
+      --leather: #3a2416;
+      --leather-deep: #24150c;
+      --gold: #c6a15b;
+      --gold-soft: #e4c98a;
+      --paper: #f3eee4;
+      --paper-deep: #e6dccb;
+      --ink: #2c2018;
+      --ink-muted: #6a5344;
+      --rule: rgba(198, 161, 91, 0.45);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--leather-deep);
+      font-family: Figtree, system-ui, sans-serif;
+      font-size: 18px;
+      line-height: 1.55;
+    }
+    a { color: inherit; }
+    img { max-width: 100%; display: block; }
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 22px;
+      background: color-mix(in srgb, var(--leather-deep) 88%, transparent);
+      border-bottom: 1px solid var(--rule);
+    }
+    nav .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--gold-soft); }
+    nav .brand img { width: 36px; height: 36px; border-radius: 8px; }
+    nav .brand span { font-family: "Source Serif 4", Georgia, serif; font-weight: 600; }
+    nav .links { display: flex; gap: 18px; align-items: center; font-size: 0.92rem; color: var(--gold-soft); }
+    nav .links a { text-decoration: none; }
+    .lang { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; overflow: hidden; font-size: 0.78rem; font-weight: 600; }
+    .lang button { appearance: none; border: 0; background: transparent; color: var(--gold-soft); padding: 0.35rem 0.7rem; cursor: pointer; font: inherit; }
+    .lang button[aria-pressed="true"] { background: var(--gold); color: var(--leather-deep); }
+    main {
+      width: min(760px, calc(100% - 40px));
+      margin: 36px auto 64px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 40px 36px 48px;
+      border-radius: 16px;
+    }
+    h1 {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-weight: 600;
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      line-height: 1.1;
+      margin: 0 0 8px;
+    }
+    .updated { color: var(--ink-muted); margin: 0 0 28px; }
+    h2 { font-family: "Source Serif 4", Georgia, serif; font-size: 1.35rem; font-weight: 600; margin: 1.6em 0 0.4em; }
+    p, li { margin: 0.55em 0; }
+    a.inline { color: var(--leather); }
+    footer {
+      width: min(760px, calc(100% - 40px));
+      margin: -28px auto 48px;
+      color: color-mix(in srgb, var(--paper) 55%, var(--gold));
+      font-size: 0.88rem;
+    }
+    footer a { color: var(--gold-soft); }
+    html[lang="zh-Hans"] body { font-family: Figtree, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+    html[lang="zh-Hans"] h1, html[lang="zh-Hans"] h2, html[lang="zh-Hans"] nav .brand span {
+      font-family: "Source Serif 4", "Songti SC", "Noto Serif SC", serif;
+    }
+    [data-lang-block="zh-Hans"] { display: none; }
+    html[lang="zh-Hans"] [data-lang-block="en"] { display: none; }
+    html[lang="zh-Hans"] [data-lang-block="zh-Hans"] { display: block; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="/">
+      <img src="media/icon-256.png" alt="">
+      <span>Audiobook Binder</span>
+    </a>
+    <div class="links">
+      <a href="/" data-i18n="home">Home</a>
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="zh-Hans" aria-pressed="false">中文</button>
+      </div>
+    </div>
+  </nav>
+  <main>
+    <div data-lang-block="en">
+      <h1>Privacy Policy</h1>
+      <p class="updated">Effective September 22, 2026</p>
+      <p>Audiobook Binder is a Mac app that turns a folder of chapter audio into an Apple Books audiobook on your computer. This policy describes what the app does with information. It applies to the app distributed on the Mac App Store and to the copy offered from this website.</p>
+
+      <h2>Information the app does not collect</h2>
+      <p>The app does not have an account, and it does not send your books, listening activity, or personal information to the developer or to any analytics service. There are no ads and no third-party tracking kits.</p>
+      <p>The developer does not receive the files you open, the audiobooks you create, or a record of how you use the app.</p>
+
+      <h2>Information that stays on your Mac</h2>
+      <p>When you choose a folder, the app reads the audio, cover images, and ebook metadata in that folder so it can fill in the title, author, narrator, cover, and chapter names. It writes the finished <code>.m4b</code> to a folder you choose, either next to the book or in Music. If you later move the original audio to the Trash, that happens only on your Mac, and only when you ask.</p>
+      <p>The app remembers a few settings on the device so the next launch can start where you left off: the last folder you opened, the folder where finished books are saved, bitrate, and whether to overwrite an existing file. Those settings, including a macOS bookmark that lets the sandboxed app reopen a folder you already approved, stay in local app storage. They are not uploaded.</p>
+
+      <h2>Apple</h2>
+      <p>If you download the app from the Mac App Store, Apple handles that purchase under <a class="inline" href="https://www.apple.com/legal/privacy/">Apple’s Privacy Policy</a>. The app itself does not send your library to Apple. Opening a finished audiobook in the Books app hands that file to Books on your Mac.</p>
+
+      <h2>Children</h2>
+      <p>The app is not directed at children under 13, and it does not knowingly collect personal information from anyone.</p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes, the new text will be posted on this page with a new effective date.</p>
+
+      <h2>Contact</h2>
+      <p>Questions about this policy: <a class="inline" href="https://github.com/aitrail001/m4b/issues">github.com/aitrail001/m4b/issues</a>.</p>
+    </div>
+    <div data-lang-block="zh-Hans">
+      <h1>隐私政策</h1>
+      <p class="updated">生效日期：2026 年 9 月 22 日</p>
+      <p>Audiobook Binder 是一款在你的 Mac 上把分章音频装订成 Apple Books 有声书的应用。本政策说明应用如何处理信息，适用于 Mac App Store 版本和本网站提供的版本。</p>
+
+      <h2>应用不收集的信息</h2>
+      <p>应用没有账号，也不会把你的书籍、收听记录或个人信息发送给开发者或任何分析服务。没有广告，也没有第三方追踪组件。</p>
+      <p>开发者收不到你打开的文件、生成的有声书，也没有你如何使用应用的记录。</p>
+
+      <h2>留在你 Mac 上的信息</h2>
+      <p>你选择文件夹后，应用会读取其中的音频、封面和电子书元数据，用来填写书名、作者、演播、封面和章节名。成品 <code>.m4b</code> 写到你指定的位置：书文件夹旁，或“音乐”文件夹。只有在你要求时，才会把原来的音频移到废纸篓，并且只发生在这台 Mac 上。</p>
+      <p>应用会在本机记住少量设置，方便下次从上次停下的地方继续：上次打开的文件夹、成品保存位置、码率，以及是否覆盖已有文件。这些设置，包括让沙盒应用重新打开你已授权文件夹的 macOS 书签，都保存在本机，不会上传。</p>
+
+      <h2>Apple</h2>
+      <p>如果你从 Mac App Store 下载应用，购买由 Apple 按其<a class="inline" href="https://www.apple.com/legal/privacy/">隐私政策</a>处理。应用本身不会把你的书库发给 Apple。在“图书”中打开成品，只是把该文件交给这台 Mac 上的图书应用。</p>
+
+      <h2>儿童</h2>
+      <p>本应用不以 13 岁以下儿童为对象，也不会故意收集任何人的个人信息。</p>
+
+      <h2>变更</h2>
+      <p>如果本政策有变更，新文本会公布在本页，并更新生效日期。</p>
+
+      <h2>联系</h2>
+      <p>有关本政策的问题：<a class="inline" href="https://github.com/aitrail001/m4b/issues">github.com/aitrail001/m4b/issues</a>。</p>
+    </div>
+  </main>
+  <footer>
+    <a href="/" data-i18n="home">Home</a>
+  </footer>
+  <script>
+    const saved = localStorage.getItem("ab-lang") || "en";
+    function apply(lang) {
+      document.documentElement.lang = lang === "zh-Hans" ? "zh-Hans" : "en";
+      document.querySelectorAll("[data-lang]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === document.documentElement.lang ? "true" : "false");
+      });
+      const home = document.documentElement.lang === "zh-Hans" ? "首页" : "Home";
+      document.querySelectorAll("[data-i18n='home']").forEach((el) => { el.textContent = home; });
+      localStorage.setItem("ab-lang", document.documentElement.lang);
+    }
+    document.querySelectorAll("[data-lang]").forEach((btn) => {
+      btn.addEventListener("click", () => apply(btn.getAttribute("data-lang")));
+    });
+    apply(saved);
+  </script>
+</body>
+</html>

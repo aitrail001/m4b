@@ -87,6 +87,7 @@
     </a>
     <div class="links">
       <a href="/" data-i18n="home">Home</a>
+      <a href="/support" data-i18n="support">Support</a>
       <div class="lang" role="group" aria-label="Language">
         <button type="button" data-lang="en" aria-pressed="true">EN</button>
         <button type="button" data-lang="zh-Hans" aria-pressed="false">中文</button>
@@ -96,7 +97,7 @@
   <main>
     <div data-lang-block="en">
       <h1>Privacy Policy</h1>
-      <p class="updated">Effective September 22, 2026</p>
+      <p class="updated">Effective September 26, 2026</p>
       <p>Audiobook Binder is a Mac app that turns a folder of chapter audio into an Apple Books audiobook on your computer. This policy describes what the app does with information. It applies to the app distributed on the Mac App Store and to the copy offered from this website.</p>
 
       <h2>Information the app does not collect</h2>
@@ -104,7 +105,7 @@
       <p>The developer does not receive the files you open, the audiobooks you create, or a record of how you use the app.</p>
 
       <h2>Information that stays on your Mac</h2>
-      <p>When you choose a folder, the app reads the audio, cover images, and ebook metadata in that folder so it can fill in the title, author, narrator, cover, and chapter names. It writes the finished <code>.m4b</code> to a folder you choose, either next to the book or in Music. If you later move the original audio to the Trash, that happens only on your Mac, and only when you ask.</p>
+      <p>When you choose a folder, the app reads the audio, cover images, and ebook metadata in that folder so it can fill in the title, author, narrator, cover, and chapter names. It writes the finished <code>.m4b</code> next to the book, or into another folder you pick. If you later move the original audio to the Trash, that happens only on your Mac, and only when you ask.</p>
       <p>The app remembers a few settings on the device so the next launch can start where you left off: the last folder you opened, the folder where finished books are saved, bitrate, and whether to overwrite an existing file. Those settings, including a macOS bookmark that lets the sandboxed app reopen a folder you already approved, stay in local app storage. They are not uploaded.</p>
 
       <h2>Apple</h2>
@@ -117,11 +118,11 @@
       <p>If this policy changes, the new text will be posted on this page with a new effective date.</p>
 
       <h2>Contact</h2>
-      <p>Questions about this policy: <a class="inline" href="https://github.com/aitrail001/m4b/issues">github.com/aitrail001/m4b/issues</a>.</p>
+      <p>Questions about this policy: <a class="inline" href="mailto:support@audiobook-binder.nwai.cc">support@audiobook-binder.nwai.cc</a>, or the <a class="inline" href="/support">support page</a>.</p>
     </div>
     <div data-lang-block="zh-Hans">
       <h1>隐私政策</h1>
-      <p class="updated">生效日期：2026 年 9 月 22 日</p>
+      <p class="updated">生效日期：2026 年 9 月 26 日</p>
       <p>Audiobook Binder 是一款在你的 Mac 上把分章音频装订成 Apple Books 有声书的应用。本政策说明应用如何处理信息，适用于 Mac App Store 版本和本网站提供的版本。</p>
 
       <h2>应用不收集的信息</h2>
@@ -129,7 +130,7 @@
       <p>开发者收不到你打开的文件、生成的有声书，也没有你如何使用应用的记录。</p>
 
       <h2>留在你 Mac 上的信息</h2>
-      <p>你选择文件夹后，应用会读取其中的音频、封面和电子书元数据，用来填写书名、作者、演播、封面和章节名。成品 <code>.m4b</code> 写到你指定的位置：书文件夹旁，或“音乐”文件夹。只有在你要求时，才会把原来的音频移到废纸篓，并且只发生在这台 Mac 上。</p>
+      <p>你选择文件夹后，应用会读取其中的音频、封面和电子书元数据，用来填写书名、作者、演播、封面和章节名。成品 <code>.m4b</code> 写在书文件夹旁，或写到你另选的文件夹。只有在你要求时，才会把原来的音频移到废纸篓，并且只发生在这台 Mac 上。</p>
       <p>应用会在本机记住少量设置，方便下次从上次停下的地方继续：上次打开的文件夹、成品保存位置、码率，以及是否覆盖已有文件。这些设置，包括让沙盒应用重新打开你已授权文件夹的 macOS 书签，都保存在本机，不会上传。</p>
 
       <h2>Apple</h2>
@@ -142,11 +143,12 @@
       <p>如果本政策有变更，新文本会公布在本页，并更新生效日期。</p>
 
       <h2>联系</h2>
-      <p>有关本政策的问题：<a class="inline" href="https://github.com/aitrail001/m4b/issues">github.com/aitrail001/m4b/issues</a>。</p>
+      <p>有关本政策的问题：<a class="inline" href="mailto:support@audiobook-binder.nwai.cc">support@audiobook-binder.nwai.cc</a>，或<a class="inline" href="/support">支持页面</a>。</p>
     </div>
   </main>
   <footer>
     <a href="/" data-i18n="home">Home</a>
+    · <a href="/support" data-i18n="support">Support</a>
   </footer>
   <script>
     const saved = localStorage.getItem("ab-lang") || "en";
@@ -155,8 +157,12 @@
       document.querySelectorAll("[data-lang]").forEach((btn) => {
         btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === document.documentElement.lang ? "true" : "false");
       });
-      const home = document.documentElement.lang === "zh-Hans" ? "首页" : "Home";
-      document.querySelectorAll("[data-i18n='home']").forEach((el) => { el.textContent = home; });
+      const zh = document.documentElement.lang === "zh-Hans";
+      const labels = { home: zh ? "首页" : "Home", support: zh ? "支持" : "Support" };
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (labels[key]) el.textContent = labels[key];
+      });
       localStorage.setItem("ab-lang", document.documentElement.lang);
     }
     document.querySelectorAll("[data-lang]").forEach((btn) => {

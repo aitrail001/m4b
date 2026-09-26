@@ -219,20 +219,19 @@ public struct ExportSettings: Sendable, Equatable {
         self.writeNextToBook = writeNextToBook
     }
 
-    public static var defaultOutputDirectory: URL {
-        let music = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-                .appendingPathComponent("Music", isDirectory: true)
-        return music.appendingPathComponent("Audiobooks", isDirectory: true)
+    /// Saving outside the book folder needs a directory the user picked.
+    /// There is no Music-folder default; that would need a separate entitlement.
+    public var needsChosenOutputFolder: Bool {
+        !writeNextToBook && outputDirectory == nil
     }
 
-    public func resolvedOutputDirectory(for book: Audiobook) -> URL {
+    public func resolvedOutputDirectory(for book: Audiobook) -> URL? {
         if writeNextToBook { return book.folder }
-        return outputDirectory ?? Self.defaultOutputDirectory
+        return outputDirectory
     }
 
-    public func outputURL(for book: Audiobook) -> URL {
-        resolvedOutputDirectory(for: book).appendingPathComponent(book.suggestedFileName)
+    public func outputURL(for book: Audiobook) -> URL? {
+        resolvedOutputDirectory(for: book)?.appendingPathComponent(book.suggestedFileName)
     }
 
     /// Unique destination per book. Same title/author from different folders, and
@@ -257,8 +256,8 @@ public struct ExportSettings: Sendable, Equatable {
         for book in books {
             if let dest = owned[book.id] {
                 plan[book.id] = dest
-            } else {
-                plan[book.id] = uniqueOutputURL(for: book, reserved: &reserved)
+            } else if let url = uniqueOutputURL(for: book, reserved: &reserved) {
+                plan[book.id] = url
             }
         }
         return plan
@@ -270,7 +269,7 @@ public struct ExportSettings: Sendable, Equatable {
     }
 
     private func ownedDestination(for book: Audiobook) -> URL? {
-        let dir = resolvedOutputDirectory(for: book).standardizedFileURL
+        guard let dir = resolvedOutputDirectory(for: book)?.standardizedFileURL else { return nil }
         if let dest = acceptableDestination(
             OutputAssociation.load(inBookFolder: book.folder),
             book: book,
@@ -347,8 +346,8 @@ public struct ExportSettings: Sendable, Equatable {
         return uuid
     }
 
-    private func uniqueOutputURL(for book: Audiobook, reserved: inout Set<String>) -> URL {
-        let dir = resolvedOutputDirectory(for: book).standardizedFileURL
+    private func uniqueOutputURL(for book: Audiobook, reserved: inout Set<String>) -> URL? {
+        guard let dir = resolvedOutputDirectory(for: book)?.standardizedFileURL else { return nil }
         let primary = book.suggestedFileName
         if let url = claim(dir.appendingPathComponent(primary), reserved: &reserved) {
             return url

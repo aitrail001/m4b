@@ -282,7 +282,7 @@
       <p class="intro" data-i18n-html="what.intro">Point it at one book folder, or a parent folder of many books. Nested wrappers (Calibre-style <code>43/Title</code> trees) become a folder list on the left. Already-made <code>.m4b</code> files show as already bound so you do not encode them twice.</p>
       <div class="split">
         <div>
-          <p data-i18n-html="what.p1">Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or into <code>~/Music/Audiobooks</code>.</p>
+          <p data-i18n-html="what.p1">Metadata is filled from MP3 tags, then OPF/EPUB, then the ebook filename, then the folder name. You can rewrite title, author, narrator, cover, and every chapter before you build. Uncheck a credits track. Play a chapter to be sure. Save the file next to the book, or choose another folder.</p>
           <p data-i18n-html="what.p2">The finished file is marked as an audiobook for Apple Books (<code>stik=2</code>) with a chapter track. Drop it on Books, or use <strong>Open in Books</strong> at the bottom of the window.</p>
         </div>
         <figure class="shot">
@@ -331,7 +331,7 @@
           <b>4</b>
           <div>
             <h3 data-i18n="how.4.title">Build</h3>
-            <p data-i18n-html="how.4.body">Save in the book folder, or to Music/Audiobooks. Then <strong>Show in Finder</strong>, <strong>Open in Books</strong>, or <strong>Verify</strong> at the bottom of the window. If chapter counts and durations match, you can move the original audio files to Trash.</p>
+            <p data-i18n-html="how.4.body">Save in the book folder, or choose another folder. Then <strong>Show in Finder</strong>, <strong>Open in Books</strong>, or <strong>Verify</strong> at the bottom of the window. If chapter counts and durations match, you can move the original audio files to Trash.</p>
           </div>
         </li>
       </ol>
@@ -360,7 +360,7 @@
 
   <footer class="wrap">
     <span data-i18n="footer.left">Audiobook Binder 1.4.23 · local Mac app, no account</span>
-    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="/privacy" data-i18n="footer.privacy">Privacy</a> · <a href="https://github.com/aitrail001/m4b/releases/download/v1.4.23/AudiobookBinder-1.4.23.dmg" data-i18n="nav.download">Download</a></span>
+    <span><a href="https://github.com/aitrail001/m4b" data-i18n="footer.source">Source</a> · <a href="/support" data-i18n="footer.support">Support</a> · <a href="/privacy" data-i18n="footer.privacy">Privacy</a> · <a href="https://github.com/aitrail001/m4b/releases/download/v1.4.23/AudiobookBinder-1.4.23.dmg" data-i18n="nav.download">Download</a></span>
   </footer>
   <script>
     // Public download version. Keep in lockstep with GitHub Releases.
@@ -382,7 +382,7 @@
         "hero.shot": "Audiobook Binder：书库列表与选中书籍封面",
         "what.title": "你现有的书库，直接拿来装订。",
         "what.intro": "指向一本有编号 MP3 的书文件夹，或包含多本书的父文件夹。嵌套包装目录（如 Calibre 的 <code>43/书名</code>）会显示在左侧文件夹树。已经生成的 <code>.m4b</code> 会标成「已是有声书」，不会重复编码。",
-        "what.p1": "元数据按顺序取自：MP3 标签 → OPF/EPUB → 电子书文件名 → 文件夹名。装订前可改书名、作者、演播、封面和每一章。不想要的片尾可取消勾选，也能试听某一章。成品可保存在书文件夹旁，或写入 <code>~/Music/Audiobooks</code>。",
+        "what.p1": "元数据按顺序取自：MP3 标签 → OPF/EPUB → 电子书文件名 → 文件夹名。装订前可改书名、作者、演播、封面和每一章。不想要的片尾可取消勾选，也能试听某一章。成品可保存在书文件夹旁，或另选一个文件夹。",
         "what.p2": "生成的文件会标成 Apple Books 有声书（<code>stik=2</code>），并带章节轨。拖到图书 App，或用窗口底部的「在图书中打开」。",
         "what.shot": "带封面、勾选框和元数据的书库列表",
         "what.sidebar": "带封面、时长和「已是有声书」标记的书籍列表",
@@ -394,7 +394,7 @@
         "how.3.title": "编辑、跳过、试听",
         "how.3.body": "改书名和作者，换封面，取消不想要的章节，并从列表试听。码率和保存位置在「打开文件夹」下方。生成后可逐章对照原始音频和 .m4b。",
         "how.4.title": "生成",
-        "how.4.body": "保存在书文件夹，或保存到「音乐/Audiobooks」。然后用窗口底部的<strong>在访达中显示</strong>、<strong>在图书中打开</strong>或<strong>校验</strong>。若章节数和时长都一致，可以把原来的音频移到废纸篓。",
+        "how.4.body": "保存在书文件夹，或另选一个文件夹。然后用窗口底部的<strong>在访达中显示</strong>、<strong>在图书中打开</strong>或<strong>校验</strong>。若章节数和时长都一致，可以把原来的音频移到废纸篓。",
         "install.title": "从磁盘映像安装",
         "install.p1": "下载 DMG，打开后把 <strong>Audiobook Binder</strong> 拖进「应用程序」。",
         "install.p2": "当前版本用 Apple Development 证书签名。第一次打开时，macOS 可能提示来自身份不明的开发者。请按住 Control 点按应用，选择<strong>打开</strong>，再确认打开。",
@@ -406,6 +406,7 @@
         "expect.p3": "需要 macOS 14 或更高版本。独立运行：不需要 ffmpeg、Homebrew 或其他额外安装。编码使用 macOS AVFoundation。",
         "footer.left": "Audiobook Binder {v} · 本机 Mac 应用，无需账号",
         "footer.source": "源码",
+        "footer.support": "支持",
         "footer.privacy": "隐私政策"
       }
     };

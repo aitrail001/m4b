@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Support — Audiobook Binder</title>
+  <meta name="description" content="Ask a question or request support for Audiobook Binder. Email the developer or open a GitHub issue.">
+  <link rel="icon" href="media/icon-256.png" type="image/png">
+  <link rel="stylesheet" href="fonts.css">
+  <style>
+    :root {
+      --leather: #3a2416;
+      --leather-deep: #24150c;
+      --gold: #c6a15b;
+      --gold-soft: #e4c98a;
+      --paper: #f3eee4;
+      --ink: #2c2018;
+      --ink-muted: #6a5344;
+      --rule: rgba(198, 161, 91, 0.45);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--leather-deep);
+      font-family: Figtree, system-ui, sans-serif;
+      font-size: 18px;
+      line-height: 1.55;
+    }
+    a { color: inherit; }
+    img { max-width: 100%; display: block; }
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 22px;
+      background: color-mix(in srgb, var(--leather-deep) 88%, transparent);
+      border-bottom: 1px solid var(--rule);
+    }
+    nav .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--gold-soft); }
+    nav .brand img { width: 36px; height: 36px; border-radius: 8px; }
+    nav .brand span { font-family: "Source Serif 4", Georgia, serif; font-weight: 600; }
+    nav .links { display: flex; gap: 18px; align-items: center; font-size: 0.92rem; color: var(--gold-soft); }
+    nav .links a { text-decoration: none; }
+    .lang { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; overflow: hidden; font-size: 0.78rem; font-weight: 600; }
+    .lang button { appearance: none; border: 0; background: transparent; color: var(--gold-soft); padding: 0.35rem 0.7rem; cursor: pointer; font: inherit; }
+    .lang button[aria-pressed="true"] { background: var(--gold); color: var(--leather-deep); }
+    main {
+      width: min(760px, calc(100% - 40px));
+      margin: 36px auto 64px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 40px 36px 48px;
+      border-radius: 16px;
+    }
+    h1 {
+      font-family: "Source Serif 4", Georgia, serif;
+      font-weight: 600;
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      line-height: 1.1;
+      margin: 0 0 8px;
+    }
+    .updated { color: var(--ink-muted); margin: 0 0 28px; }
+    h2 { font-family: "Source Serif 4", Georgia, serif; font-size: 1.35rem; font-weight: 600; margin: 1.6em 0 0.4em; }
+    p, li { margin: 0.55em 0; }
+    a.inline { color: var(--leather); }
+    .ask {
+      margin: 0 0 8px;
+      padding: 18px 20px;
+      background: white;
+      border-radius: 12px;
+      border: 1px solid rgba(58, 36, 22, 0.12);
+    }
+    .ask a.mail {
+      display: inline-block;
+      margin-top: 8px;
+      font-weight: 700;
+      color: var(--leather);
+    }
+    footer {
+      width: min(760px, calc(100% - 40px));
+      margin: -28px auto 48px;
+      color: color-mix(in srgb, var(--paper) 55%, var(--gold));
+      font-size: 0.88rem;
+    }
+    footer a { color: var(--gold-soft); }
+    html[lang="zh-Hans"] body { font-family: Figtree, "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif; }
+    html[lang="zh-Hans"] h1, html[lang="zh-Hans"] h2, html[lang="zh-Hans"] nav .brand span {
+      font-family: "Source Serif 4", "Songti SC", "Noto Serif SC", serif;
+    }
+    [data-lang-block="zh-Hans"] { display: none; }
+    html[lang="zh-Hans"] [data-lang-block="en"] { display: none; }
+    html[lang="zh-Hans"] [data-lang-block="zh-Hans"] { display: block; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="brand" href="/">
+      <img src="media/icon-256.png" alt="">
+      <span>Audiobook Binder</span>
+    </a>
+    <div class="links">
+      <a href="/" data-i18n="home">Home</a>
+      <a href="/privacy" data-i18n="privacy">Privacy</a>
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="zh-Hans" aria-pressed="false">中文</button>
+      </div>
+    </div>
+  </nav>
+  <main>
+    <div data-lang-block="en">
+      <h1>Support</h1>
+      <p class="updated">Audiobook Binder for macOS</p>
+      <div class="ask">
+        <p>Questions, bug reports, and support requests go to the developer by email. You do not need an account.</p>
+        <a class="mail" href="mailto:support@audiobook-binder.nwai.cc?subject=Audiobook%20Binder%20support">support@audiobook-binder.nwai.cc</a>
+      </div>
+      <p>Include the macOS version (Apple menu → About This Mac), the app version shown next to the title in the window, and what you were doing when the problem happened. A screenshot helps.</p>
+
+      <h2>What the app does</h2>
+      <p>Audiobook Binder runs on your Mac. It reads a folder of chapter audio you choose and writes one <code>.m4b</code> file with title, author, cover, and chapter marks. It does not upload your library. See the <a class="inline" href="/privacy">privacy policy</a> for what stays on the computer.</p>
+
+      <h2>Common questions</h2>
+      <p><strong>Where is the finished file?</strong> With “Save in book folder” checked, it is written next to the chapter files. Uncheck that and choose another folder.</p>
+      <p><strong>Which Macs does it support?</strong> macOS 14 or later. The app encodes with the system audio frameworks. It does not need ffmpeg or other installs.</p>
+      <p><strong>A book was skipped or chapters look wrong.</strong> Email the folder layout (names only, not the audio) and the title the app showed. Nested folders are scanned, but a folder with no chapter audio is not treated as a book.</p>
+
+      <h2>Another way to write</h2>
+      <p>You can also open a public issue: <a class="inline" href="https://github.com/aitrail001/m4b/issues">github.com/aitrail001/m4b/issues</a>. Email is enough if you do not use GitHub.</p>
+    </div>
+    <div data-lang-block="zh-Hans">
+      <h1>支持</h1>
+      <p class="updated">适用于 macOS 的 Audiobook Binder</p>
+      <div class="ask">
+        <p>提问、错误报告和支持请求请发邮件给开发者。不需要注册账号。</p>
+        <a class="mail" href="mailto:support@audiobook-binder.nwai.cc?subject=Audiobook%20Binder%20support">support@audiobook-binder.nwai.cc</a>
+      </div>
+      <p>请写上 macOS 版本（苹果菜单 → 关于本机）、窗口标题旁显示的应用版本，以及出问题时你在做什么。截图会有帮助。</p>
+
+      <h2>这个应用做什么</h2>
+      <p>Audiobook Binder 在你的 Mac 上运行。它读取你选择的分章音频文件夹，写成一个带书名、作者、封面和章节标记的 <code>.m4b</code>。它不会上传你的书库。哪些信息留在本机，见<a class="inline" href="/privacy">隐私政策</a>。</p>
+
+      <h2>常见问题</h2>
+      <p><strong>成品在哪里？</strong> 勾选「保存在书文件夹」时，文件写在分章音频旁边。取消勾选后，请另选一个文件夹。</p>
+      <p><strong>支持哪些 Mac？</strong> macOS 14 或更高版本。编码使用系统自带的音频框架，不需要 ffmpeg 或其他安装。</p>
+      <p><strong>一本书被跳过，或章节看起来不对。</strong> 请发邮件说明文件夹结构（只要名称，不要发音频）以及应用显示的书名。嵌套文件夹会扫描，但没有分章音频的文件夹不会当成一本书。</p>
+
+      <h2>其他联系方式</h2>
+      <p>也可以开一个公开 issue：<a class="inline" href="https://github.com/aitrail001/m4b/issues">github.com/aitrail001/m4b/issues</a>。不用 GitHub 时，发邮件即可。</p>
+    </div>
+  </main>
+  <footer>
+    <a href="/" data-i18n="home">Home</a>
+    · <a href="/privacy" data-i18n="privacy">Privacy</a>
+  </footer>
+  <script>
+    const saved = localStorage.getItem("ab-lang") || "en";
+    function apply(lang) {
+      document.documentElement.lang = lang === "zh-Hans" ? "zh-Hans" : "en";
+      document.querySelectorAll("[data-lang]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.getAttribute("data-lang") === document.documentElement.lang ? "true" : "false");
+      });
+      const zh = document.documentElement.lang === "zh-Hans";
+      const labels = { home: zh ? "首页" : "Home", privacy: zh ? "隐私政策" : "Privacy" };
+      document.querySelectorAll("[data-i18n]").forEach((el) => {
+        const key = el.getAttribute("data-i18n");
+        if (labels[key]) el.textContent = labels[key];
+      });
+      localStorage.setItem("ab-lang", document.documentElement.lang);
+    }
+    document.querySelectorAll("[data-lang]").forEach((btn) => {
+      btn.addEventListener("click", () => apply(btn.getAttribute("data-lang")));
+    });
+    apply(saved);
+  </script>
+</body>
+</html>

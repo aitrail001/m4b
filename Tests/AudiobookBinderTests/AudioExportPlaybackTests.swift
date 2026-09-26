@@ -500,7 +500,7 @@ final class AudioExportPlaybackTests: XCTestCase {
         XCTAssertEqual(results[0].outcome, .created)
         XCTAssertEqual(results[0].url.lastPathComponent, selected.suggestedFileName)
         XCTAssertTrue(FileManager.default.fileExists(atPath: results[0].url.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.outputURL(for: ignored).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settings.outputURL(for: ignored)?.path ?? ""))
 
         let existsSettings = ExportSettings(outputDirectory: dir, overwrite: false, writeNextToBook: false)
         let again = try await M4BExporter(bitrate: 48_000).exportAll(books: [selected], settings: existsSettings)

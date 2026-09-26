@@ -174,14 +174,29 @@ final class NamingAndModelsTests: XCTestCase {
             outputDirectory: URL(fileURLWithPath: "/tmp/Out"),
             writeNextToBook: true
         )
-        XCTAssertEqual(nextTo.resolvedOutputDirectory(for: book).path, "/tmp/MyBook")
+        XCTAssertEqual(nextTo.resolvedOutputDirectory(for: book)?.path, "/tmp/MyBook")
+        XCTAssertFalse(nextTo.needsChosenOutputFolder)
         let custom = ExportSettings(
             outputDirectory: URL(fileURLWithPath: "/tmp/Out"),
             writeNextToBook: false
         )
-        XCTAssertEqual(custom.resolvedOutputDirectory(for: book).path, "/tmp/Out")
+        XCTAssertEqual(custom.resolvedOutputDirectory(for: book)?.path, "/tmp/Out")
+        XCTAssertFalse(custom.needsChosenOutputFolder)
         let fallback = ExportSettings(outputDirectory: nil, writeNextToBook: false)
-        XCTAssertEqual(fallback.resolvedOutputDirectory(for: book).path, ExportSettings.defaultOutputDirectory.path)
+        XCTAssertTrue(fallback.needsChosenOutputFolder)
+        XCTAssertNil(fallback.resolvedOutputDirectory(for: book))
+        XCTAssertNil(fallback.outputURL(for: book))
+    }
+
+    func testExportAllWithoutChosenFolderDoesNotUseMusic() async {
+        let book = TestSupport.dummyBook(folder: "/tmp/MyBook")
+        let settings = ExportSettings(outputDirectory: nil, writeNextToBook: false)
+        do {
+            _ = try await M4BExporter().exportAll(books: [book], settings: settings)
+            XCTFail("Export should ask for a folder")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "Choose a folder to save the audiobook.")
+        }
     }
 
     func testAudioInfoExactKilohertzAndScanProgressZeroCount() {

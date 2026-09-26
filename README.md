@@ -45,7 +45,7 @@ make release  # GitHub tag + copy that DMG to the website (only when shipping)
 1. Open a book folder, or a library folder (nested wrappers are fine). Nothing is scanned until you choose a folder. While scanning, the footer names the folder being checked.
 2. When the library has nested folders, pick a level in the folder tree on the left to show only the books under it. Filter the list if you need to. Folders that already have an `.m4b` show as **Already an audiobook** and stay unselected.
 3. Review title, author, narrator, cover, and chapter names. Uncheck chapters you want to skip; play a chapter to preview.
-4. Choose bitrate (64 kbps is the audiobook default). Save the `.m4b` in the book folder, or uncheck that to write to `~/Music/Audiobooks` (or pick another folder).
+4. Choose bitrate (64 kbps is the audiobook default). Save the `.m4b` in the book folder, or uncheck that and choose another folder.
 5. Build the selected books, then Show in Finder, Open in Books, or **Verify** the `.m4b` (play the file or a chapter). If its duration matches the source, you can move the original MP3s to Trash.
 
 You can also bind from the command line:

@@ -231,6 +231,13 @@ final class AppState {
                 : "Select at least one chapter."
             return
         }
+        if settings.needsChosenOutputFolder {
+            chooseOutputFolder()
+            guard !settings.needsChosenOutputFolder else {
+                status = "Choose a folder to save the audiobook."
+                return
+            }
+        }
         playback.stop()
         isBuilding = true
         lastError = nil

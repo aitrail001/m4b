@@ -194,11 +194,16 @@ public struct M4BExporter: Sendable {
         settings: ExportSettings,
         progress: (@Sendable (JobProgress) -> Void)? = nil
     ) async throws -> [BookExportResult] {
+        guard !settings.needsChosenOutputFolder else {
+            throw BinderError.exportFailed("Choose a folder to save the audiobook.")
+        }
         let selected = books.filter(\.selected)
         let destinations = settings.plannedOutputs(for: selected)
         var results: [BookExportResult] = []
         for (idx, book) in selected.enumerated() {
-            let dest = destinations[book.id] ?? settings.outputURL(for: book)
+            guard let dest = destinations[book.id] ?? settings.outputURL(for: book) else {
+                throw BinderError.exportFailed("Choose a folder to save the audiobook.")
+            }
             if Task.isCancelled {
                 Self.appendCancelled(
                     selected[idx...],
@@ -686,7 +691,7 @@ extension M4BExporter {
         into results: inout [BookExportResult]
     ) {
         for book in books {
-            let dest = destinations[book.id] ?? settings.outputURL(for: book)
+            let dest = destinations[book.id] ?? settings.outputURL(for: book) ?? book.folder
             results.append(BookExportResult(bookID: book.id, url: dest, outcome: .cancelled))
         }
     }

@@ -86,24 +86,45 @@ struct ContentView: View {
         .background(BinderTheme.paperDeep.opacity(0.35))
     }
 
+    private var saveInBookFolder: Binding<Bool> {
+        Binding(
+            get: { appState.settings.writeNextToBook },
+            set: { saveNextToBook in
+                if saveNextToBook {
+                    appState.settings.writeNextToBook = true
+                } else if appState.settings.outputDirectory != nil {
+                    appState.settings.writeNextToBook = false
+                } else {
+                    appState.chooseOutputFolder()
+                }
+            }
+        )
+    }
+
     private var controlsBar: some View {
         HStack(spacing: 14) {
-            Toggle("Save in book folder", isOn: Bindable(appState).settings.writeNextToBook)
+            Toggle("Save in book folder", isOn: saveInBookFolder)
                 .toggleStyle(.checkbox)
                 .font(.system(size: 12))
                 .help("Write the .m4b into the same folder as the chapter files")
             if !appState.settings.writeNextToBook {
-                let folderName = appState.settings.outputDirectory?.lastPathComponent
-                    ?? ExportSettings.defaultOutputDirectory.lastPathComponent
-                Button("Save to: \(folderName)") {
-                    appState.chooseOutputFolder()
+                if let folder = appState.settings.outputDirectory {
+                    Button("Save to: \(folder.lastPathComponent)") {
+                        appState.chooseOutputFolder()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(BinderTheme.leather)
+                    .help(folder.path)
+                } else {
+                    Button("Choose folder…") {
+                        appState.chooseOutputFolder()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(BinderTheme.leather)
+                    .help("Choose where to save the finished .m4b files")
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(BinderTheme.leather)
-                .help(
-                    (appState.settings.outputDirectory ?? ExportSettings.defaultOutputDirectory).path
-                )
             }
             Picker("Bitrate", selection: Bindable(appState).settings.bitrate) {
                 Text("64 kbps").tag(64_000)

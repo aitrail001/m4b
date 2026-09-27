@@ -143,26 +143,27 @@ final class AppState {
         lastError = nil
         scanProgress = JobProgress.looking(in: folder)
         status = scanProgress?.detail ?? "Scanning \(folder.lastPathComponent)…"
-        scanTask = Task {
-            do {
-                let found = try await BookScanner().scan(root: url) { [weak self] progress in
-                    Task { @MainActor in
-                        self?.applyIfCurrent(generation) {
-                            self?.scanProgress = progress
-                            self?.status = progress.detail
-                        }
+        scanTask = Task { [weak self] in
+            let onProgress: @Sendable (JobProgress) -> Void = { [weak self] progress in
+                Task { @MainActor in
+                    self?.applyIfCurrent(generation) {
+                        self?.scanProgress = progress
+                        self?.status = progress.detail
                     }
                 }
+            }
+            do {
+                let found = try await BookScanner().scan(root: url, progress: onProgress)
                 try Task.checkCancellation()
-                applyIfCurrent(generation) {
-                    books = found
-                    selectedID = found.first?.id
-                    selectedFolderURL = folder
+                self?.applyIfCurrent(generation) {
+                    self?.books = found
+                    self?.selectedID = found.first?.id
+                    self?.selectedFolderURL = folder
                     let boundCount = found.filter(\.isAlreadyBound).count
                     if boundCount > 0 {
-                        status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
+                        self?.status = "Found \(found.count) book\(found.count == 1 ? "" : "s") (\(boundCount) already bound)."
                     } else {
-                        status = found.count == 1
+                        self?.status = found.count == 1
                             ? "Found 1 book — \(found[0].chapterCount) chapters."
                             : "Found \(found.count) books."
                     }
@@ -170,16 +171,16 @@ final class AppState {
             } catch is CancellationError {
                 // Superseded scans are ignored below. A current cancel only stops.
             } catch {
-                applyIfCurrent(generation) {
-                    lastError = error.localizedDescription
-                    status = error.localizedDescription
-                    books = []
-                    selectedFolderURL = folder
+                self?.applyIfCurrent(generation) {
+                    self?.lastError = error.localizedDescription
+                    self?.status = error.localizedDescription
+                    self?.books = []
+                    self?.selectedFolderURL = folder
                 }
             }
-            applyIfCurrent(generation) {
-                isScanning = false
-                scanProgress = nil
+            self?.applyIfCurrent(generation) {
+                self?.isScanning = false
+                self?.scanProgress = nil
             }
         }
     }
@@ -244,17 +245,20 @@ final class AppState {
         finishedURLs = []
         status = "Building \(queue.count) audiobook\(queue.count == 1 ? "" : "s")…"
         let settings = settings
-        buildTask = Task {
+        buildTask = Task { [weak self] in
+            let onProgress: @Sendable (JobProgress) -> Void = { [weak self] progress in
+                Task { @MainActor in
+                    self?.build = progress
+                    self?.status = progress.detail
+                }
+            }
             do {
                 let results = try await M4BExporter(bitrate: settings.bitrate).exportAll(
                     books: queue,
-                    settings: settings
-                ) { [weak self] progress in
-                    Task { @MainActor in
-                        self?.build = progress
-                        self?.status = progress.detail
-                    }
-                }
+                    settings: settings,
+                    progress: onProgress
+                )
+                guard let self else { return }
                 let published = results.filter(\.outcome.isPublished)
                 finishedURLs = published.map(\.url)
                 for result in published {
@@ -265,13 +269,13 @@ final class AppState {
                 }
                 status = BinderCopy.exportSummary(results: results, books: queue)
             } catch is CancellationError {
-                status = "Cancelled."
+                self?.status = "Cancelled."
             } catch {
-                lastError = error.localizedDescription
-                status = error.localizedDescription
+                self?.lastError = error.localizedDescription
+                self?.status = error.localizedDescription
             }
-            isBuilding = false
-            build = nil
+            self?.isBuilding = false
+            self?.build = nil
         }
     }
 
